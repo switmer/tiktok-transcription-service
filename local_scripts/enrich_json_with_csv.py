@@ -1,0 +1,146 @@
+import os
+import json
+import csv
+import logging
+from pathlib import Path
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Path to the tiktoks folder
+tiktoks_folder = Path('/Users/stevewitmer/Desktop/Youtube/youtube_downloader/tiktoks')
+
+# Path to the enriched_user_data_tiktok.json file
+enriched_data_file = Path('/Users/stevewitmer/Desktop/Youtube/youtube_downloader/enriched_user_data_tiktok.json')
+
+# Prepare the CSV file
+csv_file = Path('tiktok_data.csv')
+csv_headers = ['ID', 'Title', 'Description', 'Duration', 'Upload Date', 'View Count', 'Like Count', 
+               'Comment Count', 'Share Count', 'Artist', 'Channel', 'Uploader', 'Transcript']
+
+# Load enriched data from JSON file
+with enriched_data_file.open('r', encoding='utf-8') as f:
+    enriched_data = json.load(f)
+
+def process_tiktok_folder(folder_path, enriched_data):
+    tiktok_data = {}
+    
+    # Use folder name as initial title
+    tiktok_data['Title'] = folder_path.name[:250]  # Increased character limit
+    
+    # Process the .json file
+    json_file = next(folder_path.glob('*.json'), None)
+    if json_file and json_file.is_file():
+        try:
+            with json_file.open('r', encoding='utf-8') as f:
+                json_data = json.load(f)
+                tiktok_data.update({
+                    'ID': json_data.get('id', ''),
+                    'Title': json_data.get('title', tiktok_data['Title'])[:250],  # Use JSON title if available, else keep folder name
+                    'Description': json_data.get('description', '')[:250],  # Increased character limit
+                    'Duration': json_data.get('duration', ''),
+                    'Upload Date': json_data.get('upload_date', ''),
+                    'View Count': json_data.get('view_count', ''),
+                    'Like Count': json_data.get('like_count', ''),
+                    'Comment Count': json_data.get('comment_count', ''),
+                    'Share Count': json_data.get('repost_count', ''),
+                    'Artist': ', '.join(json_data.get('artists', []))[:250],
+                    'Channel': json_data.get('channel', '')[:250],
+                    'Uploader': json_data.get('uploader', '')[:250]
+                })
+        except json.JSONDecodeError:
+            logging.error(f"Invalid JSON in file: {json_file}")
+        except Exception as e:
+            logging.error(f"Error processing JSON file {json_file}: {str(e)}")
+
+    # Process the .txt file (transcript)
+    txt_file = next(folder_path.glob('*_transcript.txt'), None)  # Look specifically for _transcript.txt files
+    if txt_file and txt_file.is_file():
+        try:
+            tiktok_data['Transcript'] = txt_file.read_text(encoding='utf-8').strip()[:1000]  # Increased character limit
+        except Exception as e:
+            logging.error(f"Error reading transcript file {txt_file}: {str(e)}")
+
+    # Check if there's enriched data for this TikTok
+    video_id = tiktok_data.get('ID') or folder_path.name
+    if video_id in enriched_data:
+        enriched = enriched_data[video_id]
+        tiktok_data['View Count'] = enriched.get('stats', {}).get('playCount', tiktok_data['View Count'])
+        tiktok_data['Like Count'] = enriched.get('stats', {}).get('diggCount', tiktok_data['Like Count'])
+        tiktok_data['Comment Count'] = enriched.get('stats', {}).get('commentCount', tiktok_data['Comment Count'])
+        tiktok_data['Share Count'] = enriched.get('stats', {}).get('shareCount', tiktok_data['Share Count'])
+
+    return tiktok_data
+
+def main():
+    with csv_file.open('w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=csv_headers)
+        writer.writeheader()
+
+        # Iterate through each folder in the tiktoks directory
+        for folder in tiktoks_folder.iterdir():
+            if folder.is_dir():
+                try:
+                    tiktok_data = process_tiktok_folder(folder, enriched_data)
+                    writer.writerow(tiktok_data)
+                    logging.info(f"Processed TikTok: {folder.name[:50]}...")  # Truncate long folder names in logs
+                except Exception as e:
+                    logging.error(f"Error processing folder {folder.name[:50]}...: {str(e)}")
+
+    logging.info(f"Data has been written to {csv_file}")
+
+if __name__ == "__main__":
+    main()
+
+# Enrich JSON data with CSV data
+import csv
+import json
+from pathlib import Path
+
+# File paths
+csv_file = Path('tiktok_data.csv')
+json_file = Path('enriched_user_data_tiktok.json')
+output_file = Path('updated_enriched_user_data_tiktok.json')
+
+# Read CSV data
+csv_data = {}
+with csv_file.open('r', encoding='utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        video_id = row['ID']
+        csv_data[video_id] = row
+
+# Read JSON data
+with json_file.open('r', encoding='utf-8') as f:
+    json_data = json.load(f)
+
+# Update JSON data with CSV data
+for item in json_data:
+    if 'Content' in item and 'https://www.tiktokv.com/share/video/' in item['Content']:
+        video_id = item['Content'].split('/')[-1].rstrip('/')
+        if video_id in csv_data:
+            csv_row = csv_data[video_id]
+            if 'enriched_data' not in item:
+                item['enriched_data'] = {}
+            
+            # Update or add fields from CSV
+            item['enriched_data'].update({
+                'title': csv_row['Title'],
+                'description': csv_row['Description'],
+                'duration': csv_row['Duration'],
+                'upload_date': csv_row['Upload Date'],
+                'view_count': csv_row['View Count'],
+                'like_count': csv_row['Like Count'],
+                'comment_count': csv_row['Comment Count'],
+                'share_count': csv_row['Share Count'],
+                'artist': csv_row['Artist'],
+                'channel': csv_row['Channel'],
+                'uploader': csv_row['Uploader'],
+                'transcript': csv_row['Transcript']
+            })
+
+# Write updated JSON data
+with output_file.open('w', encoding='utf-8') as f:
+    json.dump(json_data, f, indent=2, ensure_ascii=False)
+
+print(f"Updated data has been written to {output_file}")

@@ -1,0 +1,14 @@
+{
+  "format": "bestvideo+bestaudio/best",
+  "outtmpl": "%(title)s.%(ext)s",
+  "sponsorblock_mark": "all",
+  "cookiesfrombrowser": ["firefox"],
+  "noplaylist": true,
+  "download_archive": "downloaded_videos.txt",
+  "writeinfojson": true,
+  "writesubtitles": true,
+  "subtitleslangs": ["en"],
+  "external_downloader": "aria2c",
+  "external_downloader_args": ["-x", "16", "-k", "1M"],
+  "postprocessor_args": ["-bsf:a", "aac_adtstoasc"]
+}

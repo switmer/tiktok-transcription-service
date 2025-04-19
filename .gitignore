@@ -1,0 +1,44 @@
+# Ignore everything in the root
+/*
+
+# But keep these files
+!.gitignore
+!requirements.txt
+!runtime.txt
+!render.yaml
+!start_with_python312.sh
+
+# And keep these directories
+!/app
+!/local_scripts
+
+# --- Rules for Files WITHIN Allowed Directories --- #
+
+# Python files to ignore 
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
+**/*.egg
+
+# Environment files
+**/.env
+
+# Downloads and temporary files
+app/downloads/
+app/static/
+**/*.tmp
+temp_input.json
+
+# macOS
+**/.DS_Store
+
+# Test files
+test_*.py
+
+# Virtual Environments (anywhere, including subdirectories)
+**/env/
+**/venv/
+**/venv-py312/
+local_scripts/myenv/ 
