@@ -1,7 +1,17 @@
 # Ignore everything
 *
 
-# But not the app directory
+# But not these files
+!.gitignore
+!requirements.txt
+!runtime.txt
+!render.yaml
+!Procfile
+!app.py
+!__init__.py
+!start_with_python312.sh
+
+# And not the app directory
 !app/
 !app/**
 
