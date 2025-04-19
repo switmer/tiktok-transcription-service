@@ -1,7 +1,38 @@
-# Ignore everything in the root
-/*
+# Ignore everything
+*
 
-# But keep these files
+# But not the app directory
+!app/
+!app/**
+
+# Python files to ignore 
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/*.egg-info/
+**/*.egg
+
+# Environment files
+**/.env
+**/.venv
+**/env/
+**/venv/
+**/ENV/
+**/*.pyc
+
+# Project specific
+app/downloads/
+app/static/
+**/*.tmp
+**/*.log
+
+# IDE and OS files
+**/.DS_Store
+**/.idea/
+**/.vscode/
+
+# And keep these files
 !.gitignore
 !requirements.txt
 !runtime.txt
