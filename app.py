@@ -1,14 +1,22 @@
 """
-Entry point for the application when running from the root directory.
+Entry point for the application.
 """
 import os
 import sys
 
 # Add the app directory to the path
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+app_dir = os.path.join(os.path.dirname(__file__), 'app')
+sys.path.insert(0, app_dir)
 
-# Import the app from app/app.py
-from app.app import app
+# Import all necessary components from app/app.py
+from app.app import (
+    app,  # The FastAPI instance
+    supabase,  # Supabase client
+    discovery,  # Discovery routes
+    transcriber,  # Transcription logic
+)
+
+# The app variable is now directly available for uvicorn to import
 
 # This file allows running the app from the root directory using:
 # uvicorn app:app
