@@ -14,6 +14,23 @@ from rake_nltk import Rake
 from langdetect import detect
 import cv2
 import subprocess
+# Add dotenv support
+from dotenv import load_dotenv
+load_dotenv()
+
+# Attempt to import format_timestamped_transcript; if the absolute import fails (when running the script directly),
+# append the project root to sys.path and retry.
+try:
+    from app.transcriber import format_timestamped_transcript
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.append(str(project_root))
+
+    from app.transcriber import format_timestamped_transcript
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -40,11 +57,12 @@ def my_hook(d):
         print(f"\nFinished downloading {d['filename']}")
 
 def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
-    audio = AudioSegment.from_mp3(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    audio = AudioSegment.from_file(file_path, format=ext[1:])
     chunks = []
     for i, chunk in enumerate(audio[::chunk_length_ms]):
-        chunk_path = f"{file_path[:-4]}_chunk{i}.mp3"
-        chunk.export(chunk_path, format="mp3")
+        chunk_path = f"{file_path[:-len(ext)]}_chunk{i}{ext}"
+        chunk.export(chunk_path, format=ext[1:])
         if os.path.getsize(chunk_path) > max_size_bytes:
             os.remove(chunk_path)
             chunk_length_ms = int(chunk_length_ms * 0.9)  # Reduce chunk size by 10%
@@ -53,7 +71,8 @@ def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
     return chunks
 
 def transcribe_audio(file_path):
-    audio = AudioSegment.from_mp3(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    audio = AudioSegment.from_file(file_path, format=ext[1:])
     duration_seconds = len(audio) / 1000  # pydub works in milliseconds
 
     with open(file_path, "rb") as audio_file:
@@ -199,7 +218,7 @@ def download_video(url, ydl_opts, args):
             cumulative_duration += chunk_duration
             os.remove(chunk)
 
-        formatted_transcript = format_transcript({'segments': full_transcription})
+        formatted_transcript = format_timestamped_transcript({'segments': full_transcription})
 
         transcript_filename = os.path.join(job_folder, f"{base_filename}_transcript.txt")
         with open(transcript_filename, 'w', encoding='utf-8') as f:
@@ -255,7 +274,7 @@ def download_videos_from_file(file_path, ydl_opts, args):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Video Downloader and Transcriber")
-    parser.add_argument("input", help="URL, file containing URLs, or JSON file to parse for URLs in 'Content' fields")
+    parser.add_argument("input", nargs='+', help="One or more files or directories to process")
     parser.add_argument("-f", "--format", help="Preferred format (e.g., 'bestaudio/best')")
     parser.add_argument("-o", "--output", help="Output template (e.g., '%(title)s.%(ext)s')")
     parser.add_argument("-c", "--config", help="Path to configuration file (JSON format)")
@@ -286,10 +305,34 @@ def extract_urls_from_json(file_path):
             urls.append(item['Content'])
     return urls
 
+def transcribe_and_save(audio_path):
+    print(f"Transcribing: {audio_path}")
+    transcript, duration = transcribe_audio(audio_path)
+    base = os.path.splitext(audio_path)[0]
+    transcript_path = base + "_transcript.txt"
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(format_timestamped_transcript(transcript))
+    print(f"Transcript saved to: {transcript_path}")
+
 def main():
     args = parse_arguments()
     setup_logging(args.verbose)
     config = load_config(args.config)
+
+    # New: handle multiple paths (files or directories)
+    handled = False
+    for path in args.input:
+        path = path.strip()
+        if (path.endswith('.mp3') or path.endswith('.m4a')) and os.path.isfile(path):
+            transcribe_and_save(path)
+            handled = True
+        elif os.path.isdir(path):
+            for fname in os.listdir(path):
+                if fname.endswith('.mp3') or fname.endswith('.m4a'):
+                    transcribe_and_save(os.path.join(path, fname))
+            handled = True
+    if handled:
+        return
 
     ydl_opts = {
         'format': args.format or config.get('format', 'bestaudio/best'),
@@ -304,21 +347,21 @@ def main():
         'writeinfojson': True,
     }
 
-    if args.input.endswith('.json'):
-        urls = extract_urls_from_json(args.input)
+    if args.input[0].endswith('.json'):
+        urls = extract_urls_from_json(args.input[0])
         for url in urls:
             job_folder = download_video(url.strip(), ydl_opts, args)
             if job_folder:
                 print(f"Job completed for {url}. Files are in the folder: {job_folder}")
-    elif args.input.endswith('.txt'):
-        with open(args.input, 'r') as file:
+    elif args.input[0].endswith('.txt'):
+        with open(args.input[0], 'r') as file:
             urls = file.readlines()
         for url in urls:
             job_folder = download_video(url.strip(), ydl_opts, args)
             if job_folder:
                 print(f"Job completed for {url.strip()}. Files are in the folder: {job_folder}")
     else:
-        job_folder = download_video(args.input, ydl_opts, args)
+        job_folder = download_video(args.input[0], ydl_opts, args)
         if job_folder:
             print(f"Job completed. All files are in the folder: {job_folder}")
 

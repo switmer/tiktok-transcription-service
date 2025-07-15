@@ -1,6 +1,8 @@
 import csv
 import os
 from typing import Dict, List
+import argparse
+import json
 
 # Video ID to title mapping
 VIDEO_DETAILS = {
@@ -30,7 +32,7 @@ def extract_video_id(filename: str) -> str:
     base = os.path.basename(filename)
     return base.split('_')[1].split('.')[0]
 
-def combine_csv_files(csv_files: List[str], output_file: str) -> None:
+def combine_csv_files(csv_files: List[str], output_file: str, base_dir: str) -> None:
     """Combine multiple CSV files into one, adding video details to each row."""
     
     # Define the fieldnames for our combined CSV
@@ -43,7 +45,24 @@ def combine_csv_files(csv_files: List[str], output_file: str) -> None:
         # Process each CSV file
         for file in csv_files:
             video_id = extract_video_id(file)
-            video_title = VIDEO_DETAILS.get(video_id, "Unknown Title")
+            video_title = VIDEO_DETAILS.get(video_id)
+
+            if video_title is None:
+                # Try metadata JSON in standard directory structure
+                meta_path = os.path.join(
+                    os.path.dirname(base_dir),
+                    f"TikTok_@dougweaverart_{video_id}",
+                    "video_metadata.json",
+                )
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as mf:
+                            meta = json.load(mf)
+                            video_title = meta.get("title") or meta.get("fulltitle")
+                    except Exception:
+                        pass
+            if not video_title:
+                video_title = "Unknown Title"
             
             try:
                 with open(file, 'r', encoding='utf-8') as infile:
@@ -67,32 +86,19 @@ def combine_csv_files(csv_files: List[str], output_file: str) -> None:
                 print(f"Error processing {file}: {str(e)}")
 
 def main():
-    # List of CSV files to combine
+    parser = argparse.ArgumentParser(description="Combine TikTok comment CSVs with video details")
+    parser.add_argument("--dir", default="outputs/For Sarah/dougweaver_comments", help="Directory containing comments_*.csv files")
+    args = parser.parse_args()
+
+    base_dir = args.dir
     csv_files = [
-        "dougweaver_comments/comments_7415285469769895210.csv",
-        "dougweaver_comments/comments_7415779028139019566.csv",
-        "dougweaver_comments/comments_7416381536112610603.csv",
-        "dougweaver_comments/comments_7416481991069240622.csv",
-        "dougweaver_comments/comments_7417984018265820459.csv",
-        "dougweaver_comments/comments_7418627229191638315.csv",
-        "dougweaver_comments/comments_7418982269664234794.csv",
-        "dougweaver_comments/comments_7421004532341247278.csv",
-        "dougweaver_comments/comments_7421221846776925483.csv",
-        "dougweaver_comments/comments_7421707587009170730.csv",
-        "dougweaver_comments/comments_7423434235672874283.csv",
-        "dougweaver_comments/comments_7436579380832292138.csv",
-        "dougweaver_comments/comments_7437317085937831214.csv",
-        "dougweaver_comments/comments_7437963742912122158.csv",
-        "dougweaver_comments/comments_7439808937446133035.csv",
-        "dougweaver_comments/comments_7440984230907137323.csv",
-        "dougweaver_comments/comments_7442033581901466926.csv",
-        "dougweaver_comments/comments_7442513727909350698.csv",
-        "dougweaver_comments/comments_7458078908940946719.csv"
+        os.path.join(base_dir, f) for f in os.listdir(base_dir)
+        if f.startswith("comments_") and f.endswith(".csv") and f != "all_comments_combined.csv"
     ]
-    
-    output_file = "dougweaver_comments/all_comments_combined.csv"
-    print(f"Starting to combine {len(csv_files)} files...")
-    combine_csv_files(csv_files, output_file)
+
+    output_file = os.path.join(base_dir, "all_comments_combined.csv")
+    print(f"Starting to combine {len(csv_files)} files…")
+    combine_csv_files(sorted(csv_files), output_file, base_dir)
     print(f"Successfully created combined file: {output_file}")
 
 if __name__ == "__main__":

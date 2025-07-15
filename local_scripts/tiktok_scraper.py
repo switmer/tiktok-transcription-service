@@ -100,13 +100,37 @@ def scroll_to_load_comments(driver, comments_xpath, max_scrolls=200):
             
     print(f"\nFinished loading comments. Total loaded: {last_comment_count}")
 
-def setup_driver():
-    """Initialize and return an undetected Chrome driver."""
+def setup_driver(headless=False):
+    """Initialize and return an undetected Chrome driver.
+    If `headless` is True, Chrome runs without a GUI.
+    Automatically retries with the user's Chrome major version if initial launch fails due to version mismatch.
+    """
+    def _launch(version_main=None):
+        options = uc.ChromeOptions()
+        if headless:
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-gpu")
+        return uc.Chrome(options=options, version_main=version_main)
+
     try:
-        driver = uc.Chrome()
+        driver = _launch()
         return driver
     except Exception as e:
-        print(f"Error setting up Chrome driver: {str(e)}")
+        msg = str(e)
+        # Detect version mismatch pattern and retry with the user's Chrome version
+        if "Current browser version is" in msg:
+            import re
+            match = re.search(r"Current browser version is (\d+)", msg)
+            if match:
+                user_version = int(match.group(1))
+                print(f"Retrying with ChromeDriver version {user_version} to match installed Chrome…")
+                try:
+                    driver = _launch(version_main=user_version)
+                    return driver
+                except Exception as e2:
+                    print(f"Retry with version {user_version} failed: {e2}")
+        # If we get here, re-raise the original error
+        print(f"Error setting up Chrome driver: {msg}")
         raise
 
 def wait_for_comments_to_load(driver, comments_xpath):
@@ -225,9 +249,9 @@ def extract_comment_data(driver, comment_element, is_reply=False):
         print(f"Error extracting {'reply' if is_reply else 'comment'} data: {str(e)}")
         return None
 
-def get_comments(url):
+def get_comments(url, output_dir=None, headless=False):
     print(f"Starting to scrape comments from: {url}")
-    driver = setup_driver()
+    driver = setup_driver(headless=headless)
     comments = []
     
     try:
@@ -273,16 +297,23 @@ def get_comments(url):
         print(f"\nTotal comments extracted: {len(comments)}")
         
         # Save comments to file
-        output_file = 'tiktok_comments.json'
+        if output_dir is None:
+            output_dir = os.getcwd()
+        os.makedirs(output_dir, exist_ok=True)
+        video_id = url.split('/')[-1].strip()
+        output_file = os.path.join(output_dir, f"comments_{video_id}.json")
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(comments, f, ensure_ascii=False, indent=2)
         print(f"Comments saved to {output_file}")
         
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"Error while scraping comments: {str(e)}")
+        comments = []
     finally:
-        driver.quit()
-    
+        try:
+            driver.quit()
+        except Exception:
+            pass
     return comments
 
 def extract_video_urls(driver, playlist_url):
@@ -451,6 +482,7 @@ def main():
     parser.add_argument('-o', '--output', help='Output directory name (default: tiktok_comments)', 
                        default='tiktok_comments')
     parser.add_argument('--batch', action='store_true', help='Process input as a text file containing URLs')
+    parser.add_argument('--headless', action='store_true', help='Run Chrome in headless mode (recommended)')
     
     args = parser.parse_args()
     
@@ -478,7 +510,7 @@ def main():
                     output_file = os.path.join(args.output, f"comments_{video_id}.json")
                     
                     # Get comments
-                    comments = get_comments(url)
+                    comments = get_comments(url, output_dir=args.output, headless=args.headless)
                     
                     # Save to file
                     with open(output_file, 'w', encoding='utf-8') as f:
@@ -504,7 +536,7 @@ def main():
         process_playlist(args.input)
     else:
         print("Processing single video...")
-        get_comments(args.input)
+        get_comments(args.input, output_dir=args.output, headless=args.headless)
 
 if __name__ == "__main__":
     main() 
