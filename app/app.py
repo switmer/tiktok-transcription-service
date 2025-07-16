@@ -96,7 +96,13 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://scribetok.com",
+        "https://www.scribetok.com", 
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "*"  # Allow all for development
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1153,25 +1159,101 @@ async def public_get_task(task_id: str):
 @app.get("/api/public/transcript/{task_id}")
 async def public_get_transcript(task_id: str, format: Optional[str] = None):
     """Get transcript for a task without API key"""
-    if task_id not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        # Fetch task from database
+        result = supabase.table("transcriptions").select("*").eq("task_id", task_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
         
-    task = tasks[task_id]
-    
-    if task["status"] == "failed":
-        error_message = task.get("error", "Unknown error")
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Transcription failed: {error_message}"
-        )
+        task = result.data
         
-    if task["status"] != "completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Transcription not completed yet. Current status: {task['status']}"
-        )
+        if task["status"] == "failed":
+            error_message = task.get("error", "Unknown error")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Transcription failed: {error_message}"
+            )
+            
+        if task["status"] != "completed":
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Transcription not completed yet. Current status: {task['status']}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching task {task_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving task")
         
-    # Look for transcript file
+    # First check if transcript is stored in database
+    if task.get("transcript"):
+        transcript_text = task["transcript"]
+        
+        # Clean the transcript if it contains raw TranscriptionVerbose data
+        if transcript_text.startswith('TranscriptionVerbose('):
+            import re
+            import ast
+            
+            # Try to extract and format the segments with timestamps
+            try:
+                # Extract segments data
+                segments_match = re.search(r'segments=\[(.*?)\], usage=', transcript_text, re.DOTALL)
+                if segments_match:
+                    # Format transcript with timestamps
+                    formatted_transcript = ""
+                    current_minute = -1
+                    
+                    # Parse individual segments from the raw data
+                    segment_pattern = r'TranscriptionSegment\([^)]*start=([0-9.]+)[^)]*text=\'([^\']*)\''
+                    segments = re.findall(segment_pattern, transcript_text)
+                    
+                    for start_time_str, text in segments:
+                        start_time = float(start_time_str)
+                        minute = int(start_time // 60)
+                        second = int(start_time % 60)
+                        
+                        # Add timestamp header for new minutes
+                        if minute != current_minute:
+                            if formatted_transcript:  # Add newline if not first
+                                formatted_transcript += "\n\n"
+                            formatted_transcript += f"{minute}:{second:02d} - {minute}:{second+5:02d}\n"
+                            current_minute = minute
+                        
+                        formatted_transcript += text.strip()
+                    
+                    if formatted_transcript:
+                        transcript_text = formatted_transcript
+                    else:
+                        # Fallback to plain text if parsing fails
+                        text_match = re.search(r'text="([^"]+)"', transcript_text)
+                        if text_match:
+                            transcript_text = text_match.group(1)
+                else:
+                    # Fallback to plain text extraction
+                    text_match = re.search(r'text="([^"]+)"', transcript_text)
+                    if text_match:
+                        transcript_text = text_match.group(1)
+                        
+            except Exception as e:
+                logger.warning(f"Error parsing transcript segments, using plain text: {e}")
+                # Fallback to simple text extraction
+                text_match = re.search(r'text="([^"]+)"', transcript_text)
+                if text_match:
+                    transcript_text = text_match.group(1)
+            
+            # Update the database with clean text for future requests
+            try:
+                supabase.table('transcriptions').update({
+                    'transcript': transcript_text
+                }).eq('task_id', task_id).execute()
+            except Exception as e:
+                logger.warning(f"Could not update clean transcript in database: {e}")
+        
+        if format and format.lower() == 'json':
+            return {"transcript": transcript_text, "task_id": task_id}
+        return transcript_text
+        
+    # Look for transcript file as fallback
     output_dir = os.path.join(DOWNLOADS_DIR, task_id)
     
     # Use glob to find transcript files
