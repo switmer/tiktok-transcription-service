@@ -99,6 +99,8 @@ app.add_middleware(
     allow_origins=[
         "https://scribetok.com",
         "https://www.scribetok.com", 
+        "https://project-waitlist-signup-card-with-animation-586.magicpatterns.app",
+        "https://c9218a45-acf5-4cc4-a39d-076b2ba2fab6-render.magicpatterns.app",
         "http://localhost:5173",
         "http://localhost:3000",
         "*"  # Allow all for development
