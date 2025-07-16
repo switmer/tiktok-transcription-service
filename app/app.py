@@ -975,6 +975,53 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     .execute
         )
         
+        # Extract thumbnail data
+        thumbnail_url = None
+        thumbnail_local_path = None
+        
+        # First check metadata for thumbnail URL
+        metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
+        if metadata_files:
+            try:
+                with open(metadata_files[0], 'r') as f:
+                    metadata = json.load(f)
+                    # Check for thumbnail URL in metadata
+                    thumbnail_url = metadata.get('thumbnail_url') or metadata.get('thumbnail') or metadata.get('cover')
+                    if thumbnail_url:
+                        logger.info(f"Found thumbnail URL in metadata: {thumbnail_url}")
+            except Exception as e:
+                logger.warning(f"Failed to read metadata for thumbnail URL: {str(e)}")
+        
+        # Look for downloaded thumbnail files
+        thumbnail_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        for ext in thumbnail_extensions:
+            thumbnail_files = glob.glob(os.path.join(output_dir, f"*{ext}"))
+            if thumbnail_files:
+                # Use the first thumbnail found
+                thumbnail_file = thumbnail_files[0]
+                # Save relative path for serving
+                thumbnail_local_path = os.path.relpath(thumbnail_file, DOWNLOADS_DIR)
+                logger.info(f"Found thumbnail file: {thumbnail_file}")
+                break
+        
+        # If no thumbnail downloaded, try extracting from video
+        if not thumbnail_local_path:
+            try:
+                video_files = glob.glob(os.path.join(output_dir, "*.mp4"))
+                if video_files and os.path.exists(video_files[0]):
+                    import cv2
+                    video_path = video_files[0]
+                    vidcap = cv2.VideoCapture(video_path)
+                    success, image = vidcap.read()
+                    if success:
+                        thumbnail_path = os.path.join(output_dir, "thumbnail.jpg")
+                        cv2.imwrite(thumbnail_path, image)
+                        thumbnail_local_path = os.path.relpath(thumbnail_path, DOWNLOADS_DIR)
+                        logger.info(f"Extracted thumbnail from video: {thumbnail_path}")
+                    vidcap.release()
+            except Exception as e:
+                logger.warning(f"Failed to extract thumbnail from video: {str(e)}")
+        
         # Transcribe the audio
         transcript_response, transcript_file_path = transcriber.transcribe_audio(audio_file, output_dir, video_id)
         
@@ -985,20 +1032,28 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             transcript_text = transcript_response.get('text', '') if isinstance(transcript_response, dict) else str(transcript_response)
             category = await guess_category(title or '', transcript_text)
             
-            # Update Supabase with transcript, tags, and category
+            # Update Supabase with transcript, tags, category, and thumbnail info
+            update_data = {
+                'status': 'completed',
+                'transcript': transcript_text,
+                'tags': tags,
+                'category': category,
+                'error': None
+            }
+            
+            # Add thumbnail info if available
+            if thumbnail_url:
+                update_data['thumbnail_url'] = thumbnail_url
+            if thumbnail_local_path:
+                update_data['thumbnail_local_path'] = thumbnail_local_path
+                
             await asyncio.to_thread(
                 supabase.table('transcriptions')
-                        .update({
-                            'status': 'completed',
-                            'transcript': transcript_text,
-                            'tags': tags,
-                            'category': category,
-                            'error': None
-                        })
+                        .update(update_data)
                         .eq('task_id', task_id)
                         .execute
             )
-            logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}")
+            logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}, thumbnail: {thumbnail_local_path or 'none'}")
         else:
             await update_task_status(task_id, "failed", "Transcription failed")
             logger.error(f"Failed to transcribe audio for task {task_id}")

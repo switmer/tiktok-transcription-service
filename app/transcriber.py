@@ -113,7 +113,8 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                             "title": title,
                             "url": url,
                             "download_method": "rapidapi",
-                            "downloaded_at": datetime.now().isoformat()
+                            "downloaded_at": datetime.now().isoformat(),
+                            "thumbnail_url": video_data.get("cover") or video_data.get("origin_cover") or video_data.get("ai_dynamic_cover")
                         }
                         
                         metadata_path = os.path.join(output_dir, f"{video_id}.info.json")
@@ -290,31 +291,57 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     return None, None, None
 
 def format_timestamped_transcript(transcript_data):
-    """Formats verbose_json transcript data with timestamps."""
+    """Formats verbose_json transcript data with timestamps and bullet points."""
     formatted_lines = []
     timestamp_interval = 30  # Add timestamp every 30 seconds
     last_printed_timestamp_section = -1
 
     # Handle potential non-dict response if API changes or error occurs
-    if not isinstance(transcript_data, dict) or 'segments' not in transcript_data:
-         # Attempt to extract text if possible, otherwise return empty string or log error
-        return transcript_data.get('text', '') if isinstance(transcript_data, dict) else str(transcript_data)
+    if not isinstance(transcript_data, dict):
+        # Check if it's a Whisper TranscriptionVerbose object
+        if hasattr(transcript_data, 'text'):
+            return transcript_data.text
+        elif hasattr(transcript_data, 'segments'):
+            # Extract text from segments if available
+            segments = transcript_data.segments
+            return ' '.join([segment.text.strip() for segment in segments])
+        else:
+            # Last resort: convert to string but try to extract meaningful text
+            text_str = str(transcript_data)
+            # Try to extract text= value from the string representation
+            import re
+            text_match = re.search(r"text='([^']+)'", text_str)
+            if text_match:
+                return text_match.group(1)
+            return text_str
+    
+    if 'segments' not in transcript_data:
+        return transcript_data.get('text', '')
 
     for segment in transcript_data['segments']:
         start_time = segment['start']
-        text = segment['text']
+        text = segment['text'].strip()
 
         # Calculate the current 30-second section
         current_timestamp_section = int(start_time // timestamp_interval)
 
         # Print timestamp if it's a new section
         if current_timestamp_section > last_printed_timestamp_section:
-            timestamp = str(timedelta(seconds=int(start_time)))
-            formatted_lines.append(f"\n[{timestamp}]")
+            # Format timestamp as MM:SS
+            minutes = int(start_time // 60)
+            seconds = int(start_time % 60)
+            timestamp = f"{minutes:02d}:{seconds:02d}:{0:02d}"
+            
+            # Add empty line before timestamp if not the first one
+            if last_printed_timestamp_section >= 0:
+                formatted_lines.append("")
+            
+            formatted_lines.append(timestamp)
             last_printed_timestamp_section = current_timestamp_section
         
-        # Add the transcribed text
-        formatted_lines.append(text.strip())
+        # Add the transcribed text as bullet point
+        if text:
+            formatted_lines.append(f"- {text}")
         
     return '\n'.join(formatted_lines)
 
