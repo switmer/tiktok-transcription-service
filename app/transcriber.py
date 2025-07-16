@@ -13,15 +13,18 @@ import json
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client with explicit API key
+# Initialize OpenAI client with explicit API key and timeout
 api_key = os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = None
 if not api_key:
     logger.error("OPENAI_API_KEY environment variable not found")
 else:
     try:
-        client = OpenAI(api_key=api_key)
-        logger.info("OpenAI client initialized successfully")
+        import httpx
+        # Create client with 5-minute timeout for transcription
+        http_client = httpx.Client(timeout=300.0)
+        client = OpenAI(api_key=api_key, http_client=http_client)
+        logger.info("OpenAI client initialized successfully with timeout")
     except Exception as e:
         logger.error(f"Failed to initialize OpenAI client: {str(e)}")
 
@@ -58,7 +61,7 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
         params = {"url": url, "hd": "1"}
         
         logger.info(f"Attempting RapidAPI download for: {url}")
-        response = requests.get(rapidapi_url, headers=headers, params=params, timeout=30)
+        response = requests.get(rapidapi_url, headers=headers, params=params, timeout=60)  # Increased timeout
         
         if response.status_code == 200:
             data = response.json()
@@ -78,7 +81,7 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                 
                 # Download the video file
                 logger.info(f"Downloading video from: {video_url}")
-                video_response = requests.get(video_url, timeout=60)
+                video_response = requests.get(video_url, timeout=120)  # Increased timeout for video download
                 
                 if video_response.status_code == 200:
                     # Save video file

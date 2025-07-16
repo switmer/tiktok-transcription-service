@@ -37,6 +37,7 @@ import shutil
 import asyncio
 import sys
 import numpy as np
+from functools import wraps
 from PIL import Image, ImageDraw, ImageFont
 from supabase.client import create_client, Client
 
@@ -70,6 +71,21 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+# Task timeout decorator
+def task_timeout(timeout_seconds=1800):  # 30 minutes default
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await asyncio.wait_for(func(*args, **kwargs), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                task_id = args[0] if args else "unknown"
+                logger.error(f"Task {task_id} timeout after {timeout_seconds}s")
+                await update_task_status(task_id, "failed", f"Task timeout after {timeout_seconds}s")
+                return None
+        return wrapper
+    return decorator
 
 app = FastAPI(
     title="TikTok Transcription API",
@@ -900,6 +916,7 @@ def find_thumbnail_url_in_metadata(metadata):
     
     return None
 
+@task_timeout(1800)  # 30-minute timeout
 async def process_transcription_task(task_id: str, video_url: str, callback_url: Optional[str] = None, proxy: Optional[str] = None):
     """Process a transcription task asynchronously."""
     if supabase is None:
@@ -956,6 +973,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         if transcript_response:
             # Extract tags and guess category
             tags = await extract_tags_from_title(title or '')
+            # Extract transcript text from response
+            transcript_text = transcript_response.get('text', '') if isinstance(transcript_response, dict) else str(transcript_response)
             category = await guess_category(title or '', transcript_text)
             
             # Update Supabase with transcript, tags, and category
@@ -1357,6 +1376,51 @@ async def submit_task(
     except Exception as e:
         logger.error(f"Error submitting task for URL {request.url}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to submit task")
+
+@app.post("/api/cleanup-stuck-tasks")
+async def cleanup_stuck_tasks(api_key: str = Depends(verify_api_key)):
+    """Mark long-pending tasks as failed (requires API key)"""
+    return await _cleanup_stuck_tasks_logic()
+
+@app.post("/api/public/cleanup-stuck-tasks")
+async def public_cleanup_stuck_tasks():
+    """Mark long-pending tasks as failed (public endpoint)"""
+    return await _cleanup_stuck_tasks_logic()
+
+async def _cleanup_stuck_tasks_logic():
+    """Shared cleanup logic"""
+    if supabase is None:
+        logger.error("Cannot cleanup stuck tasks: Supabase client not initialized")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+    
+    try:
+        # Find tasks pending for more than 30 minutes
+        cutoff_time = (datetime.now() - timedelta(minutes=30)).isoformat()
+        
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+            .select("task_id")
+            .eq('status', 'pending')
+            .lt('created_at', cutoff_time)
+            .execute
+        )
+        
+        cleaned_count = 0
+        if response.data:
+            for task in response.data:
+                await update_task_status(task['task_id'], "failed", "Task stuck in pending state - auto-cleaned")
+                cleaned_count += 1
+                logger.warning(f"Marked stuck task as failed: {task['task_id']}")
+        
+        return {
+            "cleaned_tasks": cleaned_count,
+            "cutoff_time": cutoff_time,
+            "message": f"Cleaned {cleaned_count} stuck tasks"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning stuck tasks: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to cleanup stuck tasks")
 
 if __name__ == "__main__":
     # Get port from environment or use default
