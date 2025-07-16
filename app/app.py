@@ -48,6 +48,9 @@ try:
     from . import transcriber
 except ImportError:
     # Fall back to absolute imports (when running directly)
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(__file__))
     import database
     import discovery
     import transcriber
