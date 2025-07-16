@@ -80,14 +80,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://project-waitlist-signup-card-with-animation-586.magicpatterns.app",
-        "https://8d831465-c074-4ae9-8aab-4e15d62b8a8a-render.magicpatterns.app",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "*"  # Consider removing this in production and just list allowed domains
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
