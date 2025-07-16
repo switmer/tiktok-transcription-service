@@ -7,6 +7,8 @@ import random
 import time
 from typing import Literal
 import logging
+import requests
+import json
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -39,14 +41,118 @@ class MyLogger(object):
     def error(self, msg):
         print(f"Error: {msg}")
 
+def download_tiktok_rapidapi(url: str, output_dir: str):
+    """Download TikTok video using RapidAPI service"""
+    rapidapi_key = os.environ.get("RAPIDAPI_KEY")
+    if not rapidapi_key:
+        logger.warning("RAPIDAPI_KEY not found, skipping RapidAPI method")
+        return None
+    
+    try:
+        # RapidAPI TikTok Video Downloader
+        rapidapi_url = "https://tiktok-video-no-watermark2.p.rapidapi.com/"
+        headers = {
+            "X-RapidAPI-Key": rapidapi_key,
+            "X-RapidAPI-Host": "tiktok-video-no-watermark2.p.rapidapi.com"
+        }
+        params = {"url": url, "hd": "1"}
+        
+        logger.info(f"Attempting RapidAPI download for: {url}")
+        response = requests.get(rapidapi_url, headers=headers, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"RapidAPI response: {data}")
+            
+            # Extract video info
+            if data.get("code") == 0 and data.get("data"):
+                video_data = data["data"]
+                video_id = video_data.get("id", "unknown")
+                title = video_data.get("title", "TikTok Video")
+                
+                # Get video download URL
+                video_url = video_data.get("hdplay") or video_data.get("play")
+                if not video_url:
+                    logger.error("No video URL found in RapidAPI response")
+                    return None
+                
+                # Download the video file
+                logger.info(f"Downloading video from: {video_url}")
+                video_response = requests.get(video_url, timeout=60)
+                
+                if video_response.status_code == 200:
+                    # Save video file
+                    video_filename = f"{video_id}.mp4"
+                    video_path = os.path.join(output_dir, video_filename)
+                    
+                    with open(video_path, 'wb') as f:
+                        f.write(video_response.content)
+                    
+                    logger.info(f"Video downloaded successfully: {video_path}")
+                    
+                    # Extract audio using ffmpeg
+                    audio_filename = f"{video_id}.mp3"
+                    audio_path = os.path.join(output_dir, audio_filename)
+                    
+                    # Use ffmpeg to extract audio
+                    import subprocess
+                    try:
+                        subprocess.run([
+                            'ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', 
+                            '-ab', '192k', '-ar', '44100', '-y', audio_path
+                        ], check=True, capture_output=True)
+                        
+                        logger.info(f"Audio extracted successfully: {audio_path}")
+                        
+                        # Save metadata
+                        metadata = {
+                            "id": video_id,
+                            "title": title,
+                            "url": url,
+                            "download_method": "rapidapi",
+                            "downloaded_at": datetime.now().isoformat()
+                        }
+                        
+                        metadata_path = os.path.join(output_dir, f"{video_id}.info.json")
+                        with open(metadata_path, 'w') as f:
+                            json.dump(metadata, f, indent=2)
+                        
+                        return {
+                            "video_id": video_id,
+                            "title": title,
+                            "audio_file": audio_path,
+                            "video_file": video_path,
+                            "metadata_file": metadata_path
+                        }
+                        
+                    except subprocess.CalledProcessError as e:
+                        logger.error(f"FFmpeg failed: {e}")
+                        return None
+                        
+                else:
+                    logger.error(f"Failed to download video: {video_response.status_code}")
+                    return None
+                    
+            else:
+                logger.error(f"RapidAPI returned error: {data}")
+                return None
+                
+        else:
+            logger.error(f"RapidAPI request failed: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"RapidAPI download failed: {str(e)}")
+        return None
+
 def my_hook(d):
     if d['status'] == 'downloading':
         print(f"\rDownloading: {d['filename']} | {d.get('_percent_str', 'N/A')} of {d.get('_total_bytes_str', 'N/A')} at {d.get('_speed_str', 'N/A')}", end='', flush=True)
     elif d['status'] == 'finished':
         print(f"\nFinished downloading {d['filename']}")
 
-def download_tiktok(url: str, output_dir: str, proxy=None):
-    """Download TikTok video and extract audio"""
+def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
+    """Download TikTok video using yt-dlp (original method)"""
     # Set user agents to rotate
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -152,6 +258,33 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     except Exception as e:
         print(f"Error downloading video: {str(e)}")
         return None, None, None
+
+def download_tiktok(url: str, output_dir: str, proxy=None):
+    """Download TikTok video with fallback chain: RapidAPI -> yt-dlp"""
+    
+    # Method 1: Try RapidAPI first (more reliable)
+    logger.info("Attempting RapidAPI download method...")
+    rapidapi_result = download_tiktok_rapidapi(url, output_dir)
+    
+    if rapidapi_result:
+        logger.info("RapidAPI download successful!")
+        return (
+            rapidapi_result["audio_file"],
+            rapidapi_result["video_id"],
+            rapidapi_result["title"]
+        )
+    
+    # Method 2: Fallback to yt-dlp
+    logger.info("RapidAPI failed, falling back to yt-dlp...")
+    ytdlp_result = download_tiktok_ytdlp(url, output_dir, proxy)
+    
+    if ytdlp_result[0]:  # Check if audio_file is not None
+        logger.info("yt-dlp download successful!")
+        return ytdlp_result
+    
+    # Both methods failed
+    logger.error("All download methods failed for TikTok URL")
+    return None, None, None
 
 def format_timestamped_transcript(transcript_data):
     """Formats verbose_json transcript data with timestamps."""

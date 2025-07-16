@@ -78,12 +78,44 @@ DELETE /api/tasks/{task_id}
 GET /api/healthcheck
 ```
 
+## Deployment
+
+### Render.com Deployment
+
+This app is configured for deployment on Render.com. The deployment configuration is in `render.yaml`.
+
+**CRITICAL:** Make sure the render.yaml contains:
+```yaml
+buildCommand: cd app && pip install -r requirements.txt
+startCommand: cd app && uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+**Common deployment issues:**
+1. **"Attribute 'app' not found"** - This happens when uvicorn can't find the FastAPI app. Make sure:
+   - The working directory is set to the `app` folder 
+   - The startCommand includes `cd app &&`
+   - The app variable is properly defined in app.py
+
+2. **Environment variables** - Set these in Render dashboard:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_KEY` 
+   - `OPENAI_API_KEY`
+
+### Local Development
+
+Start the FastAPI server:
+```bash
+cd app
+uvicorn app:app --reload
+```
+
 ## Output Files
 
 The service creates the following directory structure:
 ```
-output/
-├── videos/        # Downloaded TikTok videos
-├── audio/         # Extracted audio files
-└── transcripts/   # Generated transcripts
+downloads/
+├── {task_id}/     # Task-specific folder
+    ├── audio/     # Extracted audio files
+    ├── video/     # Downloaded videos
+    └── transcript.txt # Generated transcript
 ``` 
