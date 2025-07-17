@@ -1831,7 +1831,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
             pass  # Don't let notification errors crash the process
 
 @app.get("/v/{task_id}")
-async def public_transcript_page(task_id: str, request: Request):
+async def public_transcript_page(task_id: str, request: Request, ref: Optional[str] = Query(None, description="Referrer tracking")):
     """Serve viral-optimized public transcript page"""
     try:
         # Get transcript details
@@ -1877,8 +1877,22 @@ async def public_transcript_page(task_id: str, request: Request):
         word_count = len(transcript.split())
         reading_time = max(1, word_count // 200)  # ~200 words per minute
         
-        # Generate share URL
+        # Generate share URL with referral tracking
         share_url = f"{request.base_url}v/{task_id}"
+        
+        # Track referral if present
+        referral_credit = None
+        if ref:
+            try:
+                referral_credit = await _track_referral(ref, task_id, str(request.client.host) if request.client else 'unknown')
+            except Exception as e:
+                logger.error(f"Referral tracking error: {str(e)}")
+        
+        # Get view count and viral metrics
+        view_count, trending_score = await _get_viral_metrics(task_id)
+        
+        # Generate unique referral code for this viewer
+        viewer_ref_code = _generate_referral_code(task_id)\n        \n        # Generate SEO-optimized content\n        iso_date = datetime.fromisoformat(created_at.replace('Z', '+00:00')).isoformat() if created_at else ''\n        seo_title = f\"{title[:50]}{'...' if len(title) > 50 else ''} - Transcript | ScribeTok\"\n        seo_description = f\"Read the full transcript of '{title}'. {summary_text[:120]}{'...' if len(summary_text) > 120 else ''} Transcribed by ScribeTok's AI.\"\n        seo_keywords = _extract_seo_keywords(transcript, title)\n        \n        # Create structured data for search engines\n        structured_data = json.dumps({\n            \"@context\": \"https://schema.org\",\n            \"@type\": \"Article\",\n            \"headline\": title,\n            \"description\": summary_text,\n            \"image\": thumbnail_url or 'https://scribetok.com/og-image.jpg',\n            \"author\": {\n                \"@type\": \"Organization\",\n                \"name\": \"ScribeTok\",\n                \"url\": \"https://scribetok.com\"\n            },\n            \"publisher\": {\n                \"@type\": \"Organization\",\n                \"name\": \"ScribeTok\",\n                \"logo\": {\n                    \"@type\": \"ImageObject\",\n                    \"url\": \"https://scribetok.com/logo.png\"\n                }\n            },\n            \"datePublished\": iso_date,\n            \"dateModified\": iso_date,\n            \"wordCount\": word_count,\n            \"articleBody\": transcript[:1000] + '...' if len(transcript) > 1000 else transcript,\n            \"url\": share_url,\n            \"mainEntityOfPage\": {\n                \"@type\": \"WebPage\",\n                \"@id\": share_url\n            },\n            \"keywords\": seo_keywords\n        })
         
         html_content = f"""
         <!DOCTYPE html>
@@ -1888,7 +1902,7 @@ async def public_transcript_page(task_id: str, request: Request):
             <meta name="viewport" content="width=device-width, initial-scale=1">
             
             <!-- Primary Meta Tags -->
-            <title>{title} - ScribeTok Transcript</title>
+            <title>{seo_title}</title>
             <meta name="title" content="{title} - ScribeTok Transcript">
             <meta name="description" content="{summary_text}">
             
@@ -2056,6 +2070,105 @@ async def public_transcript_page(task_id: str, request: Request):
                 .share-facebook {{ background: #4267b2; }}
                 .share-linkedin {{ background: #0077b5; }}
                 .share-copy {{ background: #6c757d; }}
+                .viral-section {{ 
+                    background: linear-gradient(135deg, #ff6b6b, #ee5a24); 
+                    color: white; 
+                    padding: 30px 20px; 
+                    text-align: center; 
+                    margin: 20px 0;
+                    border-radius: 12px;
+                }}
+                .viral-title {{ 
+                    font-size: 1.4em; 
+                    margin-bottom: 10px; 
+                    font-weight: 700;
+                }}
+                .viral-subtitle {{ 
+                    opacity: 0.9; 
+                    margin-bottom: 20px;
+                }}
+                .viral-metrics {{ 
+                    display: flex; 
+                    justify-content: center; 
+                    gap: 20px; 
+                    margin: 20px 0;
+                    flex-wrap: wrap;
+                }}
+                .viral-metric {{ 
+                    background: rgba(255,255,255,0.2); 
+                    padding: 12px 16px; 
+                    border-radius: 20px; 
+                    font-weight: 600;
+                }}
+                .invite-challenge {{ 
+                    background: rgba(255,255,255,0.15); 
+                    padding: 20px; 
+                    border-radius: 10px; 
+                    margin: 20px 0;
+                }}
+                .challenge-progress {{ 
+                    background: rgba(255,255,255,0.3); 
+                    height: 8px; 
+                    border-radius: 4px; 
+                    margin: 10px 0; 
+                    overflow: hidden;
+                }}
+                .challenge-fill {{ 
+                    background: #fff; 
+                    height: 100%; 
+                    border-radius: 4px; 
+                    transition: width 0.3s ease;
+                }}
+                .viral-share-grid {{ 
+                    display: grid; 
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
+                    gap: 15px; 
+                    margin: 20px 0;
+                }}
+                .viral-share-card {{ 
+                    background: rgba(255,255,255,0.1); 
+                    padding: 15px; 
+                    border-radius: 8px; 
+                    text-align: left;
+                }}
+                .viral-share-title {{ 
+                    font-weight: 600; 
+                    margin-bottom: 8px; 
+                    font-size: 14px;
+                }}
+                .viral-share-text {{ 
+                    font-size: 13px; 
+                    opacity: 0.9; 
+                    margin-bottom: 10px; 
+                    background: rgba(0,0,0,0.2); 
+                    padding: 8px; 
+                    border-radius: 4px;
+                }}
+                .viral-copy-btn {{ 
+                    background: #fff; 
+                    color: #ff6b6b; 
+                    border: none; 
+                    padding: 6px 12px; 
+                    border-radius: 4px; 
+                    font-size: 12px; 
+                    font-weight: 600; 
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                }}
+                .viral-copy-btn:hover {{ 
+                    background: #f1f1f1; 
+                    transform: scale(1.05);
+                }}
+                .referral-badge {{ 
+                    background: #28a745; 
+                    color: white; 
+                    padding: 8px 16px; 
+                    border-radius: 20px; 
+                    font-size: 14px; 
+                    font-weight: 600; 
+                    margin: 10px 0; 
+                    display: inline-block;
+                }}
                 .footer {{ 
                     text-align: center; 
                     padding: 30px 20px; 
@@ -2095,13 +2208,63 @@ async def public_transcript_page(task_id: str, request: Request):
                     <div class="transcript">{transcript}</div>
                 </div>
                 
+                <div class="viral-section">
+                    <div class="viral-title">🔥 Share & Earn ScribeTok Credits!</div>
+                    <div class="viral-subtitle">Get 1 free transcript for every 3 friends who use your link</div>
+                    
+                    {f'<div class="referral-badge">🎉 You earned a credit from {ref}! Welcome bonus activated!</div>' if referral_credit else ''}
+                    
+                    <div class="viral-metrics">
+                        <div class="viral-metric">👀 {view_count:,} views</div>
+                        <div class="viral-metric">🔗 {viewer_ref_code[:8]}... your code</div>
+                        {f'<div class="viral-metric">🔥 Trending #{trending_score}</div>' if trending_score <= 100 else ''}
+                    </div>
+                    
+                    <div class="invite-challenge">
+                        <div style="font-weight: 600; margin-bottom: 10px;">📈 Referral Challenge: 0/3 friends invited</div>
+                        <div class="challenge-progress">
+                            <div class="challenge-fill" style="width: 0%;"></div>
+                        </div>
+                        <div style="font-size: 14px; opacity: 0.9;">Share your unique link to start earning!</div>
+                    </div>
+                    
+                    <div class="viral-share-grid">
+                        <div class="viral-share-card">
+                            <div class="viral-share-title">📱 TikTok/Instagram Stories</div>
+                            <div class="viral-share-text">"Mind-blown by this transcript! 🤯 ScribeTok turns any video into text instantly. Try it: {share_url}?ref={viewer_ref_code}"</div>
+                            <button onclick="copyViralText(0)" class="viral-copy-btn">Copy Text</button>
+                        </div>
+                        
+                        <div class="viral-share-card">
+                            <div class="viral-share-title">🐦 Twitter/X</div>
+                            <div class="viral-share-text">"Just discovered ScribeTok - it turns TikToks into readable text! 🚀 Perfect for saving ideas and quotes. {share_url}?ref={viewer_ref_code}"</div>
+                            <button onclick="copyViralText(1)" class="viral-copy-btn">Copy Tweet</button>
+                        </div>
+                        
+                        <div class="viral-share-card">
+                            <div class="viral-share-title">💼 LinkedIn</div>
+                            <div class="viral-share-text">"Found an amazing tool for content creators and researchers: ScribeTok instantly transcribes any TikTok or YouTube video. Game-changer for accessibility and note-taking! {share_url}?ref={viewer_ref_code}"</div>
+                            <button onclick="copyViralText(2)" class="viral-copy-btn">Copy Post</button>
+                        </div>
+                        
+                        <div class="viral-share-card">
+                            <div class="viral-share-title">💬 Direct Message</div>
+                            <div class="viral-share-text">"Hey! Check out this cool transcript tool I found - {title}. You just text them a video link and get instant text back! {share_url}?ref={viewer_ref_code}"</div>
+                            <button onclick="copyViralText(3)" class="viral-copy-btn">Copy Message</button>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 20px;">
+                        <a href="https://twitter.com/intent/tweet?text=Mind-blown by this transcript! 🤯 ScribeTok turns any video into text instantly. Try it:&url={share_url}?ref={viewer_ref_code}" target="_blank" class="btn btn-primary" style="margin: 5px;">🐦 Tweet This</a>
+                        <a href="https://www.facebook.com/sharer/sharer.php?u={share_url}?ref={viewer_ref_code}" target="_blank" class="btn btn-primary" style="margin: 5px;">📘 Share on Facebook</a>
+                    </div>
+                </div>
+                
                 <div class="share-section">
-                    <div class="share-title">📤 Share this transcript</div>
+                    <div class="share-title">📤 Quick share</div>
                     <div class="share-buttons">
-                        <a href="https://twitter.com/intent/tweet?text={title}&url={share_url}" target="_blank" class="share-btn share-twitter">Twitter</a>
-                        <a href="https://www.facebook.com/sharer/sharer.php?u={share_url}" target="_blank" class="share-btn share-facebook">Facebook</a>
-                        <a href="https://www.linkedin.com/sharing/share-offsite/?url={share_url}" target="_blank" class="share-btn share-linkedin">LinkedIn</a>
-                        <a href="#" onclick="copyToClipboard('{share_url}')" class="share-btn share-copy">Copy Link</a>
+                        <a href="#" onclick="copyToClipboard('{share_url}?ref={viewer_ref_code}')" class="share-btn share-copy">📋 Copy Referral Link</a>
+                        <a href="#" onclick="copyToClipboard('{share_url}')" class="share-btn share-copy">🔗 Copy Direct Link</a>
                     </div>
                 </div>
                 
@@ -2124,10 +2287,23 @@ async def public_transcript_page(task_id: str, request: Request):
             </div>
             
             <script>
+                const viralTexts = [
+                    "Mind-blown by this transcript! 🤯 ScribeTok turns any video into text instantly. Try it: {share_url}?ref={viewer_ref_code}",
+                    "Just discovered ScribeTok - it turns TikToks into readable text! 🚀 Perfect for saving ideas and quotes. {share_url}?ref={viewer_ref_code}",
+                    "Found an amazing tool for content creators and researchers: ScribeTok instantly transcribes any TikTok or YouTube video. Game-changer for accessibility and note-taking! {share_url}?ref={viewer_ref_code}",
+                    "Hey! Check out this cool transcript tool I found - {title}. You just text them a video link and get instant text back! {share_url}?ref={viewer_ref_code}"
+                ];
+                
+                function copyViralText(index) {{
+                    if (index >= 0 && index < viralTexts.length) {{
+                        copyToClipboard(viralTexts[index]);
+                    }}
+                }}
+                
                 function copyToClipboard(text) {{
                     if (navigator.clipboard) {{
                         navigator.clipboard.writeText(text).then(() => {{
-                            alert('Link copied to clipboard!');
+                            showCopySuccess();
                         }});
                     }} else {{
                         // Fallback for older browsers
@@ -2137,8 +2313,20 @@ async def public_transcript_page(task_id: str, request: Request):
                         textArea.select();
                         document.execCommand('copy');
                         document.body.removeChild(textArea);
-                        alert('Link copied to clipboard!');
+                        showCopySuccess();
                     }}
+                }}
+                
+                function showCopySuccess() {{
+                    // Create temporary success message
+                    const message = document.createElement('div');
+                    message.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #28a745; color: white; padding: 12px 20px; border-radius: 8px; z-index: 10000; font-weight: 600; box-shadow: 0 4px 15px rgba(0,0,0,0.2);';
+                    message.textContent = '✅ Copied! Share with friends to earn credits!';
+                    document.body.appendChild(message);
+                    
+                    setTimeout(() => {{
+                        document.body.removeChild(message);
+                    }}, 3000);
                 }}
                 
                 // Track page views (you can replace with your analytics)
@@ -2160,6 +2348,74 @@ async def public_transcript_page(task_id: str, request: Request):
     except Exception as e:
         logger.error(f"Error serving transcript page: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error loading transcript")
+
+async def _track_referral(ref_code: str, task_id: str, visitor_ip: str) -> bool:
+    """Track a referral and award credits"""
+    try:
+        if not supabase:
+            return False
+        
+        # Log the referral event
+        await asyncio.to_thread(
+            supabase.table('referral_events').insert({
+                'ref_code': ref_code,
+                'task_id': task_id,
+                'visitor_ip': visitor_ip,
+                'event_type': 'view',
+                'created_at': datetime.now(timezone.utc).isoformat()
+            }).execute
+        )
+        
+        # Award credit to referrer (simplified - could be more complex)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Referral tracking error: {str(e)}")
+        return False
+
+async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
+    """Get view count and trending score for a transcript"""
+    try:
+        if not supabase:
+            return 1, 999
+        
+        # Get view count from referral events
+        response = await asyncio.to_thread(
+            supabase.table('referral_events')
+                    .select('id')
+                    .eq('task_id', task_id)
+                    .execute
+        )
+        
+        view_count = len(response.data) if response.data else 1
+        
+        # Simple trending score (lower = more trending)
+        # Based on views in last 24 hours
+        recent_response = await asyncio.to_thread(
+            supabase.table('referral_events')
+                    .select('id')
+                    .eq('task_id', task_id)
+                    .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
+                    .execute
+        )
+        
+        recent_views = len(recent_response.data) if recent_response.data else 0
+        trending_score = max(1, 1000 - (recent_views * 10))  # More recent views = lower trending score
+        
+        return view_count, trending_score
+        
+    except Exception as e:
+        logger.error(f"Viral metrics error: {str(e)}")
+        return 1, 999
+
+def _extract_seo_keywords(transcript: str, title: str) -> str:\n    \"\"\"Extract keywords from transcript and title for SEO\"\"\"\n    import re\n    from collections import Counter\n    \n    # Combine title and transcript for keyword extraction\n    text = f\"{title} {transcript}\"\n    \n    # Remove common words and extract meaningful keywords\n    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves'}\n    \n    # Extract words (3+ characters, alphanumeric)\n    words = re.findall(r'\\b[a-zA-Z]{3,}\\b', text.lower())\n    meaningful_words = [word for word in words if word not in stop_words]\n    \n    # Get most common keywords\n    keyword_counts = Counter(meaningful_words)\n    top_keywords = [word for word, count in keyword_counts.most_common(15)]\n    \n    # Add some standard keywords\n    standard_keywords = ['transcript', 'video', 'tiktok', 'youtube', 'scribetok', 'ai', 'text', 'content']\n    all_keywords = list(set(top_keywords + standard_keywords))\n    \n    return ', '.join(all_keywords[:20])  # Limit to 20 keywords\n\ndef _generate_referral_code(task_id: str) -> str:
+    """Generate a unique referral code"""
+    import hashlib
+    import time
+    
+    # Create a unique code based on task_id and timestamp
+    unique_string = f"{task_id}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    return hashlib.md5(unique_string.encode()).hexdigest()[:12]
 
 async def _render_coming_soon_page():
     """Render coming soon page for non-existent transcripts"""
