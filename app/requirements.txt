@@ -16,4 +16,5 @@ textblob==0.17.1
 rake-nltk==1.0.6
 langdetect==1.0.9
 opencv-python==4.8.1.78
-matplotlib==3.8.0 
+matplotlib==3.8.0
+twilio>=8.0.0 

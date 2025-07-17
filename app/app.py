@@ -22,8 +22,8 @@ import glob
 from datetime import datetime, timezone
 import uuid
 import tempfile
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Request, Query
-from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Request, Query, Form
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
@@ -47,6 +47,7 @@ try:
     from .database import supabase
     from . import discovery
     from . import transcriber
+    from . import sms
 except ImportError:
     # Fall back to absolute imports (when running directly)
     import sys
@@ -55,6 +56,7 @@ except ImportError:
     import database
     import discovery
     import transcriber
+    import sms
     from database import supabase
 
 # Import tiktok downloader directly
@@ -1560,6 +1562,162 @@ async def _cleanup_stuck_tasks_logic():
     except Exception as e:
         logger.error(f"Error cleaning stuck tasks: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to cleanup stuck tasks")
+
+# ===============================
+# SMS ENDPOINTS
+# ===============================
+
+@app.post("/api/sms/inbound")
+async def handle_inbound_sms(
+    background_tasks: BackgroundTasks,
+    From: str = Form(...),
+    Body: str = Form(...),
+    MessageSid: str = Form(None),
+    To: str = Form(None)
+):
+    """Handle incoming SMS from Twilio webhook"""
+    try:
+        logger.info(f"Received SMS from {From}: {Body[:50]}...")
+        
+        # Process the SMS and get TwiML response
+        twiml_response = await sms.SMSHandler.process_inbound_sms(From, Body)
+        
+        # If this is a video URL, queue transcription in background
+        if sms.SMSHandler.is_video_url(Body):
+            video_url = sms.SMSHandler.extract_video_url(Body)
+            if video_url:
+                # Create transcription task
+                task = await init_task(video_url, From)  # Use phone number as user_id
+                task_id = task['task_id']
+                
+                # Store user phone number for notifications
+                await asyncio.to_thread(
+                    supabase.table('transcriptions')
+                            .update({'user_phone': From})
+                            .eq('task_id', task_id)
+                            .execute
+                )
+                
+                # Queue background processing
+                background_tasks.add_task(
+                    process_transcription_with_sms_notification,
+                    task_id,
+                    video_url,
+                    From
+                )
+                logger.info(f"Queued transcription task {task_id} for SMS user {From}")
+        
+        # Return TwiML response
+        return Response(content=twiml_response, media_type="application/xml")
+        
+    except Exception as e:
+        logger.error(f"Error handling inbound SMS: {str(e)}", exc_info=True)
+        # Return error TwiML
+        error_response = sms.SMSHandler.create_twiml_response(
+            "🚨 Oops! Something went wrong. Please try again or contact support."
+        )
+        return Response(content=error_response, media_type="application/xml")
+
+@app.post("/api/sms/status")
+async def handle_sms_status(
+    request: Request,
+    MessageSid: str = Form(...),
+    MessageStatus: str = Form(...),
+    To: str = Form(None),
+    From: str = Form(None)
+):
+    """Handle SMS delivery status updates from Twilio"""
+    try:
+        logger.info(f"SMS status update - SID: {MessageSid}, Status: {MessageStatus}, To: {To}")
+        
+        # You can store these status updates in your database for analytics
+        # For now, just log them
+        
+        return {"status": "received"}
+        
+    except Exception as e:
+        logger.error(f"Error handling SMS status: {str(e)}", exc_info=True)
+        return {"error": "Failed to process status update"}
+
+@app.post("/api/sms/send")
+async def send_sms(
+    request: Request,
+    api_key: str = Depends(verify_api_key)
+):
+    """Send SMS message (for testing or manual sends)"""
+    try:
+        body = await request.json()
+        to = body.get("to")
+        message = body.get("message")
+        
+        if not to or not message:
+            raise HTTPException(status_code=400, detail="Both 'to' and 'message' are required")
+        
+        success = await sms.SMSHandler.send_sms(to, message)
+        
+        if success:
+            return {"status": "sent", "to": to}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send SMS")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending SMS: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to send SMS")
+
+async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str):
+    """Process transcription and send SMS notification when complete"""
+    try:
+        # Run the normal transcription process
+        await process_transcription_task(task_id, video_url)
+        
+        # Get the completed task details
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+                    .select("task_id, status, title, transcript, error")
+                    .eq('task_id', task_id)
+                    .single()
+                    .execute
+        )
+        
+        if response.data:
+            task_data = response.data
+            
+            if task_data['status'] == 'completed':
+                # Send success notification
+                title = task_data.get('title', 'Video')
+                transcript = task_data.get('transcript', '')
+                
+                # Get first few lines for preview
+                preview_lines = transcript.split('\n')[:3] if transcript else []
+                preview = '\n'.join(preview_lines)
+                
+                await sms.notify_transcript_complete(
+                    phone_number=phone_number,
+                    task_id=task_id,
+                    title=title,
+                    transcript_preview=preview
+                )
+                
+            elif task_data['status'] == 'failed':
+                # Send failure notification
+                error = task_data.get('error', 'Unknown error')
+                await sms.SMSHandler.send_sms(
+                    to=phone_number,
+                    body=f"❌ Sorry, we couldn't transcribe your video.\n\nError: {error}\n\nPlease try a different link or contact support."
+                )
+        
+    except Exception as e:
+        logger.error(f"Error in SMS transcription process: {str(e)}", exc_info=True)
+        # Send error notification
+        try:
+            await sms.SMSHandler.send_sms(
+                to=phone_number,
+                body="❌ Something went wrong with your transcription. Please try again or contact support."
+            )
+        except:
+            pass  # Don't let notification errors crash the process
 
 if __name__ == "__main__":
     # Get port from environment or use default

@@ -1,0 +1,235 @@
+import os
+import re
+import logging
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
+from fastapi import HTTPException
+import asyncio
+
+# Import your existing modules
+try:
+    from .database import supabase
+except ImportError:
+    import database
+    from database import supabase
+
+logger = logging.getLogger(__name__)
+
+# Initialize Twilio client
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "MG1057ede7c24d65c977a1ccec2a62c2f8")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "+17744727423")
+
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    try:
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Twilio client: {str(e)}")
+else:
+    logger.warning("Twilio credentials not found. SMS functionality will be disabled.")
+
+class SMSHandler:
+    """Handles SMS operations for ScribeTok"""
+    
+    @staticmethod
+    def is_video_url(text: str) -> bool:
+        """Check if text contains a TikTok or YouTube URL"""
+        video_patterns = [
+            r'https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/\d+',
+            r'https?://(?:vm\.)?tiktok\.com/\w+',
+            r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+            r'https?://youtu\.be/[\w-]+',
+            r'https?://(?:www\.)?youtube\.com/shorts/[\w-]+',
+        ]
+        
+        for pattern in video_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        return False
+    
+    @staticmethod
+    def extract_video_url(text: str) -> Optional[str]:
+        """Extract the first video URL from text"""
+        video_patterns = [
+            r'(https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/\d+)',
+            r'(https?://(?:vm\.)?tiktok\.com/\w+)',
+            r'(https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+)',
+            r'(https?://youtu\.be/[\w-]+)',
+            r'(https?://(?:www\.)?youtube\.com/shorts/[\w-]+)',
+        ]
+        
+        for pattern in video_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+    
+    @staticmethod
+    async def get_user_transcripts(phone_number: str, limit: int = 5) -> list:
+        """Get recent transcripts for a user"""
+        if not supabase:
+            return []
+        
+        try:
+            # Store and query by phone number in user_sessions table
+            response = await asyncio.to_thread(
+                supabase.table('transcriptions')
+                        .select("task_id, title, video_id, created_at, status")
+                        .eq('user_phone', phone_number)
+                        .eq('status', 'completed')
+                        .order('created_at', desc=True)
+                        .limit(limit)
+                        .execute
+            )
+            
+            return response.data if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching user transcripts: {str(e)}")
+            return []
+    
+    @staticmethod
+    async def send_sms(to: str, body: str, status_callback: Optional[str] = None) -> bool:
+        """Send an SMS message"""
+        if not twilio_client:
+            logger.error("Cannot send SMS: Twilio client not initialized")
+            return False
+        
+        try:
+            message_data = {
+                'to': to,
+                'body': body,
+                'messaging_service_sid': TWILIO_MESSAGING_SERVICE_SID
+            }
+            
+            if status_callback:
+                message_data['status_callback'] = status_callback
+            
+            message = twilio_client.messages.create(**message_data)
+            
+            logger.info(f"SMS sent successfully to {to}, SID: {message.sid}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send SMS to {to}: {str(e)}")
+            return False
+    
+    @staticmethod
+    def create_twiml_response(message: str) -> str:
+        """Create a TwiML response for webhook"""
+        response = MessagingResponse()
+        response.message(message)
+        return str(response)
+    
+    @staticmethod
+    async def handle_help_command(phone_number: str) -> str:
+        """Handle /help command"""
+        return """👋 Welcome to ScribeTok!
+
+📱 Text a TikTok or YouTube link to get an instant transcript.
+
+🗂️ Commands:
+• /vault - View your recent transcripts
+• /summary - Get a summary of your last transcript
+• /help - Show this message
+
+Just paste any video link and we'll transcribe it for you! 🎥✨"""
+    
+    @staticmethod
+    async def handle_vault_command(phone_number: str) -> str:
+        """Handle /vault command"""
+        transcripts = await SMSHandler.get_user_transcripts(phone_number, 5)
+        
+        if not transcripts:
+            return "🗂️ Your vault is empty! Send a video link to create your first transcript."
+        
+        vault_text = "🗂️ Your Recent Transcripts:\n\n"
+        for i, transcript in enumerate(transcripts, 1):
+            title = transcript.get('title', 'Untitled')
+            date = datetime.fromisoformat(transcript['created_at'].replace('Z', '+00:00')).strftime('%b %d')
+            vault_text += f"{i}. {title[:30]}{'...' if len(title) > 30 else ''} ({date})\n"
+        
+        vault_text += f"\n💬 Reply with a number (1-{len(transcripts)}) to get that transcript, or send a new link!"
+        return vault_text
+    
+    @staticmethod
+    async def handle_summary_command(phone_number: str) -> str:
+        """Handle /summary command"""
+        transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
+        
+        if not transcripts:
+            return "📝 No transcripts found to summarize. Send a video link first!"
+        
+        # For now, return a simple response. You can integrate with OpenAI later
+        return f"📝 Summary of '{transcripts[0].get('title', 'your latest video')}':\n\n[Summary feature coming soon! For now, send a new video link to get a transcript.]"
+    
+    @staticmethod
+    async def process_inbound_sms(from_number: str, body: str) -> str:
+        """Process incoming SMS and return TwiML response"""
+        body = body.strip()
+        
+        logger.info(f"Processing SMS from {from_number}: {body[:50]}...")
+        
+        # Handle commands
+        if body.lower() == '/help':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_help_command(from_number))
+        
+        elif body.lower() == '/vault':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_vault_command(from_number))
+        
+        elif body.lower() == '/summary':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_summary_command(from_number))
+        
+        # Check for video URLs
+        elif SMSHandler.is_video_url(body):
+            video_url = SMSHandler.extract_video_url(body)
+            if video_url:
+                # Queue the transcription (this will be handled by your existing backend)
+                response_msg = "🎥 Got your link! We're transcribing now.\nYou'll get your transcript shortly. ⏱️"
+                return SMSHandler.create_twiml_response(response_msg)
+            else:
+                return SMSHandler.create_twiml_response("🤔 I found a video link but couldn't process it. Try copying the full URL!")
+        
+        # Handle vault item selection (numbers 1-5)
+        elif body.isdigit() and 1 <= int(body) <= 5:
+            transcripts = await SMSHandler.get_user_transcripts(from_number, 5)
+            try:
+                index = int(body) - 1
+                if 0 <= index < len(transcripts):
+                    transcript = transcripts[index]
+                    title = transcript.get('title', 'Untitled')
+                    # Return a link to the transcript or abbreviated version
+                    return SMSHandler.create_twiml_response(
+                        f"📄 {title}\n\n[Transcript content will be sent as a follow-up message or link]"
+                    )
+                else:
+                    return SMSHandler.create_twiml_response(f"❌ Please choose a number between 1 and {len(transcripts)}")
+            except:
+                return SMSHandler.create_twiml_response("❌ Invalid selection. Type /vault to see your transcripts again.")
+        
+        # Default response for unrecognized input
+        else:
+            return SMSHandler.create_twiml_response(
+                "🤖 Hi there! Send me a TikTok or YouTube link to get a transcript.\n\nType /help for more options! 📱"
+            )
+
+async def notify_transcript_complete(phone_number: str, task_id: str, title: str, transcript_preview: str = "") -> bool:
+    """Send SMS notification when transcript is complete"""
+    try:
+        # Truncate transcript for SMS
+        preview = transcript_preview[:200] + "..." if len(transcript_preview) > 200 else transcript_preview
+        
+        message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n💬 Reply /vault to see all your transcripts!"
+        
+        return await SMSHandler.send_sms(
+            to=phone_number,
+            body=message,
+            status_callback=f"{os.getenv('BASE_URL', '')}/api/sms/status"
+        )
+    except Exception as e:
+        logger.error(f"Failed to send completion notification: {str(e)}")
+        return False
