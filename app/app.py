@@ -1579,33 +1579,82 @@ async def handle_inbound_sms(
     try:
         logger.info(f"Received SMS from {From}: {Body[:50]}...")
         
+        # Log the message to user_messages table
+        command = None
+        if Body.startswith('/'):
+            command = Body.split()[0].lower()
+        
+        await asyncio.to_thread(
+            supabase.table('user_messages')
+                    .insert({
+                        'from_phone': From,
+                        'message_body': Body,
+                        'command': command,
+                        'response_sent': False
+                    })
+                    .execute
+        )
+        
         # Process the SMS and get TwiML response
         twiml_response = await sms.SMSHandler.process_inbound_sms(From, Body)
         
-        # If this is a video URL, queue transcription in background
+        # If this is a video URL, create transcript job and queue processing
         if sms.SMSHandler.is_video_url(Body):
             video_url = sms.SMSHandler.extract_video_url(Body)
             if video_url:
-                # Create transcription task
-                task = await init_task(video_url, From)  # Use phone number as user_id
-                task_id = task['task_id']
-                
-                # Store user phone number for notifications
-                await asyncio.to_thread(
-                    supabase.table('transcriptions')
-                            .update({'user_phone': From})
-                            .eq('task_id', task_id)
+                # Create transcript job entry
+                job_response = await asyncio.to_thread(
+                    supabase.table('transcript_jobs')
+                            .insert({
+                                'from_phone': From,
+                                'video_url': video_url,
+                                'status': 'queued',
+                                'message_sid': MessageSid
+                            })
                             .execute
                 )
                 
-                # Queue background processing
-                background_tasks.add_task(
-                    process_transcription_with_sms_notification,
-                    task_id,
-                    video_url,
-                    From
-                )
-                logger.info(f"Queued transcription task {task_id} for SMS user {From}")
+                if job_response.data:
+                    job_id = job_response.data[0]['id']
+                    
+                    # Create transcription task
+                    task = await init_task(video_url, From)
+                    task_id = task['task_id']
+                    
+                    # Link the job to the transcription
+                    await asyncio.to_thread(
+                        supabase.table('transcript_jobs')
+                                .update({'transcript_id': task_id})
+                                .eq('id', job_id)
+                                .execute
+                    )
+                    
+                    # Store user phone number for notifications
+                    await asyncio.to_thread(
+                        supabase.table('transcriptions')
+                                .update({'user_phone': From})
+                                .eq('task_id', task_id)
+                                .execute
+                    )
+                    
+                    # Queue background processing
+                    background_tasks.add_task(
+                        process_transcription_with_sms_notification,
+                        task_id,
+                        video_url,
+                        From,
+                        job_id
+                    )
+                    logger.info(f"Queued transcription task {task_id} for SMS user {From}")
+        
+        # Mark message as responded
+        await asyncio.to_thread(
+            supabase.table('user_messages')
+                    .update({'response_sent': True})
+                    .eq('from_phone', From)
+                    .eq('message_body', Body)
+                    .execute
+        )
         
         # Return TwiML response
         return Response(content=twiml_response, media_type="application/xml")
@@ -1666,9 +1715,18 @@ async def send_sms(
         logger.error(f"Error sending SMS: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to send SMS")
 
-async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str):
+async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str, job_id: str = None):
     """Process transcription and send SMS notification when complete"""
     try:
+        # Update job status to processing
+        if job_id:
+            await asyncio.to_thread(
+                supabase.table('transcript_jobs')
+                        .update({'status': 'processing'})
+                        .eq('id', job_id)
+                        .execute
+            )
+        
         # Run the normal transcription process
         await process_transcription_task(task_id, video_url)
         
@@ -1685,39 +1743,216 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
             task_data = response.data
             
             if task_data['status'] == 'completed':
-                # Send success notification
+                # Update job status to completed
+                if job_id:
+                    public_link = f"{os.getenv('BASE_URL', 'https://scribetok.com')}/v/{task_id}"
+                    await asyncio.to_thread(
+                        supabase.table('transcript_jobs')
+                                .update({
+                                    'status': 'completed',
+                                    'public_link': public_link
+                                })
+                                .eq('id', job_id)
+                                .execute
+                    )
+                
+                # Send success notification with enhanced message
                 title = task_data.get('title', 'Video')
                 transcript = task_data.get('transcript', '')
                 
                 # Get first few lines for preview
-                preview_lines = transcript.split('\n')[:3] if transcript else []
-                preview = '\n'.join(preview_lines)
+                preview_lines = []
+                if transcript:
+                    lines = transcript.split('\n')
+                    for line in lines:
+                        if line.strip() and not line.strip().startswith('0'):  # Skip timestamps
+                            preview_lines.append(line.strip())
+                            if len(preview_lines) >= 2:
+                                break
                 
-                await sms.notify_transcript_complete(
-                    phone_number=phone_number,
-                    task_id=task_id,
-                    title=title,
-                    transcript_preview=preview
+                preview = '\n'.join(preview_lines)[:150] + '...' if preview_lines else 'Transcript ready!'
+                
+                # Enhanced SMS with public link
+                public_link = f"{os.getenv('BASE_URL', 'https://scribetok.com')}/v/{task_id}"
+                
+                success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\n💬 Reply /summary for AI summary or /vault for history!"
+                
+                await sms.SMSHandler.send_sms(
+                    to=phone_number,
+                    body=success_message,
+                    status_callback=f"{os.getenv('BASE_URL', '')}/api/sms/status"
                 )
                 
             elif task_data['status'] == 'failed':
+                # Update job status to failed
+                if job_id:
+                    await asyncio.to_thread(
+                        supabase.table('transcript_jobs')
+                                .update({
+                                    'status': 'failed',
+                                    'error': task_data.get('error', 'Unknown error')
+                                })
+                                .eq('id', job_id)
+                                .execute
+                    )
+                
                 # Send failure notification
                 error = task_data.get('error', 'Unknown error')
                 await sms.SMSHandler.send_sms(
                     to=phone_number,
-                    body=f"❌ Sorry, we couldn't transcribe your video.\n\nError: {error}\n\nPlease try a different link or contact support."
+                    body=f"❌ Sorry, we couldn't transcribe your video.\n\nError: {error}\n\nPlease try a different link or text /help for support."
                 )
         
     except Exception as e:
         logger.error(f"Error in SMS transcription process: {str(e)}", exc_info=True)
+        
+        # Update job status to failed
+        if job_id:
+            try:
+                await asyncio.to_thread(
+                    supabase.table('transcript_jobs')
+                            .update({
+                                'status': 'failed',
+                                'error': str(e)
+                            })
+                            .eq('id', job_id)
+                            .execute
+                )
+            except:
+                pass
+        
         # Send error notification
         try:
             await sms.SMSHandler.send_sms(
                 to=phone_number,
-                body="❌ Something went wrong with your transcription. Please try again or contact support."
+                body="❌ Something went wrong with your transcription. Please try again or text /help for support."
             )
         except:
             pass  # Don't let notification errors crash the process
+
+@app.get("/v/{task_id}")
+async def public_transcript_page(task_id: str):
+    """Serve public transcript page"""
+    try:
+        # Get transcript details
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+                    .select("task_id, status, title, transcript, video_id, created_at")
+                    .eq('task_id', task_id)
+                    .single()
+                    .execute
+        )
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        
+        task_data = response.data
+        
+        if task_data['status'] != 'completed':
+            raise HTTPException(status_code=400, detail="Transcript not ready yet")
+        
+        # Simple HTML page for the transcript
+        title = task_data.get('title', 'Video Transcript')
+        transcript = task_data.get('transcript', 'No transcript available')
+        created_at = task_data.get('created_at', '')
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>{title} - ScribeTok</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                       max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
+                .header {{ text-align: center; margin-bottom: 40px; }}
+                .title {{ color: #333; margin-bottom: 10px; }}
+                .meta {{ color: #666; font-size: 14px; }}
+                .transcript {{ background: #f8f9fa; padding: 20px; border-radius: 8px; 
+                              white-space: pre-wrap; border-left: 4px solid #007bff; }}
+                .footer {{ text-align: center; margin-top: 40px; color: #999; font-size: 14px; }}
+                .cta {{ text-align: center; margin: 30px 0; }}
+                .cta a {{ background: #007bff; color: white; padding: 12px 24px; 
+                         text-decoration: none; border-radius: 6px; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1 class="title">{title}</h1>
+                <div class="meta">Created {created_at[:10]} • ScribeTok</div>
+            </div>
+            
+            <div class="transcript">{transcript}</div>
+            
+            <div class="cta">
+                <a href="sms:+17744727423&body=Get%20started">📱 Text +1 (774) 472-7423 to transcribe your videos</a>
+            </div>
+            
+            <div class="footer">
+                Powered by <strong>ScribeTok</strong> • AI Video Transcription via SMS
+            </div>
+        </body>
+        </html>
+        """
+        
+        return Response(content=html_content, media_type="text/html")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving transcript page: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error loading transcript")
+
+@app.get("/api/analytics/sms")
+async def sms_analytics(api_key: str = Depends(verify_api_key)):
+    """Get SMS usage analytics"""
+    try:
+        # Get transcript jobs stats
+        jobs_response = await asyncio.to_thread(
+            supabase.table('transcript_jobs')
+                    .select("status, created_at, from_phone")
+                    .execute
+        )
+        
+        # Get user messages stats
+        messages_response = await asyncio.to_thread(
+            supabase.table('user_messages')
+                    .select("command, created_at, from_phone")
+                    .execute
+        )
+        
+        jobs_data = jobs_response.data if jobs_response.data else []
+        messages_data = messages_response.data if messages_response.data else []
+        
+        # Calculate stats
+        total_jobs = len(jobs_data)
+        completed_jobs = len([j for j in jobs_data if j['status'] == 'completed'])
+        failed_jobs = len([j for j in jobs_data if j['status'] == 'failed'])
+        unique_users = len(set([j['from_phone'] for j in jobs_data]))
+        
+        command_stats = {}
+        for msg in messages_data:
+            cmd = msg.get('command', 'unknown')
+            command_stats[cmd] = command_stats.get(cmd, 0) + 1
+        
+        return {
+            "jobs": {
+                "total": total_jobs,
+                "completed": completed_jobs,
+                "failed": failed_jobs,
+                "success_rate": round((completed_jobs / total_jobs * 100) if total_jobs > 0 else 0, 2)
+            },
+            "users": {
+                "unique_users": unique_users,
+                "total_messages": len(messages_data)
+            },
+            "commands": command_stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error retrieving analytics")
 
 if __name__ == "__main__":
     # Get port from environment or use default

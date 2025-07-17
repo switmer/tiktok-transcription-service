@@ -76,11 +76,11 @@ class SMSHandler:
             return []
         
         try:
-            # Store and query by phone number in user_sessions table
+            # Query transcript_jobs with linked transcriptions
             response = await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .select("task_id, title, video_id, created_at, status")
-                        .eq('user_phone', phone_number)
+                supabase.table('transcript_jobs')
+                        .select("id, video_url, status, created_at, transcriptions!transcript_jobs_transcript_id_fkey(title, transcript)")
+                        .eq('from_phone', phone_number)
                         .eq('status', 'completed')
                         .order('created_at', desc=True)
                         .limit(limit)
@@ -158,14 +158,66 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
     
     @staticmethod
     async def handle_summary_command(phone_number: str) -> str:
-        """Handle /summary command"""
+        """Handle /summary command with Claude AI"""
         transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
         
         if not transcripts:
             return "📝 No transcripts found to summarize. Send a video link first!"
         
-        # For now, return a simple response. You can integrate with OpenAI later
-        return f"📝 Summary of '{transcripts[0].get('title', 'your latest video')}':\n\n[Summary feature coming soon! For now, send a new video link to get a transcript.]"
+        transcript_data = transcripts[0]
+        transcript_text = transcript_data.get('transcriptions', {}).get('transcript', '') if transcript_data.get('transcriptions') else ''
+        
+        if not transcript_text:
+            return "📝 Transcript not ready yet or no content found. Try again in a moment!"
+        
+        try:
+            # Generate summary using Claude prompt
+            summary = await SMSHandler.generate_summary(transcript_text)
+            title = transcript_data.get('transcriptions', {}).get('title', 'Video') if transcript_data.get('transcriptions') else 'Video'
+            
+            return f"📝 Summary of '{title}':\n\n{summary}"
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {str(e)}")
+            return "📝 Sorry, couldn't generate summary right now. Try again later!"
+    
+    @staticmethod
+    async def generate_summary(transcript_text: str) -> str:
+        """Generate summary using Claude/OpenAI"""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            prompt = f"""You are ScribeTok, a smart summarizer for short-form video transcripts.
+
+Here is a transcript of a TikTok/YouTube video. Your job is to:
+1. Summarize the key point in 1-2 short sentences (max 100 words)
+2. Highlight any punchy quotes or phrases that would make a great tweet
+3. Keep it conversational and engaging
+
+Transcript:
+\"\"\"
+{transcript_text[:2000]}  # Limit to avoid token limits
+\"\"\"
+
+Respond in this format:
+Summary: [your summary]
+Quote: "[best quote from the video]" """
+
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.7
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error calling OpenAI: {str(e)}")
+            # Fallback to simple truncation
+            words = transcript_text.split()[:50]
+            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 50 else ''}"
     
     @staticmethod
     async def process_inbound_sms(from_number: str, body: str) -> str:
