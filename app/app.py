@@ -1954,6 +1954,61 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
         logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving analytics")
 
+@app.post("/api/webhook/supabase")
+async def handle_supabase_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks
+):
+    """Handle webhook from Supabase Edge Function to start transcription"""
+    try:
+        body = await request.json()
+        job_id = body.get('job_id')
+        from_phone = body.get('from_phone')
+        video_url = body.get('video_url')
+        action = body.get('task_action')
+        
+        logger.info(f"Received Supabase webhook: {action} for job {job_id}")
+        
+        if action == 'start_transcription' and job_id and from_phone and video_url:
+            # Create transcription task
+            task = await init_task(video_url, from_phone)
+            task_id = task['task_id']
+            
+            # Update the transcript job with the transcription task ID
+            await asyncio.to_thread(
+                supabase.table('transcript_jobs')
+                        .update({'transcript_id': task_id})
+                        .eq('id', job_id)
+                        .execute
+            )
+            
+            # Store user phone number for notifications
+            await asyncio.to_thread(
+                supabase.table('transcriptions')
+                        .update({'user_phone': from_phone})
+                        .eq('task_id', task_id)
+                        .execute
+            )
+            
+            # Queue background processing
+            background_tasks.add_task(
+                process_transcription_with_sms_notification,
+                task_id,
+                video_url,
+                from_phone,
+                job_id
+            )
+            
+            logger.info(f"Started transcription {task_id} for Supabase job {job_id}")
+            
+            return {"status": "success", "task_id": task_id, "job_id": job_id}
+        
+        return {"status": "ignored", "reason": "Invalid action or missing data"}
+        
+    except Exception as e:
+        logger.error(f"Error handling Supabase webhook: {str(e)}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     # Get port from environment or use default
     port = int(os.environ.get("PORT", 8000))
