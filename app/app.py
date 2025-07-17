@@ -1831,67 +1831,324 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
             pass  # Don't let notification errors crash the process
 
 @app.get("/v/{task_id}")
-async def public_transcript_page(task_id: str):
-    """Serve public transcript page"""
+async def public_transcript_page(task_id: str, request: Request):
+    """Serve viral-optimized public transcript page"""
     try:
         # Get transcript details
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
-                    .select("task_id, status, title, transcript, video_id, created_at")
+                    .select("task_id, status, title, transcript, video_id, created_at, thumbnail_url, user_phone")
                     .eq('task_id', task_id)
                     .single()
                     .execute
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="Transcript not found")
+            # Show coming soon page for non-existent transcripts
+            return await _render_coming_soon_page()
         
         task_data = response.data
         
         if task_data['status'] != 'completed':
-            raise HTTPException(status_code=400, detail="Transcript not ready yet")
+            # Show processing page
+            return await _render_processing_page(task_data.get('title', 'Video'))
         
-        # Simple HTML page for the transcript
+        # Extract data
         title = task_data.get('title', 'Video Transcript')
         transcript = task_data.get('transcript', 'No transcript available')
         created_at = task_data.get('created_at', '')
+        thumbnail_url = task_data.get('thumbnail_url', '')
+        video_id = task_data.get('video_id', '')
+        
+        # Generate summary for social sharing
+        try:
+            from .sms import SMSHandler
+            summary = await SMSHandler.generate_summary(transcript[:500])
+            # Extract just the summary text for meta description
+            summary_text = summary.split('Summary: ')[1].split('\n')[0] if 'Summary: ' in summary else transcript[:150]
+        except:
+            summary_text = transcript[:150] + '...' if len(transcript) > 150 else transcript
+            summary = f"Summary: {summary_text}"
+        
+        # Format date
+        formatted_date = datetime.fromisoformat(created_at.replace('Z', '+00:00')).strftime('%B %d, %Y') if created_at else ''
+        
+        # Get word count and reading time
+        word_count = len(transcript.split())
+        reading_time = max(1, word_count // 200)  # ~200 words per minute
+        
+        # Generate share URL
+        share_url = f"{request.base_url}v/{task_id}"
         
         html_content = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
-            <title>{title} - ScribeTok</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            
+            <!-- Primary Meta Tags -->
+            <title>{title} - ScribeTok Transcript</title>
+            <meta name="title" content="{title} - ScribeTok Transcript">
+            <meta name="description" content="{summary_text}">
+            
+            <!-- Open Graph / Facebook -->
+            <meta property="og:type" content="article">
+            <meta property="og:url" content="{share_url}">
+            <meta property="og:title" content="{title}">
+            <meta property="og:description" content="{summary_text}">
+            <meta property="og:image" content="{thumbnail_url or 'https://scribetok.com/og-image.jpg'}">
+            
+            <!-- Twitter -->
+            <meta property="twitter:card" content="summary_large_image">
+            <meta property="twitter:url" content="{share_url}">
+            <meta property="twitter:title" content="{title}">
+            <meta property="twitter:description" content="{summary_text}">
+            <meta property="twitter:image" content="{thumbnail_url or 'https://scribetok.com/og-image.jpg'}">
+            
+            <!-- Favicon -->
+            <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>">
+            
             <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-                       max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-                .header {{ text-align: center; margin-bottom: 40px; }}
-                .title {{ color: #333; margin-bottom: 10px; }}
-                .meta {{ color: #666; font-size: 14px; }}
-                .transcript {{ background: #f8f9fa; padding: 20px; border-radius: 8px; 
-                              white-space: pre-wrap; border-left: 4px solid #007bff; }}
-                .footer {{ text-align: center; margin-top: 40px; color: #999; font-size: 14px; }}
-                .cta {{ text-align: center; margin: 30px 0; }}
-                .cta a {{ background: #007bff; color: white; padding: 12px 24px; 
-                         text-decoration: none; border-radius: 6px; font-weight: bold; }}
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{ 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
+                    line-height: 1.6; 
+                    color: #333;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                }}
+                .container {{ 
+                    max-width: 800px; 
+                    margin: 0 auto; 
+                    background: white;
+                    min-height: 100vh;
+                    box-shadow: 0 0 30px rgba(0,0,0,0.1);
+                }}
+                .header {{ 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white; 
+                    padding: 40px 20px; 
+                    text-align: center; 
+                }}
+                .header h1 {{ 
+                    font-size: 2.2em; 
+                    margin-bottom: 10px; 
+                    font-weight: 700;
+                    line-height: 1.2;
+                }}
+                .meta {{ 
+                    opacity: 0.9; 
+                    font-size: 16px; 
+                    margin-top: 15px;
+                }}
+                .stats {{ 
+                    display: flex; 
+                    justify-content: center; 
+                    gap: 20px; 
+                    margin-top: 20px; 
+                    font-size: 14px;
+                }}
+                .stat {{ 
+                    background: rgba(255,255,255,0.2); 
+                    padding: 8px 16px; 
+                    border-radius: 20px; 
+                }}
+                .content {{ padding: 40px 20px; }}
+                .summary-box {{ 
+                    background: #f8f9fa; 
+                    border-left: 4px solid #667eea; 
+                    padding: 20px; 
+                    margin-bottom: 30px; 
+                    border-radius: 8px;
+                }}
+                .summary-title {{ 
+                    font-weight: 600; 
+                    color: #667eea; 
+                    margin-bottom: 10px; 
+                    font-size: 1.1em;
+                }}
+                .transcript {{ 
+                    background: #fff; 
+                    padding: 30px; 
+                    border-radius: 12px; 
+                    border: 1px solid #e1e5e9;
+                    white-space: pre-wrap; 
+                    font-size: 16px;
+                    line-height: 1.7;
+                }}
+                .cta-section {{ 
+                    background: #f8f9fa; 
+                    padding: 40px 20px; 
+                    text-align: center; 
+                    border-top: 1px solid #e1e5e9;
+                }}
+                .cta-title {{ 
+                    font-size: 1.5em; 
+                    margin-bottom: 15px; 
+                    color: #333;
+                }}
+                .cta-subtitle {{ 
+                    color: #666; 
+                    margin-bottom: 30px; 
+                    font-size: 18px;
+                }}
+                .cta-buttons {{ 
+                    display: flex; 
+                    flex-direction: column; 
+                    align-items: center; 
+                    gap: 15px;
+                }}
+                .btn {{ 
+                    display: inline-block; 
+                    padding: 15px 30px; 
+                    border-radius: 8px; 
+                    text-decoration: none; 
+                    font-weight: 600; 
+                    font-size: 16px;
+                    transition: all 0.3s ease;
+                    min-width: 280px;
+                    text-align: center;
+                }}
+                .btn-primary {{ 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    color: white; 
+                }}
+                .btn-primary:hover {{ 
+                    transform: translateY(-2px); 
+                    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+                }}
+                .btn-secondary {{ 
+                    background: white; 
+                    color: #667eea; 
+                    border: 2px solid #667eea;
+                }}
+                .btn-secondary:hover {{ 
+                    background: #667eea; 
+                    color: white;
+                }}
+                .share-section {{ 
+                    padding: 20px; 
+                    text-align: center; 
+                    background: white;
+                }}
+                .share-title {{ 
+                    margin-bottom: 15px; 
+                    color: #666;
+                }}
+                .share-buttons {{ 
+                    display: flex; 
+                    justify-content: center; 
+                    gap: 10px; 
+                    flex-wrap: wrap;
+                }}
+                .share-btn {{ 
+                    padding: 10px 20px; 
+                    border-radius: 25px; 
+                    text-decoration: none; 
+                    color: white; 
+                    font-size: 14px; 
+                    font-weight: 500;
+                    transition: transform 0.2s ease;
+                }}
+                .share-btn:hover {{ transform: scale(1.05); }}
+                .share-twitter {{ background: #1da1f2; }}
+                .share-facebook {{ background: #4267b2; }}
+                .share-linkedin {{ background: #0077b5; }}
+                .share-copy {{ background: #6c757d; }}
+                .footer {{ 
+                    text-align: center; 
+                    padding: 30px 20px; 
+                    color: #666; 
+                    background: #f8f9fa; 
+                    border-top: 1px solid #e1e5e9;
+                }}
+                @media (max-width: 600px) {{
+                    .header {{ padding: 30px 15px; }}
+                    .header h1 {{ font-size: 1.8em; }}
+                    .content {{ padding: 30px 15px; }}
+                    .stats {{ flex-direction: column; align-items: center; }}
+                    .cta-buttons {{ width: 100%; }}
+                    .btn {{ min-width: auto; width: 100%; max-width: 300px; }}
+                    .share-buttons {{ justify-content: center; }}
+                }}
             </style>
         </head>
         <body>
-            <div class="header">
-                <h1 class="title">{title}</h1>
-                <div class="meta">Created {created_at[:10]} • ScribeTok</div>
+            <div class="container">
+                <div class="header">
+                    <h1>{title}</h1>
+                    <div class="meta">📱 Transcribed by ScribeTok • {formatted_date}</div>
+                    <div class="stats">
+                        <div class="stat">📊 {word_count} words</div>
+                        <div class="stat">⏱️ {reading_time} min read</div>
+                        <div class="stat">🤖 AI-powered</div>
+                    </div>
+                </div>
+                
+                <div class="content">
+                    <div class="summary-box">
+                        <div class="summary-title">🧠 AI Summary</div>
+                        <div>{summary.replace('Summary: ', '').replace('Quote: ', '💬 ')}</div>
+                    </div>
+                    
+                    <div class="transcript">{transcript}</div>
+                </div>
+                
+                <div class="share-section">
+                    <div class="share-title">📤 Share this transcript</div>
+                    <div class="share-buttons">
+                        <a href="https://twitter.com/intent/tweet?text={title}&url={share_url}" target="_blank" class="share-btn share-twitter">Twitter</a>
+                        <a href="https://www.facebook.com/sharer/sharer.php?u={share_url}" target="_blank" class="share-btn share-facebook">Facebook</a>
+                        <a href="https://www.linkedin.com/sharing/share-offsite/?url={share_url}" target="_blank" class="share-btn share-linkedin">LinkedIn</a>
+                        <a href="#" onclick="copyToClipboard('{share_url}')" class="share-btn share-copy">Copy Link</a>
+                    </div>
+                </div>
+                
+                <div class="cta-section">
+                    <div class="cta-title">🚀 Want instant transcripts for your videos?</div>
+                    <div class="cta-subtitle">Text any TikTok or YouTube link and get an AI transcript in seconds</div>
+                    <div class="cta-buttons">
+                        <a href="sms:+17744727423&body=Hi ScribeTok! Send me a transcript" class="btn btn-primary">📱 Text +1 (774) 472-7423</a>
+                        <a href="https://scribetok.com" class="btn btn-secondary">🌐 Learn More</a>
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <div>Powered by <strong>ScribeTok</strong> • AI Video Transcription via SMS</div>
+                    <div style="margin-top: 10px; font-size: 14px;">
+                        <a href="https://scribetok.com/privacy" style="color: #667eea; text-decoration: none;">Privacy</a> • 
+                        <a href="https://scribetok.com/terms" style="color: #667eea; text-decoration: none;">Terms</a>
+                    </div>
+                </div>
             </div>
             
-            <div class="transcript">{transcript}</div>
-            
-            <div class="cta">
-                <a href="sms:+17744727423&body=Get%20started">📱 Text +1 (774) 472-7423 to transcribe your videos</a>
-            </div>
-            
-            <div class="footer">
-                Powered by <strong>ScribeTok</strong> • AI Video Transcription via SMS
-            </div>
+            <script>
+                function copyToClipboard(text) {{
+                    if (navigator.clipboard) {{
+                        navigator.clipboard.writeText(text).then(() => {{
+                            alert('Link copied to clipboard!');
+                        }});
+                    }} else {{
+                        // Fallback for older browsers
+                        const textArea = document.createElement('textarea');
+                        textArea.value = text;
+                        document.body.appendChild(textArea);
+                        textArea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textArea);
+                        alert('Link copied to clipboard!');
+                    }}
+                }}
+                
+                // Track page views (you can replace with your analytics)
+                if (typeof gtag !== 'undefined') {{
+                    gtag('event', 'page_view', {{
+                        'page_title': '{title}',
+                        'page_location': window.location.href
+                    }});
+                }}
+            </script>
         </body>
         </html>
         """
@@ -1903,6 +2160,71 @@ async def public_transcript_page(task_id: str):
     except Exception as e:
         logger.error(f"Error serving transcript page: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error loading transcript")
+
+async def _render_coming_soon_page():
+    """Render coming soon page for non-existent transcripts"""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Transcript Not Found - ScribeTok</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                   text-align: center; padding: 50px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                   min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; }
+            .container { background: white; padding: 40px; border-radius: 12px; max-width: 500px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+            h1 { color: #333; margin-bottom: 20px; }
+            p { color: #666; margin-bottom: 30px; font-size: 18px; }
+            .btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                   color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: 600; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔍 Transcript Not Found</h1>
+            <p>This transcript doesn't exist yet, but you can create one!</p>
+            <a href="sms:+17744727423&body=Hi ScribeTok!" class="btn">📱 Text +1 (774) 472-7423 to get started</a>
+        </div>
+    </body>
+    </html>
+    """
+    return Response(content=html_content, media_type="text/html")
+
+async def _render_processing_page(title: str):
+    """Render processing page for incomplete transcripts"""
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Processing... - ScribeTok</title>
+        <meta http-equiv="refresh" content="30">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                   text-align: center; padding: 50px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                   min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; }}
+            .container {{ background: white; padding: 40px; border-radius: 12px; max-width: 500px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }}
+            .spinner {{ width: 50px; height: 50px; border: 4px solid #f3f3f3; border-top: 4px solid #667eea; 
+                       border-radius: 50%; animation: spin 1s linear infinite; margin: 20px auto; }}
+            @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+            h1 {{ color: #333; margin-bottom: 20px; }}
+            p {{ color: #666; margin-bottom: 30px; font-size: 18px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="spinner"></div>
+            <h1>🎥 Processing "{title}"</h1>
+            <p>Your transcript is being generated. This page will refresh automatically when it's ready!</p>
+            <p style="font-size: 14px; color: #999;">Usually takes 30-60 seconds</p>
+        </div>
+    </body>
+    </html>
+    """
+    return Response(content=html_content, media_type="text/html")
 
 @app.get("/api/analytics/sms")
 async def sms_analytics(api_key: str = Depends(verify_api_key)):

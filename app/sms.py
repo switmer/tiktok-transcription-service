@@ -141,20 +141,64 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
     
     @staticmethod
     async def handle_vault_command(phone_number: str) -> str:
-        """Handle /vault command"""
-        transcripts = await SMSHandler.get_user_transcripts(phone_number, 5)
-        
-        if not transcripts:
-            return "🗂️ Your vault is empty! Send a video link to create your first transcript."
-        
-        vault_text = "🗂️ Your Recent Transcripts:\n\n"
-        for i, transcript in enumerate(transcripts, 1):
-            title = transcript.get('title', 'Untitled')
-            date = datetime.fromisoformat(transcript['created_at'].replace('Z', '+00:00')).strftime('%b %d')
-            vault_text += f"{i}. {title[:30]}{'...' if len(title) > 30 else ''} ({date})\n"
-        
-        vault_text += f"\n💬 Reply with a number (1-{len(transcripts)}) to get that transcript, or send a new link!"
-        return vault_text
+        """Handle /vault command with enhanced public links"""
+        try:
+            # Get completed transcript jobs with links
+            if not supabase:
+                return "🗂️ Vault temporarily unavailable. Please try again later!"
+            
+            response = await asyncio.to_thread(
+                supabase.table('transcript_jobs')
+                        .select("""
+                            id, 
+                            video_url, 
+                            status, 
+                            created_at,
+                            public_link,
+                            transcriptions!transcript_jobs_transcript_id_fkey(title, task_id)
+                        """)
+                        .eq('from_phone', phone_number)
+                        .eq('status', 'completed')
+                        .order('created_at', desc=True)
+                        .limit(5)
+                        .execute
+            )
+            
+            transcripts = response.data if response.data else []
+            
+            if not transcripts:
+                return "🗂️ Your vault is empty! Send a video link to create your first transcript."
+            
+            vault_text = "🗂️ Your Recent Transcripts:\n\n"
+            
+            for i, transcript in enumerate(transcripts, 1):
+                # Get transcript details
+                transcription_data = transcript.get('transcriptions')
+                title = transcription_data.get('title', 'Untitled') if transcription_data else 'Untitled'
+                task_id = transcription_data.get('task_id') if transcription_data else None
+                
+                # Format date
+                created_date = datetime.fromisoformat(transcript['created_at'].replace('Z', '+00:00'))
+                date_str = created_date.strftime('%b %d')
+                
+                # Create public link
+                base_url = os.getenv('BASE_URL', 'https://scribetok.com')
+                public_link = transcript.get('public_link') or f"{base_url}/v/{task_id}" if task_id else None
+                
+                # Format title (keep it short for SMS)
+                display_title = title[:25] + '...' if len(title) > 25 else title
+                
+                vault_text += f"{i}. {display_title} ({date_str})\n"
+                if public_link:
+                    vault_text += f"   🔗 {public_link}\n"
+                vault_text += "\n"
+            
+            vault_text += f"💬 Reply with a number (1-{len(transcripts)}) for details, /summary for AI analysis, or send a new link!"
+            return vault_text
+            
+        except Exception as e:
+            logger.error(f"Error in vault command: {str(e)}")
+            return "🗂️ Sorry, couldn't load your vault right now. Please try again later!"
     
     @staticmethod
     async def handle_summary_command(phone_number: str) -> str:
@@ -183,10 +227,92 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
     
     @staticmethod
     async def generate_summary(transcript_text: str) -> str:
-        """Generate summary using Claude/OpenAI"""
+        """Generate summary using Claude API (preferred) with OpenAI fallback"""
+        try:
+            # Try Claude first (Anthropic API)
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                return await SMSHandler._generate_claude_summary(transcript_text, anthropic_key)
+            
+            # Fallback to OpenAI
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if openai_key:
+                return await SMSHandler._generate_openai_summary(transcript_text, openai_key)
+            
+            # Final fallback to simple truncation
+            logger.warning("No AI API keys found, using simple summary")
+            words = transcript_text.split()[:30]
+            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 30 else ''}"
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {str(e)}")
+            words = transcript_text.split()[:30]
+            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 30 else ''}"
+    
+    @staticmethod
+    async def _generate_claude_summary(transcript_text: str, api_key: str) -> str:
+        """Generate summary using Claude API"""
+        try:
+            import httpx
+            
+            # Claude API endpoint
+            url = "https://api.anthropic.com/v1/messages"
+            
+            headers = {
+                "x-api-key": api_key,
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+            
+            # ScribeTok Claude prompt optimized for viral content
+            prompt = f"""You are ScribeTok, a smart AI assistant that summarizes short-form video transcripts for creators, writers, and busy professionals.
+
+Given this transcript of a TikTok or YouTube video, your job is to:
+
+1. Write a short, bold summary of the main idea in 1-2 sentences.
+2. Extract one or two punchy, tweet-worthy quotes or lines from the transcript.
+3. Be concise, specific, and energetic—sound like a great curator, not a dry robot.
+4. Avoid referencing "TikTok" or "YouTube" directly; focus on the content/message.
+
+Format your response exactly like this:
+
+Summary: <your summary here>
+
+Quote: "<memorable quote or phrase from transcript>"
+
+Transcript:
+\"\"\"
+{transcript_text[:1500]}
+\"\"\""""
+
+            data = {
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 300,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                
+                result = response.json()
+                return result["content"][0]["text"].strip()
+                
+        except Exception as e:
+            logger.error(f"Claude API error: {str(e)}")
+            raise e
+    
+    @staticmethod
+    async def _generate_openai_summary(transcript_text: str, api_key: str) -> str:
+        """Generate summary using OpenAI API"""
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            client = OpenAI(api_key=api_key)
             
             prompt = f"""You are ScribeTok, a smart summarizer for short-form video transcripts.
 
@@ -197,7 +323,7 @@ Here is a transcript of a TikTok/YouTube video. Your job is to:
 
 Transcript:
 \"\"\"
-{transcript_text[:2000]}  # Limit to avoid token limits
+{transcript_text[:2000]}
 \"\"\"
 
 Respond in this format:
@@ -214,10 +340,8 @@ Quote: "[best quote from the video]" """
             return response.choices[0].message.content.strip()
             
         except Exception as e:
-            logger.error(f"Error calling OpenAI: {str(e)}")
-            # Fallback to simple truncation
-            words = transcript_text.split()[:50]
-            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 50 else ''}"
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise e
     
     @staticmethod
     async def process_inbound_sms(from_number: str, body: str) -> str:
