@@ -1892,7 +1892,45 @@ async def public_transcript_page(task_id: str, request: Request, ref: Optional[s
         view_count, trending_score = await _get_viral_metrics(task_id)
         
         # Generate unique referral code for this viewer
-        viewer_ref_code = _generate_referral_code(task_id)\n        \n        # Generate SEO-optimized content\n        iso_date = datetime.fromisoformat(created_at.replace('Z', '+00:00')).isoformat() if created_at else ''\n        seo_title = f\"{title[:50]}{'...' if len(title) > 50 else ''} - Transcript | ScribeTok\"\n        seo_description = f\"Read the full transcript of '{title}'. {summary_text[:120]}{'...' if len(summary_text) > 120 else ''} Transcribed by ScribeTok's AI.\"\n        seo_keywords = _extract_seo_keywords(transcript, title)\n        \n        # Create structured data for search engines\n        structured_data = json.dumps({\n            \"@context\": \"https://schema.org\",\n            \"@type\": \"Article\",\n            \"headline\": title,\n            \"description\": summary_text,\n            \"image\": thumbnail_url or 'https://scribetok.com/og-image.jpg',\n            \"author\": {\n                \"@type\": \"Organization\",\n                \"name\": \"ScribeTok\",\n                \"url\": \"https://scribetok.com\"\n            },\n            \"publisher\": {\n                \"@type\": \"Organization\",\n                \"name\": \"ScribeTok\",\n                \"logo\": {\n                    \"@type\": \"ImageObject\",\n                    \"url\": \"https://scribetok.com/logo.png\"\n                }\n            },\n            \"datePublished\": iso_date,\n            \"dateModified\": iso_date,\n            \"wordCount\": word_count,\n            \"articleBody\": transcript[:1000] + '...' if len(transcript) > 1000 else transcript,\n            \"url\": share_url,\n            \"mainEntityOfPage\": {\n                \"@type\": \"WebPage\",\n                \"@id\": share_url\n            },\n            \"keywords\": seo_keywords\n        })
+        viewer_ref_code = _generate_referral_code(task_id)
+        
+        # Generate SEO-optimized content
+        iso_date = datetime.fromisoformat(created_at.replace('Z', '+00:00')).isoformat() if created_at else ''
+        seo_title = f"{title[:50]}{'...' if len(title) > 50 else ''} - Transcript | ScribeTok"
+        seo_description = f"Read the full transcript of '{title}'. {summary_text[:120]}{'...' if len(summary_text) > 120 else ''} Transcribed by ScribeTok's AI."
+        seo_keywords = _extract_seo_keywords(transcript, title)
+        
+        # Create structured data for search engines
+        structured_data = json.dumps({
+            "@context": "https://schema.org",
+            "@type": "Article",
+            "headline": title,
+            "description": summary_text,
+            "image": thumbnail_url or 'https://scribetok.com/og-image.jpg',
+            "author": {
+                "@type": "Organization",
+                "name": "ScribeTok",
+                "url": "https://scribetok.com"
+            },
+            "publisher": {
+                "@type": "Organization",
+                "name": "ScribeTok",
+                "logo": {
+                    "@type": "ImageObject",
+                    "url": "https://scribetok.com/logo.png"
+                }
+            },
+            "datePublished": iso_date,
+            "dateModified": iso_date,
+            "wordCount": word_count,
+            "articleBody": transcript[:1000] + '...' if len(transcript) > 1000 else transcript,
+            "url": share_url,
+            "mainEntityOfPage": {
+                "@type": "WebPage",
+                "@id": share_url
+            },
+            "keywords": seo_keywords
+        })
         
         html_content = f"""
         <!DOCTYPE html>
