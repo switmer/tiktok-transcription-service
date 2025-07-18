@@ -1528,6 +1528,61 @@ async def public_cleanup_stuck_tasks():
     """Mark long-pending tasks as failed (public endpoint)"""
     return await _cleanup_stuck_tasks_logic()
 
+@app.post("/api/reprocess-sms-jobs")
+async def reprocess_sms_jobs(background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
+    """Reprocess stuck SMS transcription jobs (requires API key)"""
+    return await _reprocess_sms_jobs_logic(background_tasks)
+
+@app.post("/api/public/reprocess-sms-jobs")
+async def public_reprocess_sms_jobs(background_tasks: BackgroundTasks):
+    """Reprocess stuck SMS transcription jobs (public endpoint)"""
+    return await _reprocess_sms_jobs_logic(background_tasks)
+
+async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
+    """Find and reprocess stuck SMS jobs"""
+    if supabase is None:
+        logger.error("Cannot reprocess SMS jobs: Supabase client not initialized")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+    
+    try:
+        # Find pending SMS jobs
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+            .select("task_id, url, tags")
+            .eq('status', 'pending')
+            .execute
+        )
+        
+        reprocessed_count = 0
+        if response.data:
+            for task in response.data:
+                # Check if it's an SMS job
+                tags = task.get('tags', [])
+                if isinstance(tags, list) and 'sms-inbound' in tags:
+                    task_id = task['task_id']
+                    video_url = task['url']
+                    
+                    # Queue for reprocessing
+                    background_tasks.add_task(
+                        process_transcription_task,
+                        task_id,
+                        video_url,
+                        None,  # callback_url
+                        None   # proxy
+                    )
+                    reprocessed_count += 1
+                    logger.info(f"Requeued SMS job {task_id} for processing")
+        
+        return {
+            "status": "success", 
+            "message": f"Requeued {reprocessed_count} SMS jobs for processing",
+            "reprocessed_count": reprocessed_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Error reprocessing SMS jobs: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to reprocess SMS jobs: {str(e)}")
+
 async def _cleanup_stuck_tasks_logic():
     """Shared cleanup logic"""
     if supabase is None:
