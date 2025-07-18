@@ -3,8 +3,34 @@ import re
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from twilio.rest import Client
-from twilio.twiml.messaging_response import MessagingResponse
+
+# Conditional Twilio import with fallback
+try:
+    from twilio.rest import Client
+    from twilio.twiml.messaging_response import MessagingResponse
+    TWILIO_AVAILABLE = True
+except ImportError:
+    # Mock classes for when Twilio is not available
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        @property
+        def messages(self):
+            return type('MockMessages', (), {
+                'create': lambda **kwargs: type('MockMessage', (), {'sid': 'mock_sid'})()
+            })()
+    
+    class MessagingResponse:
+        def __init__(self):
+            self._message = None
+        def message(self, text):
+            self._message = text
+        def __str__(self):
+            return f'<Response><Message>{self._message}</Message></Response>'
+    
+    TWILIO_AVAILABLE = False
+    print("Warning: Twilio not available, using mock classes")
+
 from fastapi import HTTPException
 import asyncio
 
@@ -24,14 +50,14 @@ TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "MG1057
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "+17744727423")
 
 twilio_client = None
-if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_AVAILABLE:
     try:
         twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         logger.info("Twilio client initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize Twilio client: {str(e)}")
 else:
-    logger.warning("Twilio credentials not found. SMS functionality will be disabled.")
+    logger.warning("Twilio credentials not found or Twilio not available. SMS functionality will be disabled.")
 
 class SMSHandler:
     """Handles SMS operations for ScribeTok"""
