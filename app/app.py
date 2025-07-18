@@ -1728,7 +1728,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
             )
         
         # Run the normal transcription process
-        await process_transcription_task(task_id, video_url)
+        await process_transcription_task(task_id, video_url, callback_url=None, proxy=None)
         
         # Get the completed task details
         response = await asyncio.to_thread(
