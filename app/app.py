@@ -2446,7 +2446,32 @@ async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
         logger.error(f"Viral metrics error: {str(e)}")
         return 1, 999
 
-def _extract_seo_keywords(transcript: str, title: str) -> str:\n    \"\"\"Extract keywords from transcript and title for SEO\"\"\"\n    import re\n    from collections import Counter\n    \n    # Combine title and transcript for keyword extraction\n    text = f\"{title} {transcript}\"\n    \n    # Remove common words and extract meaningful keywords\n    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves'}\n    \n    # Extract words (3+ characters, alphanumeric)\n    words = re.findall(r'\\b[a-zA-Z]{3,}\\b', text.lower())\n    meaningful_words = [word for word in words if word not in stop_words]\n    \n    # Get most common keywords\n    keyword_counts = Counter(meaningful_words)\n    top_keywords = [word for word, count in keyword_counts.most_common(15)]\n    \n    # Add some standard keywords\n    standard_keywords = ['transcript', 'video', 'tiktok', 'youtube', 'scribetok', 'ai', 'text', 'content']\n    all_keywords = list(set(top_keywords + standard_keywords))\n    \n    return ', '.join(all_keywords[:20])  # Limit to 20 keywords\n\ndef _generate_referral_code(task_id: str) -> str:
+def _extract_seo_keywords(transcript: str, title: str) -> str:
+    """Extract keywords from transcript and title for SEO"""
+    import re
+    from collections import Counter
+    
+    # Combine title and transcript for keyword extraction
+    text = f"{title} {transcript}"
+    
+    # Remove common words and extract meaningful keywords
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves'}
+    
+    # Extract words (3+ characters, alphanumeric)
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    meaningful_words = [word for word in words if word not in stop_words]
+    
+    # Get most common keywords
+    keyword_counts = Counter(meaningful_words)
+    top_keywords = [word for word, count in keyword_counts.most_common(15)]
+    
+    # Add some standard keywords
+    standard_keywords = ['transcript', 'video', 'tiktok', 'youtube', 'scribetok', 'ai', 'text', 'content']
+    all_keywords = list(set(top_keywords + standard_keywords))
+    
+    return ', '.join(all_keywords[:20])  # Limit to 20 keywords
+
+def _generate_referral_code(task_id: str) -> str:
     """Generate a unique referral code"""
     import hashlib
     import time
