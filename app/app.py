@@ -977,22 +977,56 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     .execute
         )
         
-        # Extract thumbnail data
+        # Extract rich metadata from .info.json files
         thumbnail_url = None
         thumbnail_local_path = None
+        rich_metadata = {}
         
-        # First check metadata for thumbnail URL
+        # Read metadata files for comprehensive data extraction
         metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
         if metadata_files:
             try:
                 with open(metadata_files[0], 'r') as f:
                     metadata = json.load(f)
-                    # Check for thumbnail URL in metadata
+                    logger.info(f"Processing rich metadata from: {metadata_files[0]}")
+                    
+                    # Extract thumbnail URL
                     thumbnail_url = metadata.get('thumbnail_url') or metadata.get('thumbnail') or metadata.get('cover')
                     if thumbnail_url:
                         logger.info(f"Found thumbnail URL in metadata: {thumbnail_url}")
+                    
+                    # Extract comprehensive metadata for database storage
+                    rich_metadata = {
+                        'description': metadata.get('description'),
+                        'duration': metadata.get('duration'),
+                        'upload_date': metadata.get('upload_date'),
+                        'timestamp': metadata.get('timestamp'),
+                        'channel': metadata.get('channel') or metadata.get('uploader_id'),
+                        'channel_id': metadata.get('channel_id') or metadata.get('uploader_url'),
+                        'uploader': metadata.get('uploader'),
+                        'uploader_url': metadata.get('uploader_url'),
+                        'like_count': metadata.get('like_count', 0),
+                        'comment_count': metadata.get('comment_count', 0),
+                        'repost_count': metadata.get('repost_count', 0),
+                        'resolution': metadata.get('resolution'),
+                        'width': metadata.get('width'),
+                        'height': metadata.get('height'),
+                        'aspect_ratio': metadata.get('aspect_ratio'),
+                        'filesize': metadata.get('filesize'),
+                        'format_id': metadata.get('format_id'),
+                        'vcodec': metadata.get('vcodec'),
+                        'acodec': metadata.get('acodec'),
+                        'language': metadata.get('language') or 'english',
+                        'platform': 'tiktok' if 'tiktok' in (metadata.get('webpage_url', '') or video_url) else 'youtube'
+                    }
+                    
+                    # Clean up None values and convert to appropriate types
+                    rich_metadata = {k: v for k, v in rich_metadata.items() if v is not None}
+                    
+                    logger.info(f"Extracted rich metadata: {list(rich_metadata.keys())}")
+                    
             except Exception as e:
-                logger.warning(f"Failed to read metadata for thumbnail URL: {str(e)}")
+                logger.warning(f"Failed to read metadata for rich data extraction: {str(e)}")
         
         # Look for downloaded thumbnail files
         thumbnail_extensions = ['.jpg', '.jpeg', '.png', '.webp']
@@ -1034,7 +1068,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             transcript_text = transcript_response.get('text', '') if isinstance(transcript_response, dict) else str(transcript_response)
             category = await guess_category(title or '', transcript_text)
             
-            # Update Supabase with transcript, tags, category, and thumbnail info
+            # Update Supabase with transcript, tags, category, thumbnail, and rich metadata
             update_data = {
                 'status': 'completed',
                 'transcript': transcript_text,
@@ -1048,6 +1082,28 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 update_data['thumbnail_url'] = thumbnail_url
             if thumbnail_local_path:
                 update_data['thumbnail_local_path'] = thumbnail_local_path
+                
+            # Add all rich metadata fields
+            update_data.update(rich_metadata)
+            
+            # Add file paths for local assets
+            audio_files = glob.glob(os.path.join(output_dir, "*.mp3"))
+            if audio_files:
+                update_data['audio_file_path'] = os.path.relpath(audio_files[0], DOWNLOADS_DIR)
+                
+            if metadata_files:
+                update_data['info_file_path'] = os.path.relpath(metadata_files[0], DOWNLOADS_DIR)
+                
+            # Add auto-extracted tags array (combine with existing tags)
+            if rich_metadata.get('description'):
+                # Extract hashtags from description
+                import re
+                hashtags = re.findall(r'#(\w+)', rich_metadata['description'])
+                if hashtags:
+                    all_tags = list(set(tags + hashtags))  # Combine and deduplicate
+                    update_data['auto_tags'] = all_tags
+                    
+            logger.info(f"Updating task {task_id} with {len(update_data)} metadata fields")
                 
             await asyncio.to_thread(
                 supabase.table('transcriptions')
@@ -1128,7 +1184,7 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
     except Exception as e:
         logger.error(f"Exception updating status for task {task_id}: {str(e)}", exc_info=True)
 
-async def init_task(video_url: str, user_id: str) -> Dict[str, Any]:
+async def init_task(video_url: str, user_id: str = None, user_phone: str = None) -> Dict[str, Any]:
     """Initialize a new task entry in the Supabase database."""
     if supabase is None:
         logger.error("Cannot initialize task: Supabase client not initialized")
@@ -1140,13 +1196,18 @@ async def init_task(video_url: str, user_id: str) -> Dict[str, Any]:
         task_id = str(uuid.uuid4())
         
         # Create the transcription record with minimal required fields
-        # Adjust columns based on what actually exists in your table
         task_data = {
             "task_id": task_id,
             "status": "pending",
             "url": video_url,  # Make sure 'url' column exists in your table
             "created_at": datetime.now().isoformat(),
         }
+        
+        # Add user identification if provided (both optional now)
+        if user_id:
+            task_data["user_id"] = user_id
+        if user_phone:
+            task_data["user_phone"] = user_phone
         
         # Log what we're about to insert
         logger.info(f"Creating task with data: {task_data}")
@@ -1673,7 +1734,7 @@ async def handle_inbound_sms(
                     job_id = job_response.data[0]['id']
                     
                     # Create transcription task
-                    task = await init_task(video_url, From)
+                    task = await init_task(video_url, user_id=None, user_phone=From)
                     task_id = task['task_id']
                     
                     # Link the job to the transcription
@@ -2667,7 +2728,7 @@ async def handle_supabase_webhook(
         
         if action == 'start_transcription' and job_id and from_phone and video_url:
             # Create transcription task
-            task = await init_task(video_url, from_phone)
+            task = await init_task(video_url, user_id=None, user_phone=from_phone)
             task_id = task['task_id']
             
             # Update the transcript job with the transcription task ID
