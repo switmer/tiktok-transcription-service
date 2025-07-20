@@ -250,25 +250,8 @@ async def transcribe(
     """Start a new transcription task or return existing one."""
     try:
         # Initialize task (this will check for existing transcriptions)
-        # For SMS users, look up their UUID and set both user_id and user_phone
-        sms_user_id = None
-        if request.user_phone and not user_id:
-            try:
-                # Look up SMS user by phone to get their UUID
-                response = await asyncio.to_thread(
-                    supabase.table('sms_users')
-                            .select('id')
-                            .eq('phone_number', request.user_phone)
-                            .single
-                            .execute
-                )
-                if response.data:
-                    sms_user_id = response.data['id']
-                    logger.info(f"Found SMS user {sms_user_id} for phone {request.user_phone}")
-            except Exception as e:
-                logger.warning(f"Could not find SMS user for {request.user_phone}: {str(e)}")
-        
-        task = await init_task(request.url, user_id or sms_user_id, request.user_phone)
+        # For SMS users, only use user_phone (not user_id since SMS users aren't in auth.users)
+        task = await init_task(request.url, user_id, request.user_phone)
         task_id = task['task_id'] # Extract task_id from the returned dict
 
         # Get the task details - Ensure task_id is passed as a string
