@@ -1828,7 +1828,7 @@ async def link_sms_account(request: Request):
         elif not phone.startswith('+'):
             phone = f"+{phone}"
             
-        logger.info(f"Creating phone-based auth account for phone {phone}")
+        logger.info(f"Creating phone-based auth account for phone {phone} (phone-only auth)")
         
         # Check if phone already has auth account via SMS users table
         sms_user_response = await asyncio.to_thread(
