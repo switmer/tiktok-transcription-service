@@ -3423,6 +3423,752 @@ async def handle_supabase_webhook(
         logger.error(f"Error handling Supabase webhook: {str(e)}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
+@app.get("/v/{task_id}", tags=["Rich Link Previews"])
+async def rich_link_preview(task_id: str):
+    """
+    Serve HTML page with Open Graph meta tags for viral social media sharing.
+    
+    When users share scribetok.com/v/{task_id} links, this creates rich cards with:
+    - Video thumbnail as the preview image
+    - Title, creator, and engagement stats
+    - Direct link to read the full transcript
+    """
+    try:
+        # Fetch task data from the public view (no phone numbers exposed)
+        response = await asyncio.to_thread(
+            supabase.table('public_transcriptions')
+                    .select("*")
+                    .eq('task_id', task_id)
+                    .maybe_single()
+                    .execute
+        )
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        
+        task = response.data
+        
+        # Generate dynamic meta tags based on the video data
+        def format_number(num):
+            """Format large numbers for display (e.g., 4744375 -> 4.7M)"""
+            if not num or num == 0:
+                return "0"
+            if num >= 1000000:
+                return f"{num/1000000:.1f}M"
+            if num >= 1000:
+                return f"{num/1000:.1f}K"
+            return str(num)
+        
+        # Build the title
+        title = task.get('title', 'TikTok Transcript')
+        if len(title) > 60:
+            title = title[:57] + "..."
+        og_title = f"TikTok Transcript: '{title}'"
+        
+        # Build the description with engagement stats
+        description_parts = []
+        
+        # Add engagement stats if available
+        if task.get('like_count') or task.get('comment_count'):
+            likes = format_number(task.get('like_count', 0))
+            comments = format_number(task.get('comment_count', 0))
+            description_parts.append(f"{likes} likes, {comments} comments")
+        
+        # Add creator and duration info
+        creator_info = []
+        if task.get('duration'):
+            creator_info.append(f"{task['duration']}s video")
+        if task.get('uploader'):
+            creator_info.append(f"by {task['uploader']}")
+        
+        if creator_info:
+            description_parts.append(" • ".join(creator_info))
+        
+        description_parts.append("Read the full transcript on ScribeTok")
+        og_description = " • ".join(description_parts)
+        
+        # Use the thumbnail URL or fallback
+        og_image = task.get('thumbnail_url', 'https://scribetok.com/api/public/thumbnail/' + task_id)
+        
+        # Get the full URL for this page
+        og_url = f"https://scribetok.com/v/{task_id}"
+        
+        # Get a preview of the transcript (first 150 chars)
+        transcript_preview = ""
+        if task.get('transcript'):
+            transcript_preview = task['transcript'][:150]
+            if len(task['transcript']) > 150:
+                transcript_preview += "..."
+        
+        # Get the transcript segments for display
+        transcript_segments = []
+        if transcript_preview and task.get('transcript'):
+            # Parse transcript into segments (simplified)
+            full_transcript = task['transcript']
+            segments = full_transcript.split('. ')
+            for i, segment in enumerate(segments[:8]):  # Show first 8 segments
+                if segment.strip():
+                    start_time = i * 15  # 15 seconds per segment
+                    end_time = start_time + 15
+                    transcript_segments.append({
+                        'start': f"{start_time//60}:{start_time%60:02d}",
+                        'end': f"{end_time//60}:{end_time%60:02d}",
+                        'text': segment.strip() + ('.' if not segment.endswith('.') else '')
+                    })
+        
+        # Helper functions for formatting
+        def format_duration(seconds):
+            if not seconds:
+                return "Unknown"
+            mins = int(seconds // 60)
+            secs = int(seconds % 60)
+            if mins < 1:
+                return f"{secs}s"
+            return f"{mins}m {secs}s"
+        
+        def format_date(date_str):
+            if not date_str:
+                return "Unknown"
+            # Handle YYYYMMDD format
+            if isinstance(date_str, str) and len(date_str) == 8 and date_str.isdigit():
+                year = date_str[:4]
+                month = date_str[4:6]
+                day = date_str[6:8]
+                from datetime import datetime
+                try:
+                    return datetime(int(year), int(month), int(day)).strftime("%m/%d/%Y")
+                except:
+                    return date_str
+            # Handle regular date strings
+            try:
+                from datetime import datetime
+                if isinstance(date_str, str):
+                    dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                else:
+                    dt = date_str
+                return dt.strftime("%m/%d/%Y")
+            except:
+                return str(date_str) if date_str else "Unknown"
+        
+        # Get video URL for "View Original Video" button
+        video_url = task.get('video_url') or task.get('url')
+        if not video_url and task.get('video_id'):
+            # Construct URL if we have video ID
+            if task.get('platform') == 'tiktok':
+                if task.get('uploader'):
+                    video_url = f"https://www.tiktok.com/@{task['uploader']}/video/{task['video_id']}"
+                else:
+                    video_url = f"https://www.tiktok.com/video/{task['video_id']}"
+            elif task.get('platform') == 'youtube':
+                video_url = f"https://www.youtube.com/watch?v={task['video_id']}"
+        
+        # Generate the HTML exactly matching your frontend structure
+        html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="{og_url}">
+    <meta property="og:title" content="{og_title}">
+    <meta property="og:description" content="{og_description}">
+    <meta property="og:image" content="{og_image}">
+    <meta property="og:site_name" content="ScribeTok">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="{og_url}">
+    <meta property="twitter:title" content="{og_title}">
+    <meta property="twitter:description" content="{og_description}">
+    <meta property="twitter:image" content="{og_image}">
+    
+    <!-- Additional metadata -->
+    <meta name="description" content="{og_description}">
+    <title>{og_title}</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {{
+            theme: {{
+                extend: {{
+                    colors: {{
+                        background: 'hsl(0 0% 0%)',
+                        foreground: 'hsl(0 0% 100%)',
+                        card: 'hsl(0 0% 7%)',
+                        'card-foreground': 'hsl(0 0% 100%)',
+                        primary: 'hsl(348 100% 59%)',
+                        'primary-foreground': 'hsl(0 0% 100%)',
+                        secondary: 'hsl(0 0% 15%)',
+                        'secondary-foreground': 'hsl(0 0% 100%)',
+                        muted: 'hsl(210 40% 10%)',
+                        'muted-foreground': 'hsl(0 0% 67%)',
+                        border: 'hsl(0 0% 15%)',
+                        accent: 'hsl(348 100% 59%)',
+                        'accent-foreground': 'hsl(0 0% 100%)',
+                        input: 'hsl(0 0% 15%)',
+                        ring: 'hsl(348 100% 59%)',
+                    }}
+                }}
+            }}
+        }}
+    </script>
+    
+    <!-- Redirect to actual frontend after meta tags are crawled -->
+    <script>
+        setTimeout(function() {{
+            window.location.href = 'https://scribetok.com/v/{task_id}';
+        }}, 1500);
+    </script>
+    
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }}
+        .tiktok-gradient {{
+            background: linear-gradient(90deg, #FF0050 0%, #FF00A0 100%);
+        }}
+        .line-clamp-2 {{
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }}
+    </style>
+</head>
+<body class="bg-background text-foreground">
+    <div id="root">
+        <div class="container py-4 md:py-8 px-4 md:px-6">
+            <!-- Header with Back Button -->
+            <div class="flex items-center mb-4 md:mb-6">
+                <a class="mr-2 md:mr-4" href="https://scribetok.com/app/transcriptions">
+                    <button class="inline-flex items-center justify-center font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] active:transition-transform transition-all duration-200 hover:bg-accent hover:text-accent-foreground text-xs h-9 px-2 md:h-9 md:px-3 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-left mr-1 md:mr-2">
+                            <path d="m12 19-7-7 7-7"></path>
+                            <path d="M19 12H5"></path>
+                        </svg>
+                        <span class="hidden sm:inline">Back</span>
+                    </button>
+                </a>
+                <h1 class="text-xl md:text-2xl font-bold truncate">{title}</h1>
+            </div>
+            
+            <!-- Mobile Action Buttons -->
+            <div class="flex gap-2 mb-4 md:hidden">
+                <button class="inline-flex font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] active:transition-transform transition-all duration-200 tiktok-gradient text-white hover:brightness-95 h-11 px-5 py-2 text-sm flex-1 justify-center items-center rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-copy mr-1.5">
+                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                    </svg>Copy
+                </button>
+                <button class="inline-flex font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] active:transition-transform transition-all duration-200 border border-input bg-background hover:bg-secondary/50 hover:border-input/80 h-11 px-5 py-2 text-sm flex-1 justify-center items-center rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download mr-1.5">
+                        <path d="M12 15V3"></path>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <path d="m7 10 5 5 5-5"></path>
+                    </svg>Download
+                </button>
+                <button class="inline-flex font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] active:transition-transform transition-all duration-200 border border-input bg-background hover:bg-secondary/50 hover:border-input/80 h-11 px-5 py-2 text-sm flex-1 justify-center items-center rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-share2 mr-1.5">
+                        <circle cx="18" cy="5" r="3"></circle>
+                        <circle cx="6" cy="12" r="3"></circle>
+                        <circle cx="18" cy="19" r="3"></circle>
+                        <line x1="8.59" x2="15.42" y1="13.51" y2="17.49"></line>
+                        <line x1="15.41" x2="8.59" y1="6.51" y2="10.49"></line>
+                    </svg>Share
+                </button>
+            </div>
+            
+            <!-- Main Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
+                <!-- Left Column -->
+                <div class="lg:col-span-1 space-y-4 md:space-y-6">
+                    <!-- Video Preview Card -->
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70">
+                        <div class="w-full h-48 md:h-48 bg-gray-800 rounded-t-xl flex items-center justify-center overflow-hidden">
+                            <img src="{og_image}" alt="{title}" class="w-full h-full object-cover">
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-medium text-base md:text-lg mb-2 line-clamp-2">{title}</h3>
+                            <div class="space-y-3">
+                                <div class="flex justify-between text-xs md:text-sm text-gray-400">
+                                    <span class="flex items-center">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock mr-1">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                        {format_duration(task.get('duration'))}
+                                    </span>
+                                    <span class="flex items-center">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar mr-1">
+                                            <path d="M8 2v4"></path>
+                                            <path d="M16 2v4"></path>
+                                            <rect width="18" height="18" x="3" y="4" rx="2"></rect>
+                                            <path d="M3 10h18"></path>
+                                        </svg>
+                                        {format_date(task.get('upload_date'))}
+                                    </span>
+                                </div>
+                                {f'''
+                                <div class="flex items-center text-xs text-gray-400">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-film mr-1">
+                                        <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+                                        <path d="M7 3v18"></path>
+                                        <path d="M3 7.5h4"></path>
+                                        <path d="M3 12h18"></path>
+                                        <path d="M3 16.5h4"></path>
+                                        <path d="M17 3v18"></path>
+                                        <path d="M17 7.5h4"></path>
+                                        <path d="M17 16.5h4"></path>
+                                    </svg>
+                                    <span class="capitalize">{html.escape(str(task.get('platform', '')))}</span>
+                                    {f'''
+                                    <span class="mx-1">•</span>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-languages mr-1">
+                                        <path d="m5 8 6 6"></path>
+                                        <path d="M4 14l6-6 2-3"></path>
+                                        <path d="M2 5h12"></path>
+                                        <path d="M7 2h1"></path>
+                                        <path d="M22 22l-5-10-5 10"></path>
+                                        <path d="M14 18h6"></path>
+                                    </svg>
+                                    <span class="capitalize">{html.escape(str(task.get('language', '')))}</span>
+                                    ''' if task.get('language') else ''}
+                                </div>
+                                ''' if task.get('platform') else ''}
+                                <p class="text-xs md:text-sm text-gray-400 break-all">ID: {html.escape(str(task.get('video_id', task_id)))}</p>
+                            </div>
+                            <div class="mt-3 space-y-2">
+                                {f'''
+                                <a href="{html.escape(video_url)}" target="_blank" rel="noopener noreferrer" class="w-full">
+                                    <button class="font-medium tiktok-gradient text-white rounded-full hover:brightness-95 h-11 px-5 py-2 w-full flex items-center justify-center text-sm">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-link mr-2">
+                                            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                                            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                                        </svg>
+                                        View Original Video
+                                    </button>
+                                </a>
+                                ''' if video_url else ''}
+                                <button onclick="sharePublicLink()" class="font-medium border border-input bg-background hover:bg-secondary/50 hover:border-input/80 rounded-full h-11 px-5 py-2 w-full flex items-center justify-center text-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-external-link mr-2">
+                                        <path d="M15 3h6v6"></path>
+                                        <path d="M10 14 21 3"></path>
+                                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                    </svg>
+                                    Share Public Link
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Creator Info Card -->
+                    {f'''
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70">
+                        <div class="p-4">
+                            <h3 class="font-medium mb-3 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user mr-2 text-primary">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                Creator Information
+                            </h3>
+                            <div class="space-y-2">
+                                {f'''
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm text-gray-400">Username</span>
+                                    <span class="text-sm font-medium truncate max-w-[200px]">{html.escape(str(task.get('uploader', '')))}</span>
+                                </div>
+                                ''' if task.get('uploader') else ''}
+                                {f'''
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm text-gray-400">Channel</span>
+                                    <span class="text-sm font-medium truncate max-w-[200px]">{html.escape(str(task.get('channel', '')))}</span>
+                                </div>
+                                ''' if task.get('channel') else ''}
+                                {f'''
+                                <div class="mt-2">
+                                    <a href="{html.escape(str(task.get('uploader_url', '')))}" target="_blank" rel="noopener noreferrer" class="text-primary text-sm hover:underline flex items-center">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-link mr-1">
+                                            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                                            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                                        </svg>
+                                        View Creator Profile
+                                    </a>
+                                </div>
+                                ''' if task.get('uploader_url') else ''}
+                            </div>
+                        </div>
+                    </div>
+                    ''' if task.get('channel') or task.get('uploader') else ''}
+                    
+                    {f'''
+                    <!-- Engagement Metrics Card -->
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70">
+                        <div class="p-4">
+                            <h3 class="font-medium mb-3 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-heart mr-2 text-primary">
+                                    <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>
+                                </svg>
+                                Engagement Metrics
+                            </h3>
+                            <div class="grid grid-cols-3 gap-2 text-center">
+                                <div class="p-2 bg-secondary rounded-lg">
+                                    <div class="flex justify-center mb-1">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-heart text-primary">
+                                            <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path>
+                                        </svg>
+                                    </div>
+                                    <span class="block text-sm font-medium">{format_number(task.get('like_count', 0))}</span>
+                                    <span class="block text-xs text-gray-400">Likes</span>
+                                </div>
+                                <div class="p-2 bg-secondary rounded-lg">
+                                    <div class="flex justify-center mb-1">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square text-primary">
+                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                                        </svg>
+                                    </div>
+                                    <span class="block text-sm font-medium">{format_number(task.get('comment_count', 0))}</span>
+                                    <span class="block text-xs text-gray-400">Comments</span>
+                                </div>
+                                <div class="p-2 bg-secondary rounded-lg">
+                                    <div class="flex justify-center mb-1">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-repeat2 text-primary">
+                                            <path d="m2 9 3-3 3 3"></path>
+                                            <path d="M13 18H7a2 2 0 0 1-2-2V6"></path>
+                                            <path d="m22 15-3 3-3-3"></path>
+                                            <path d="M11 6h6a2 2 0 0 1 2 2v10"></path>
+                                        </svg>
+                                    </div>
+                                    <span class="block text-sm font-medium">{format_number(task.get('repost_count', 0))}</span>
+                                    <span class="block text-xs text-gray-400">Reposts</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    ''' if task.get('like_count') or task.get('comment_count') else ''}
+                    
+                    <!-- Tags Card -->
+                    {f'''
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70">
+                        <div class="p-4">
+                            <h3 class="font-medium mb-3 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-tag mr-2 text-primary">
+                                    <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"></path>
+                                    <path d="M7 7h.01"></path>
+                                </svg>
+                                Tags
+                            </h3>
+                            <div class="flex flex-wrap gap-2">
+                                {''.join([f'''
+                                <span class="inline-block px-2 py-1 bg-secondary text-white rounded-full text-xs">#{html.escape(str(tag))}</span>
+                                ''' for tag in (task.get('auto_tags', []) if isinstance(task.get('auto_tags'), list) else [])])}
+                            </div>
+                        </div>
+                    </div>
+                    ''' if task.get('auto_tags') and isinstance(task.get('auto_tags'), list) and len(task.get('auto_tags', [])) > 0 else ''}
+                    
+                    <!-- Technical Details Card -->
+                    {f'''
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70">
+                        <div class="p-4">
+                            <div class="flex justify-between items-center mb-3">
+                                <h3 class="font-medium flex items-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-monitor mr-2 text-gray-400">
+                                        <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+                                        <line x1="8" x2="16" y1="21" y2="21"></line>
+                                        <line x1="12" x2="12" y1="17" y2="21"></line>
+                                    </svg>
+                                    Technical Details
+                                </h3>
+                                <button onclick="toggleTechnicalDetails()" class="inline-flex items-center justify-center font-medium hover:bg-accent hover:text-accent-foreground h-8 px-2 text-xs">
+                                    <span id="tech-details-toggle">Show</span>
+                                </button>
+                            </div>
+                            <div id="tech-details-content" style="display: none;">
+                                <div class="space-y-2 text-sm">
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Resolution</span>
+                                        <span>{html.escape(str(task.get('resolution', '')))}</span>
+                                    </div>
+                                    ''' if task.get('resolution') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Dimensions</span>
+                                        <span>{task.get('width', '?')}×{task.get('height', '?')}</span>
+                                    </div>
+                                    ''' if task.get('width') or task.get('height') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Aspect Ratio</span>
+                                        <span>{task.get('aspect_ratio', 0):.2f}</span>
+                                    </div>
+                                    ''' if task.get('aspect_ratio') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">File Size</span>
+                                        <span>{(task.get('filesize', 0) / (1024 * 1024)):.2f} MB</span>
+                                    </div>
+                                    ''' if task.get('filesize') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Video Codec</span>
+                                        <span>{html.escape(str(task.get('vcodec', '')))}</span>
+                                    </div>
+                                    ''' if task.get('vcodec') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Audio Codec</span>
+                                        <span>{html.escape(str(task.get('acodec', '')))}</span>
+                                    </div>
+                                    ''' if task.get('acodec') else ''}
+                                    {f'''
+                                    <div class="flex justify-between">
+                                        <span class="text-gray-400">Format</span>
+                                        <span>{html.escape(str(task.get('format_id', '')))}</span>
+                                    </div>
+                                    ''' if task.get('format_id') else ''}
+                                </div>
+                            </div>
+                            <div id="tech-details-placeholder" class="text-center py-2 text-sm text-gray-400">
+                                Click "Show" to view technical specifications
+                            </div>
+                        </div>
+                    </div>
+                    ''' if (task.get('resolution') or task.get('width') or task.get('height') or task.get('vcodec') or task.get('acodec')) else ''}
+                    
+                    <!-- Download Options Card -->
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70 hidden md:block">
+                        <div class="p-4">
+                            <h3 class="font-medium mb-3">Download Transcript</h3>
+                            <div class="space-y-2">
+                                <button class="inline-flex items-center font-medium border border-input bg-background hover:bg-secondary/50 hover:border-input/80 h-11 px-5 py-2 text-sm w-full justify-start rounded-full">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text mr-2">
+                                        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+                                        <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+                                        <path d="M10 9H8"></path>
+                                        <path d="M16 13H8"></path>
+                                        <path d="M16 17H8"></path>
+                                    </svg>
+                                    Download as TXT
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Right Column - Transcript -->
+                <div class="lg:col-span-2">
+                    <!-- Description Card -->
+                    {f'''
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70 mb-4 md:mb-6">
+                        <div class="flex items-center justify-between p-3 md:p-4 border-b border-border/40">
+                            <h2 class="font-semibold text-sm md:text-base flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-info mr-2 text-primary">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <path d="M12 16v-4"></path>
+                                    <path d="M12 8h.01"></path>
+                                </svg>
+                                Description
+                            </h2>
+                        </div>
+                        <div class="p-3 md:p-4">
+                            <p class="text-sm whitespace-pre-wrap">{html.escape(str(task.get('description', '')))}</p>
+                        </div>
+                    </div>
+                    ''' if task.get('description') else ''}
+                    
+                    <!-- Full Transcript Card -->
+                    <div class="rounded-xl border border-border/50 bg-card text-card-foreground transition-all duration-200 hover:border-border/70 mb-6">
+                        <div class="flex items-center justify-between p-3 md:p-4 border-b border-border/40">
+                            <h2 class="font-semibold text-sm md:text-base">Full Transcript</h2>
+                            <div class="flex items-center">
+                                <button class="inline-flex items-center justify-center font-medium hover:bg-accent hover:text-accent-foreground text-xs text-primary h-9 px-2 rounded-full">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-copy mr-1">
+                                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                                    </svg>Copy
+                                </button>
+                            </div>
+                        </div>
+                        <div class="p-3 md:p-4 space-y-3 md:space-y-4 max-h-[600px] md:max-h-[800px] overflow-y-auto">
+                            {''.join([f'''
+                            <div class="p-2 md:p-3 rounded-xl border border-border/30 bg-secondary/20">
+                                <div class="flex justify-between text-xs md:text-sm text-gray-400 mb-1">
+                                    <span>{segment["start"]} -{segment["end"]}</span>
+                                </div>
+                                <p class="text-sm md:text-base">{segment["text"]}</p>
+                            </div>
+                            ''' for segment in transcript_segments]) if transcript_segments else f'''
+                            <div class="text-center py-8">
+                                <p class="text-muted-foreground mb-4">Preview of transcript content:</p>
+                                <div class="p-4 rounded-xl bg-secondary/20 text-sm leading-relaxed">
+                                    {transcript_preview}
+                                </div>
+                                <a href="https://scribetok.com/v/{task_id}" class="inline-flex items-center justify-center mt-4 bg-primary text-primary-foreground px-6 py-2 rounded-full font-medium">
+                                    View Full Transcript
+                                </a>
+                            </div>
+                            '''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Mobile Download Buttons -->
+            <div class="md:hidden mt-6 flex gap-3">
+                <button class="inline-flex items-center font-medium tiktok-gradient text-white hover:brightness-95 h-11 px-5 py-2 text-sm flex-1 justify-center rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text mr-2">
+                        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+                        <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+                        <path d="M10 9H8"></path>
+                        <path d="M16 13H8"></path>
+                        <path d="M16 17H8"></path>
+                    </svg>
+                    Download as TXT
+                </button>
+            </div>
+            
+            <!-- Redirect Notice -->
+            <div class="text-center mt-6 text-muted-foreground text-sm">
+                ⏳ Redirecting to full transcript page in a moment...
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Transcript text for copy/download functions
+        const transcriptText = `{html.escape(task.get('transcript', transcript_preview or 'No transcript available')).replace('`', '\\`')}`;
+        
+        function copyTranscript() {{
+            navigator.clipboard.writeText(transcriptText).then(() => {{
+                const button = event.target.closest('button');
+                const originalHTML = button.innerHTML;
+                button.innerHTML = button.innerHTML.replace('Copy', 'Copied!');
+                setTimeout(() => {{ 
+                    button.innerHTML = originalHTML;
+                }}, 2000);
+            }}).catch(err => {{
+                console.error('Failed to copy: ', err);
+            }});
+        }}
+        
+        function downloadTranscript() {{
+            const blob = new Blob([transcriptText], {{ type: 'text/plain' }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'transcript-{html.escape(str(task.get("video_id", task_id)))}.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }}
+        
+        function shareTranscript() {{
+            if (navigator.share) {{
+                navigator.share({{
+                    title: '{html.escape(str(task.get("title", "Video Transcript"))).replace("'", "\\'")}',
+                    text: transcriptText.substring(0, 100) + '...',
+                    url: window.location.href
+                }}).catch(err => {{
+                    console.error('Share failed: ', err);
+                    // Fallback to copy
+                    copyTranscript();
+                }});
+            }} else {{
+                // Fallback to copy for browsers that don't support native sharing
+                copyTranscript();
+            }}
+        }}
+        
+        function sharePublicLink() {{
+            navigator.clipboard.writeText(window.location.href).then(() => {{
+                alert('Public link copied to clipboard!');
+            }}).catch(err => {{
+                console.error('Failed to copy link: ', err);
+                // Fallback: show the URL in a prompt
+                prompt('Copy this link:', window.location.href);
+            }});
+        }}
+        
+        function toggleTechnicalDetails() {{
+            const content = document.getElementById('tech-details-content');
+            const placeholder = document.getElementById('tech-details-placeholder');
+            const toggle = document.getElementById('tech-details-toggle');
+            
+            if (content.style.display === 'none') {{
+                content.style.display = 'block';
+                placeholder.style.display = 'none';
+                toggle.textContent = 'Hide';
+            }} else {{
+                content.style.display = 'none';
+                placeholder.style.display = 'block';
+                toggle.textContent = 'Show';
+            }}
+        }}
+        
+        // Add event listeners to all buttons that need these functions
+        document.addEventListener('DOMContentLoaded', function() {{
+            // Copy buttons
+            const copyButtons = document.querySelectorAll('button[onclick="copyTranscript()"]');
+            copyButtons.forEach(btn => {{
+                btn.addEventListener('click', copyTranscript);
+            }});
+            
+            // Download buttons
+            const downloadButtons = document.querySelectorAll('button[onclick="downloadTranscript()"]');
+            downloadButtons.forEach(btn => {{
+                btn.addEventListener('click', downloadTranscript);
+            }});
+            
+            // Share buttons
+            const shareButtons = document.querySelectorAll('button[onclick="shareTranscript()"]');
+            shareButtons.forEach(btn => {{
+                btn.addEventListener('click', shareTranscript);
+            }});
+            
+            // Share public link buttons
+            const shareLinkButtons = document.querySelectorAll('button[onclick="sharePublicLink()"]');
+            shareLinkButtons.forEach(btn => {{
+                btn.addEventListener('click', sharePublicLink);
+            }});
+        }});
+    </script>
+</body>
+</html>"""
+        
+        return Response(content=html_content, media_type="text/html")
+        
+    except Exception as e:
+        logger.error(f"Error generating rich link preview for {task_id}: {str(e)}", exc_info=True)
+        
+        # Fallback HTML for errors
+        fallback_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta property="og:title" content="ScribeTok - TikTok Transcripts">
+    <meta property="og:description" content="Read TikTok video transcripts without sound">
+    <meta property="og:site_name" content="ScribeTok">
+    <title>ScribeTok - Transcript Not Found</title>
+    <script>
+        setTimeout(function() {{
+            window.location.href = 'https://www.scribetok.com';
+        }}, 100);
+    </script>
+</head>
+<body>
+    <h1>Transcript not found</h1>
+    <p>Redirecting to ScribeTok...</p>
+</body>
+</html>"""
+        return Response(content=fallback_html, media_type="text/html")
+
 if __name__ == "__main__":
     # Get port from environment or use default
     port = int(os.environ.get("PORT", 8000))
