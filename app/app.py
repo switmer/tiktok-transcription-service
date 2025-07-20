@@ -999,29 +999,57 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                         logger.info(f"Found thumbnail URL in metadata: {thumbnail_url}")
                     
                     # Extract comprehensive metadata for database storage
-                    rich_metadata = {
-                        'description': metadata.get('description'),
-                        'duration': metadata.get('duration'),
-                        'upload_date': metadata.get('upload_date'),
-                        'timestamp': metadata.get('timestamp'),
-                        'channel': metadata.get('channel') or metadata.get('uploader_id'),
-                        'channel_id': metadata.get('channel_id') or metadata.get('uploader_url'),
-                        'uploader': metadata.get('uploader'),
-                        'uploader_url': metadata.get('uploader_url'),
-                        'like_count': metadata.get('like_count', 0),
-                        'comment_count': metadata.get('comment_count', 0),
-                        'repost_count': metadata.get('repost_count', 0),
-                        'resolution': metadata.get('resolution'),
-                        'width': metadata.get('width'),
-                        'height': metadata.get('height'),
-                        'aspect_ratio': metadata.get('aspect_ratio'),
-                        'filesize': metadata.get('filesize'),
-                        'format_id': metadata.get('format_id'),
-                        'vcodec': metadata.get('vcodec'),
-                        'acodec': metadata.get('acodec'),
-                        'language': metadata.get('language') or 'english',
-                        'platform': 'tiktok' if 'tiktok' in (metadata.get('webpage_url', '') or video_url) else 'youtube'
-                    }
+                    # Handle both RapidAPI and yt-dlp metadata formats
+                    if 'data' in metadata:  # RapidAPI format
+                        data = metadata['data']
+                        author = data.get('author', {})
+                        rich_metadata = {
+                            'description': data.get('title'),  # RapidAPI puts description in title
+                            'duration': data.get('duration'),
+                            'upload_date': None,  # Not available in RapidAPI
+                            'timestamp': data.get('create_time'),
+                            'channel': author.get('nickname'),
+                            'channel_id': author.get('unique_id'),
+                            'uploader': author.get('nickname'),
+                            'uploader_url': f"https://tiktok.com/@{author.get('unique_id')}" if author.get('unique_id') else None,
+                            'like_count': data.get('digg_count', 0),
+                            'comment_count': data.get('comment_count', 0),
+                            'repost_count': data.get('share_count', 0),
+                            'resolution': None,  # Not directly available
+                            'width': None,
+                            'height': None,
+                            'aspect_ratio': None,
+                            'filesize': data.get('hd_size'),
+                            'format_id': 'rapidapi_hd',
+                            'vcodec': 'h264',  # Assume h264 for TikTok
+                            'acodec': 'aac',   # Assume aac for TikTok
+                            'language': 'english',  # Default for now
+                            'platform': 'tiktok'
+                        }
+                    else:  # yt-dlp format
+                        rich_metadata = {
+                            'description': metadata.get('description'),
+                            'duration': metadata.get('duration'),
+                            'upload_date': metadata.get('upload_date'),
+                            'timestamp': metadata.get('timestamp'),
+                            'channel': metadata.get('channel') or metadata.get('uploader_id'),
+                            'channel_id': metadata.get('channel_id') or metadata.get('uploader_url'),
+                            'uploader': metadata.get('uploader'),
+                            'uploader_url': metadata.get('uploader_url'),
+                            'like_count': metadata.get('like_count', 0),
+                            'comment_count': metadata.get('comment_count', 0),
+                            'repost_count': metadata.get('repost_count', 0),
+                            'resolution': metadata.get('resolution'),
+                            'width': metadata.get('width'),
+                            'height': metadata.get('height'),
+                            'aspect_ratio': metadata.get('aspect_ratio'),
+                            'filesize': metadata.get('filesize'),
+                            'format_id': metadata.get('format_id'),
+                            'vcodec': metadata.get('vcodec'),
+                            'acodec': metadata.get('acodec'),
+                            'language': metadata.get('language') or 'english',
+                            'platform': 'tiktok' if 'tiktok' in (metadata.get('webpage_url', '') or original_video_url) else 'youtube'
+                        }
                     
                     # Clean up None values and convert to appropriate types
                     rich_metadata = {k: v for k, v in rich_metadata.items() if v is not None}
