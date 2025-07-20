@@ -275,11 +275,7 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     
     if rapidapi_result:
         logger.info("RapidAPI download successful!")
-        return (
-            rapidapi_result["audio_file"],
-            rapidapi_result["video_id"],
-            rapidapi_result["title"]
-        )
+        return rapidapi_result  # Return full dict with video_url
     
     # Method 2: Fallback to yt-dlp
     logger.info("RapidAPI failed, falling back to yt-dlp...")
@@ -287,11 +283,20 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     
     if ytdlp_result[0]:  # Check if audio_file is not None
         logger.info("yt-dlp download successful!")
-        return ytdlp_result
+        # Convert yt-dlp tuple result to dict format for consistency
+        audio_file, video_id, title = ytdlp_result
+        return {
+            "audio_file": audio_file,
+            "video_id": video_id,
+            "title": title,
+            "video_file": None,  # yt-dlp doesn't provide video file
+            "metadata_file": None,  # yt-dlp doesn't provide metadata file  
+            "video_url": None  # yt-dlp doesn't provide direct video URL
+        }
     
     # Both methods failed
     logger.error("All download methods failed for TikTok URL")
-    return None, None, None
+    return None
 
 def format_timestamped_transcript(transcript_data):
     """Formats verbose_json transcript data with timestamps and bullet points."""
