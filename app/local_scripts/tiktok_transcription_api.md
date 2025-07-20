@@ -1,5 +1,7 @@
 # TikTok Transcription Service API Documentation
 
+**📢 UPDATED: For the most comprehensive and current API documentation including SMS integration, account linking, and all new features, see [COMPLETE_API_DOCS.md](../../COMPLETE_API_DOCS.md)**
+
 ## Base URL
 
 - **Production:** https://tiktok-transcription-service.onrender.com

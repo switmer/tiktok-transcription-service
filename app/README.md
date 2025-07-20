@@ -1,15 +1,39 @@
-# TikTok Transcription Service
+# ScribeTok - TikTok/YouTube Transcription Service
 
-A FastAPI web service that downloads TikTok videos and transcribes them using OpenAI's Whisper API.
+A comprehensive FastAPI service that transcribes TikTok and YouTube videos with SMS integration and phone-first authentication.
 
-## Features
+## 📚 **Complete API Documentation**
 
-- Download TikTok videos
-- Extract audio from videos
-- Transcribe audio using OpenAI's Whisper API
-- RESTful API for submitting, checking, and retrieving transcription tasks
+**👉 See [COMPLETE_API_DOCS.md](../COMPLETE_API_DOCS.md) for full API reference including all endpoints, SMS integration, and new features.**
+
+## ✨ Features
+
+### Core Transcription
+- Download TikTok and YouTube videos
+- Extract audio with multiple fallback methods (RapidAPI + yt-dlp)
+- Transcribe using OpenAI Whisper with timestamps
+- Rich metadata extraction (20+ fields)
+- Direct CDN video URLs (no local storage)
+
+### SMS Integration
+- Full SMS workflow with Twilio
+- Phone-first authentication (no email required)
+- SMS commands: `/help`, `/register`, `/login`, `/verify`, `/profile`, `/vault`
+- Account linking for SMS users
+- SMS analytics and tracking
+
+### Content Discovery
+- Trending transcriptions
+- Similar content recommendations
+- Category-based browsing
+- Public transcript viewer with viral sharing
+
+### Advanced Features
 - Background task processing
 - API key authentication
+- File cleanup and resource management
+- Error resilience and graceful degradation
+- Auto-tagging and content classification
 
 ## Setup
 
@@ -34,49 +58,29 @@ uvicorn app:app --reload
 
 The service will be available at http://localhost:8000
 
-## API Endpoints
+## 🚀 Quick API Examples
 
-### Submit a transcription task
-```
-POST /api/transcribe
-```
+**📖 See [COMPLETE_API_DOCS.md](../COMPLETE_API_DOCS.md) for full endpoint documentation**
 
-Request body:
-```json
-{
-  "url": "https://www.tiktok.com/@username/video/1234567890"
-}
+### Start Transcription (Public)
+```bash
+curl -X POST "https://tiktok-transcription-service.onrender.com/api/public/transcribe" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://tiktok.com/@user/video/123"}'
 ```
 
-Headers:
-```
-X-API-Key: your_api_key
-```
-
-### List all tasks
-```
-GET /api/tasks
+### Check Status
+```bash
+curl "https://tiktok-transcription-service.onrender.com/api/public/tasks/{task_id}"
 ```
 
-### Check task status
-```
-GET /api/tasks/{task_id}
-```
-
-### Get transcript
-```
-GET /api/transcript/{task_id}
+### Get Transcript
+```bash
+curl "https://tiktok-transcription-service.onrender.com/api/public/transcript/{task_id}"
 ```
 
-### Delete task
-```
-DELETE /api/tasks/{task_id}
-```
-
-### Health check
-```
-GET /api/healthcheck
-```
+### SMS Integration
+Send TikTok URL via SMS to your Twilio number for instant transcription!
 
 ## Deployment
 
