@@ -1099,8 +1099,21 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         if transcript_response:
             # Extract tags and guess category
             tags = await extract_tags_from_title(title or '')
-            # Extract transcript text from response
-            transcript_text = transcript_response.get('text', '') if isinstance(transcript_response, dict) else str(transcript_response)
+            # Read the properly formatted transcript from the saved file
+            transcript_text = ""
+            if transcript_file_path and os.path.exists(transcript_file_path):
+                with open(transcript_file_path, 'r', encoding='utf-8') as f:
+                    transcript_text = f.read()
+                logger.info(f"Loaded full transcript ({len(transcript_text)} characters) from {transcript_file_path}")
+            else:
+                # Fallback: extract from TranscriptionVerbose object
+                if hasattr(transcript_response, 'text'):
+                    transcript_text = transcript_response.text
+                elif isinstance(transcript_response, dict):
+                    transcript_text = transcript_response.get('text', '')
+                else:
+                    transcript_text = str(transcript_response)
+                logger.warning(f"Used fallback transcript extraction ({len(transcript_text)} characters)")
             category = await guess_category(title or '', transcript_text)
             
             # Update Supabase with transcript, tags, category, thumbnail, and rich metadata
