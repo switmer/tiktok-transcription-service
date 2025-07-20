@@ -26,7 +26,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Re
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Tuple, Literal
 import uvicorn
 import httpx
@@ -90,9 +90,55 @@ def task_timeout(timeout_seconds=1800):  # 30 minutes default
     return decorator
 
 app = FastAPI(
-    title="TikTok Transcription API",
-    description="API for downloading and transcribing TikTok videos",
-    version="1.0.0"
+    title="ScribeTok - TikTok/YouTube Transcription API",
+    description="""
+🎬 **Complete video transcription service with SMS integration and phone-first authentication**
+
+## Key Features
+- 📱 **SMS Integration** - Text video URLs for instant transcription
+- 🔐 **Phone-First Auth** - No email required, OTP-based verification  
+- 🚀 **Viral Sharing** - Public transcript pages with social features
+- 📊 **Rich Metadata** - 20+ fields from TikTok/YouTube videos
+- 🔍 **Content Discovery** - Trending, similar, and recent transcriptions
+
+## Phone-First User Flow
+1. **Text Video URL** → Instant transcription (no signup required)
+2. **Text `/register`** → Create account with full history preserved
+3. **Web Login** → Access dashboard with phone + OTP
+
+Perfect for building viral social media tools and content analysis applications.
+    """,
+    version="1.0.0",
+    contact={
+        "name": "ScribeTok API Support",
+        "url": "https://scribetok.com",
+    },
+    license_info={
+        "name": "API License",
+        "url": "https://scribetok.com/terms",
+    },
+    tags_metadata=[
+        {
+            "name": "Public Transcription",
+            "description": "Start transcription tasks and access results. No authentication required.",
+        },
+        {
+            "name": "Private Task Management", 
+            "description": "Manage transcription tasks with full control. Requires API key authentication.",
+        },
+        {
+            "name": "SMS Integration",
+            "description": "SMS webhooks and phone-first authentication system.",
+        },
+        {
+            "name": "Content Discovery",
+            "description": "Discover trending, similar, and recent transcriptions.",
+        },
+        {
+            "name": "System & Health",
+            "description": "Service health checks and system maintenance endpoints.",
+        },
+    ],
 )
 
 # Add CORS middleware
@@ -137,33 +183,159 @@ app.include_router(discovery.router)
 
 class TranscriptionRequest(BaseModel):
     """Request model for video transcription"""
-    url: str
-    callback_url: Optional[str] = None
-    format: Optional[str] = "bestaudio/best"
-    output_template: Optional[str] = None
-    extract_audio: bool = True
-    convert_to_mp3: bool = False
-    save_thumbnail: bool = True
-    extract_metadata: bool = True
-    perform_sentiment_analysis: bool = False
-    create_srt: bool = False
-    proxy: Optional[str] = None
-    api_key: Optional[str] = None
-    user_phone: Optional[str] = None  # Phone number for SMS notifications
+    url: str = Field(..., 
+        description="TikTok or YouTube video URL to transcribe",
+        example="https://www.tiktok.com/@user/video/7526401258786245902"
+    )
+    callback_url: Optional[str] = Field(None,
+        description="Webhook URL to receive completion notification",
+        example="https://yourapp.com/webhook"
+    )
+    format: Optional[str] = Field("bestaudio/best",
+        description="Video/audio format preference for download"
+    )
+    output_template: Optional[str] = Field(None,
+        description="Custom output filename template"
+    )
+    extract_audio: bool = Field(True,
+        description="Extract audio from video for transcription"
+    )
+    convert_to_mp3: bool = Field(False,
+        description="Convert audio to MP3 format"
+    )
+    save_thumbnail: bool = Field(True,
+        description="Save video thumbnail image"
+    )
+    extract_metadata: bool = Field(True,
+        description="Extract rich metadata (views, likes, creator info, etc.)"
+    )
+    perform_sentiment_analysis: bool = Field(False,
+        description="Analyze transcript sentiment (experimental)"
+    )
+    create_srt: bool = Field(False,
+        description="Generate SRT subtitle file"
+    )
+    proxy: Optional[str] = Field(None,
+        description="Proxy server URL for download",
+        example="http://proxy.example.com:8080"
+    )
+    api_key: Optional[str] = Field(None,
+        description="API key for authentication (can also use header)"
+    )
+    user_phone: Optional[str] = Field(None,
+        description="Phone number for SMS notifications and user tracking",
+        example="+1234567890"
+    )
 
 class TranscriptionResponse(BaseModel):
-    task_id: str
-    status: str
-    video_id: Optional[str] = None
-    title: Optional[str] = None
-    created_at: str
-    error: Optional[str] = None
-    thumbnail: Optional[str] = None  # Might be deprecated if we use local path/URL
-    thumbnail_url: Optional[str] = None
-    thumbnail_local_path: Optional[str] = None # Relative path to local thumbnail
+    """Complete transcription task response with rich metadata"""
+    # Core Task Information
+    task_id: str = Field(..., example="550e8400-e29b-41d4-a716-446655440000")
+    status: str = Field(..., example="completed", pattern="^(pending|processing|completed|failed)$")
+    created_at: str = Field(..., example="2025-07-20T12:00:00Z")
+    error: Optional[str] = Field(None, example=None)
+    # Video Information
+    video_id: Optional[str] = Field(None, example="7526401258786245902")
+    title: Optional[str] = Field(None, example="Amazing TikTok Video")
+    description: Optional[str] = Field(None, example="Check out this amazing tech tutorial! #technology #viral")
+    duration: Optional[int] = Field(None, example=122)
+    platform: Optional[str] = Field(None, example="tiktok")
+    # Creator Information
+    creator: Optional[str] = Field(None, example="Tech Guru")
+    uploader_url: Optional[str] = Field(None, example="https://tiktok.com/@techguru")
+    # Engagement Metrics
+    like_count: Optional[int] = Field(None, example=1500)
+    comment_count: Optional[int] = Field(None, example=89)
+    repost_count: Optional[int] = Field(None, example=234)
+    view_count: Optional[int] = Field(None, example=15)
+    # Media Assets
+    thumbnail_url: Optional[str] = Field(None, example="https://example.com/thumb.jpg")
+    video_url: Optional[str] = Field(None, example="https://cdn.tiktok.com/...")
+    thumbnail_local_path: Optional[str] = Field(None, example="d5911018-8ba2-4ca6-bebf-95e9994f3a2d/thumbnail.jpg")
+    # Deprecated (kept for compatibility)
+    thumbnail: Optional[str] = Field(None, description="Deprecated: Use thumbnail_url instead")
+    # Tags and Category
+    tags: Optional[list] = Field(None, example=["tech", "viral"])
+    category: Optional[str] = Field(None, example="technology")
 
 class TaskListResponse(BaseModel):
-    tasks: List[TranscriptionResponse]
+    """Response model for task list endpoints"""
+    tasks: List[TranscriptionResponse] = Field(..., 
+        description="Array of transcription tasks"
+    )
+    total: Optional[int] = Field(None,
+        description="Total number of tasks",
+        example=156
+    )
+    limit: Optional[int] = Field(None,
+        description="Maximum results per page",
+        example=50
+    )
+    offset: Optional[int] = Field(None,
+        description="Number of results skipped",
+        example=0
+    )
+
+class HealthCheckResponse(BaseModel):
+    """Health check response model"""
+    status: str = Field(...,
+        description="Service status",
+        example="ok"
+    )
+    version: str = Field(...,
+        description="API version",
+        example="1.0.0"
+    )
+    timestamp: float = Field(...,
+        description="Server timestamp",
+        example=1753026086.24777
+    )
+    services: Dict[str, str] = Field(...,
+        description="Connected service statuses",
+        example={
+            "openai": "connected",
+            "supabase": "connected", 
+            "rapidapi": "connected"
+        }
+    )
+
+class SMSResponse(BaseModel):
+    """SMS operation response model"""
+    success: bool = Field(...,
+        description="Whether SMS operation succeeded",
+        example=True
+    )
+    message_sid: Optional[str] = Field(None,
+        description="Twilio message SID",
+        example="SM1234567890abcdef"
+    )
+    status: Optional[str] = Field(None,
+        description="Message delivery status",
+        example="queued"
+    )
+
+class AccountLinkResponse(BaseModel):
+    """Account linking response model"""
+    success: bool = Field(...,
+        description="Whether account linking succeeded",
+        example=True
+    )
+    auth_user_id: str = Field(...,
+        description="Supabase auth user ID",
+        example="550e8400-e29b-41d4-a716-446655440000"
+    )
+    linked_transcriptions: int = Field(...,
+        description="Number of transcriptions linked to account",
+        example=15
+    )
+    phone: str = Field(...,
+        description="Phone number",
+        example="+1234567890"
+    )
+    message: str = Field(...,
+        description="Success message",
+        example="Account created and 15 transcriptions linked"
+    )
 
 # --- API Key Validation ---
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False) # Use APIKeyHeader for header extraction
@@ -241,7 +413,7 @@ def verify_api_key(x_api_key: str = Header(None)):
 async def root():
     return {"message": "TikTok Transcription API. See /docs for documentation."}
 
-@app.post("/api/public/transcribe", response_model=TranscriptionResponse)
+@app.post("/api/public/transcribe", response_model=TranscriptionResponse, tags=["Public Transcription"])
 async def transcribe(
     request: TranscriptionRequest,
     background_tasks: BackgroundTasks,
@@ -303,7 +475,7 @@ async def transcribe(
         logger.error(f"Error in transcribe endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to start transcription")
 
-@app.get("/api/tasks", response_model=TaskListResponse)
+@app.get("/api/tasks", response_model=TaskListResponse, tags=["Private Task Management"])
 async def list_tasks(api_key: str = Depends(verify_api_key)):
     """List the last 50 transcription tasks from Supabase."""
     if supabase is None:
@@ -346,56 +518,73 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
         logger.error(f"Exception listing tasks from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error listing tasks")
 
-@app.get("/api/tasks/{task_id}", response_model=TranscriptionResponse)
+@app.get(
+    "/api/public/tasks/{task_id}",
+    response_model=TranscriptionResponse,
+    tags=["Core Transcription"],
+    responses={
+        200: {
+            "description": "Successful Response",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "task_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "status": "completed",
+                        "video_id": "7526401258786245902",
+                        "title": "Amazing TikTok Video",
+                        "created_at": "2025-07-20T12:00:00Z",
+                        "error": None,
+                        "thumbnail_url": "https://example.com/thumb.jpg",
+                        "video_url": "https://cdn.tiktok.com/...",
+                        "duration": 122,
+                        "like_count": 1500,
+                        "comment_count": 89,
+                        "repost_count": 234,
+                        "view_count": 15,
+                        "platform": "tiktok",
+                        "tags": ["tech", "viral"],
+                        "category": "technology"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Task not found",
+            "content": {"application/json": {"example": {"detail": "Task not found"}}}
+        },
+        500: {
+            "description": "Server error",
+            "content": {"application/json": {"example": {"detail": "Database connection not available"}}}
+        }
+    }
+)
 async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
     """Get task status from Supabase."""
     if supabase is None:
         logger.error(f"Cannot get task {task_id}: Supabase client not initialized.")
         raise HTTPException(status_code=500, detail="Database connection not available")
-        
     try:
-        # Fetch the specific columns needed for TranscriptionResponse
-        # Ensure column names here match your Supabase table AND TranscriptionResponse model fields
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
                     .eq('task_id', task_id)
-                    .maybe_single() # Use maybe_single() instead of single() to handle not found gracefully
+                    .maybe_single()
                     .execute
         )
-
-        # Check for errors during the query
         if hasattr(response, 'error') and response.error:
-             logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error retrieving task")
-
-        # Check if data was found
+            logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
+            raise HTTPException(status_code=500, detail="Database error retrieving task")
         if not response.data:
             raise HTTPException(status_code=404, detail="Task not found")
-            
-        # Map Supabase data to the response model
-        # Note: The 'thumbnail' field in TranscriptionResponse might need clarification
-        # Assuming it should map to thumbnail_url for now.
         task_data = response.data
-        return TranscriptionResponse(
-            task_id=task_data['task_id'],
-            status=task_data['status'],
-            video_id=task_data.get('video_id'),
-            title=task_data.get('title'),
-            created_at=task_data['created_at'],
-            error=task_data.get('error'),
-            thumbnail=task_data.get('thumbnail_url'), # Mapping thumbnail_url to thumbnail
-            thumbnail_url=task_data.get('thumbnail_url'),
-            thumbnail_local_path=task_data.get('thumbnail_local_path')
-        )
-            
-    except HTTPException: # Re-raise HTTPExceptions (like 404)
-         raise
+        return TranscriptionResponse(**task_data)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error retrieving task")
 
-@app.delete("/api/tasks/{task_id}")
+@app.delete("/api/tasks/{task_id}", tags=["Private Task Management"])
 async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
     """Delete task record from Supabase and associated local files."""
     if supabase is None:
@@ -447,7 +636,7 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
 
     return {"message": f"Task {task_id} deleted successfully"}
 
-@app.get("/api/transcript/{task_id}")
+@app.get("/api/transcript/{task_id}", tags=["Private Task Management"])
 async def get_transcript(task_id: str, api_key: str = Depends(verify_api_key)):
     """Get transcript for a task"""
     if task_id not in tasks:
@@ -484,7 +673,7 @@ async def get_transcript(task_id: str, api_key: str = Depends(verify_api_key)):
     # Return the first transcript file found
     return FileResponse(transcript_files[0])
 
-@app.get("/api/healthcheck")
+@app.get("/api/healthcheck", response_model=HealthCheckResponse, tags=["System & Health"])
 async def healthcheck():
     """
     Simple health check endpoint.
@@ -495,7 +684,7 @@ async def healthcheck():
         "timestamp": time.time()
     }
 
-@app.get("/api/test", response_model=str)
+@app.get("/api/test", response_model=str, tags=["System & Health"])
 async def test_endpoint():
     """Test endpoint that checks API key and OpenAI connectivity"""
     try:
@@ -529,7 +718,7 @@ async def test_endpoint():
     except Exception as e:
         return f"Test failed: {str(e)}"
 
-@app.post("/api/test-download", response_model=str)
+@app.post("/api/test-download", response_model=str, tags=["System & Health"])
 async def test_download(request: Request):
     """Test TikTok download functionality with a public video"""
     try:
@@ -558,7 +747,7 @@ async def test_download(request: Request):
     except Exception as e:
         return f"Test failed: {str(e)}"
 
-@app.post("/api/fallback-download")
+@app.post("/api/fallback-download", tags=["System & Health"])
 async def fallback_download(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -1352,7 +1541,7 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         logger.error(f"Error initializing task: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Database error during task initialization")
 
-@app.get("/api/public/tasks/{task_id}", response_model=TranscriptionResponse)
+@app.get("/api/public/tasks/{task_id}", tags=["Public Transcription"])
 async def public_get_task(task_id: str):
     """Get task status without requiring API key."""
     if supabase is None:
@@ -1398,7 +1587,7 @@ async def public_get_task(task_id: str):
         logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error retrieving task")
 
-@app.get("/api/public/transcript/{task_id}")
+@app.get("/api/public/transcript/{task_id}", tags=["Public Transcription"])
 async def public_get_transcript(task_id: str, format: Optional[str] = None):
     """Get transcript for a task without API key"""
     try:
@@ -1520,7 +1709,7 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
     # Otherwise return the transcript file as-is
     return FileResponse(transcript_files[0])
 
-@app.get("/api/public/tasks", response_model=TaskListResponse)
+@app.get("/api/public/tasks", response_model=TaskListResponse, tags=["Public Transcription"])
 async def public_list_tasks():
     """List the last 50 transcription tasks without API key"""
     if supabase is None:
@@ -1564,7 +1753,7 @@ async def public_list_tasks():
         logger.error(f"Exception listing public tasks from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error listing tasks")
 
-@app.get("/api/public/thumbnail/{task_id}")
+@app.get("/api/public/thumbnail/{task_id}", tags=["Public Transcription"])
 async def public_get_thumbnail(task_id: str):
     """Get the thumbnail image for a task without API key"""
     if supabase is None:
@@ -1670,7 +1859,7 @@ async def public_get_thumbnail(task_id: str):
         logger.error(f"Error fetching public thumbnail for task {task_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error fetching thumbnail")
 
-@app.post("/api/tasks")
+@app.post("/api/tasks", tags=["Private Task Management"])
 async def submit_task(
     request: TranscriptionRequest, 
     background_tasks: BackgroundTasks, 
@@ -1701,22 +1890,22 @@ async def submit_task(
         logger.error(f"Error submitting task for URL {request.url}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to submit task")
 
-@app.post("/api/cleanup-stuck-tasks")
+@app.post("/api/cleanup-stuck-tasks", tags=["System & Health"])
 async def cleanup_stuck_tasks(api_key: str = Depends(verify_api_key)):
     """Mark long-pending tasks as failed (requires API key)"""
     return await _cleanup_stuck_tasks_logic()
 
-@app.post("/api/public/cleanup-stuck-tasks")
+@app.post("/api/public/cleanup-stuck-tasks", tags=["System & Health"])
 async def public_cleanup_stuck_tasks():
     """Mark long-pending tasks as failed (public endpoint)"""
     return await _cleanup_stuck_tasks_logic()
 
-@app.post("/api/reprocess-sms-jobs")
+@app.post("/api/reprocess-sms-jobs", tags=["System & Health"])
 async def reprocess_sms_jobs(background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
     """Reprocess stuck SMS transcription jobs (requires API key)"""
     return await _reprocess_sms_jobs_logic(background_tasks)
 
-@app.post("/api/public/reprocess-sms-jobs")
+@app.post("/api/public/reprocess-sms-jobs", tags=["System & Health"])
 async def public_reprocess_sms_jobs(background_tasks: BackgroundTasks):
     """Reprocess stuck SMS transcription jobs (public endpoint)"""
     return await _reprocess_sms_jobs_logic(background_tasks)
@@ -1804,7 +1993,7 @@ async def _cleanup_stuck_tasks_logic():
 # ===============================
 # ACCOUNT LINKING ENDPOINTS
 
-@app.post("/api/link-sms-account")
+@app.post("/api/link-sms-account", response_model=AccountLinkResponse, tags=["SMS Integration"])
 async def link_sms_account(request: Request):
     """Create phone-based auth account and link SMS user's transcription history"""
     try:
@@ -1928,7 +2117,7 @@ async def link_sms_account(request: Request):
 # SMS ENDPOINTS
 # ===============================
 
-@app.post("/api/sms/inbound")
+@app.post("/api/sms/inbound", tags=["SMS Integration"])
 async def handle_inbound_sms(
     background_tasks: BackgroundTasks,
     From: str = Form(...),
@@ -2028,7 +2217,7 @@ async def handle_inbound_sms(
         )
         return Response(content=error_response, media_type="application/xml")
 
-@app.post("/api/sms/status")
+@app.post("/api/sms/status", tags=["SMS Integration"])
 async def handle_sms_status(
     request: Request,
     MessageSid: str = Form(...),
@@ -2049,7 +2238,7 @@ async def handle_sms_status(
         logger.error(f"Error handling SMS status: {str(e)}", exc_info=True)
         return {"error": "Failed to process status update"}
 
-@app.post("/api/sms/send")
+@app.post("/api/sms/send", response_model=SMSResponse, tags=["SMS Integration"])
 async def send_sms(
     request: Request,
     api_key: str = Depends(verify_api_key)
@@ -2906,7 +3095,7 @@ async def _render_processing_page(title: str):
     """
     return Response(content=html_content, media_type="text/html")
 
-@app.get("/api/analytics/sms")
+@app.get("/api/analytics/sms", tags=["SMS Integration"])
 async def sms_analytics(api_key: str = Depends(verify_api_key)):
     """Get SMS usage analytics"""
     try:
@@ -2956,7 +3145,7 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
         logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving analytics")
 
-@app.post("/api/webhook/supabase")
+@app.post("/api/webhook/supabase", tags=["System & Health"])
 async def handle_supabase_webhook(
     request: Request,
     background_tasks: BackgroundTasks
