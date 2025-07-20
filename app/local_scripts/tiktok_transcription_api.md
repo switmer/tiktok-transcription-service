@@ -4,7 +4,7 @@
 
 ## Base URL
 
-- **Production:** https://tiktok-transcription-service.onrender.com
+- **Production:** https://api.scribetok.com
 - **Local:** http://localhost:8000
 
 ## Authentication
@@ -160,7 +160,7 @@ interface TranscriptionResponse {
 ### JavaScript/Node.js
 ```js
 // Start transcription
-const response = await fetch('https://tiktok-transcription-service.onrender.com/api/public/transcribe', {
+const response = await fetch('https://api.scribetok.com/api/public/transcribe', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -176,13 +176,13 @@ const task = await response.json();
 console.log('Task ID:', task.task_id);
 
 // Check status
-const statusResponse = await fetch(`https://tiktok-transcription-service.onrender.com/api/public/tasks/${task.task_id}`);
+const statusResponse = await fetch(`https://api.scribetok.com/api/public/tasks/${task.task_id}`);
 const status = await statusResponse.json();
 console.log('Status:', status.status);
 
 // Get transcript when completed
 if (status.status === 'completed') {
-  const transcript = await fetch(`https://tiktok-transcription-service.onrender.com/api/public/transcript/${task.task_id}`);
+  const transcript = await fetch(`https://api.scribetok.com/api/public/transcript/${task.task_id}`);
   const transcriptText = await transcript.text();
   console.log('Transcript:', transcriptText);
 }
@@ -195,7 +195,7 @@ import time
 
 # Start transcription
 response = requests.post(
-    'https://tiktok-transcription-service.onrender.com/api/public/transcribe',
+    'https://api.scribetok.com/api/public/transcribe',
     json={
         'url': 'https://tiktok.com/@user/video/123',
         'save_thumbnail': True,
@@ -208,12 +208,12 @@ task_id = task['task_id']
 
 # Poll for completion
 while True:
-    status_response = requests.get(f'https://tiktok-transcription-service.onrender.com/api/public/tasks/{task_id}')
+    status_response = requests.get(f'https://api.scribetok.com/api/public/tasks/{task_id}')
     status = status_response.json()
 
     if status['status'] == 'completed':
         # Get transcript
-        transcript_response = requests.get(f'https://tiktok-transcription-service.onrender.com/api/public/transcript/{task_id}')
+        transcript_response = requests.get(f'https://api.scribetok.com/api/public/transcript/{task_id}')
         print('Transcript:', transcript_response.text)
         break
     elif status['status'] == 'failed':
@@ -226,15 +226,15 @@ while True:
 ### cURL
 ```bash
 # Start transcription
-curl -X POST "https://tiktok-transcription-service.onrender.com/api/public/transcribe" \
+curl -X POST "https://api.scribetok.com/api/public/transcribe" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://tiktok.com/@user/video/123", "save_thumbnail": true}'
 
 # Check status
-curl "https://tiktok-transcription-service.onrender.com/api/public/tasks/your-task-id"
+curl "https://api.scribetok.com/api/public/tasks/your-task-id"
 
 # Get transcript
-curl "https://tiktok-transcription-service.onrender.com/api/public/transcript/your-task-id"
+curl "https://api.scribetok.com/api/public/transcript/your-task-id"
 ```
 
 ## Error Handling
@@ -257,7 +257,7 @@ curl "https://tiktok-transcription-service.onrender.com/api/public/transcript/yo
 - Private endpoints: Depends on API key configuration
 
 ## Interactive Documentation
-- [Swagger UI](https://tiktok-transcription-service.onrender.com/docs)
-- [ReDoc](https://tiktok-transcription-service.onrender.com/redoc)
+- [Swagger UI](https://api.scribetok.com/docs)
+- [ReDoc](https://api.scribetok.com/redoc)
 
 This API provides comprehensive video transcription capabilities with both public access for discovery and private authenticated access for advanced features. 

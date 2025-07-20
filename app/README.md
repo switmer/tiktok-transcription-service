@@ -64,19 +64,19 @@ The service will be available at http://localhost:8000
 
 ### Start Transcription (Public)
 ```bash
-curl -X POST "https://tiktok-transcription-service.onrender.com/api/public/transcribe" \
+curl -X POST "https://api.scribetok.com/api/public/transcribe" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://tiktok.com/@user/video/123"}'
 ```
 
 ### Check Status
 ```bash
-curl "https://tiktok-transcription-service.onrender.com/api/public/tasks/{task_id}"
+curl "https://api.scribetok.com/api/public/tasks/{task_id}"
 ```
 
 ### Get Transcript
 ```bash
-curl "https://tiktok-transcription-service.onrender.com/api/public/transcript/{task_id}"
+curl "https://api.scribetok.com/api/public/transcript/{task_id}"
 ```
 
 ### SMS Integration

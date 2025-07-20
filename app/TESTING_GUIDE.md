@@ -33,7 +33,7 @@ TWILIO_AUTH_TOKEN=your_twilio_token
 
 1. **In Stripe Dashboard:**
    - Go to Webhooks
-   - Add endpoint: `https://tiktok-transcription-service.onrender.com/api/webhook/stripe`
+   - Add endpoint: `https://api.scribetok.com/api/webhook/stripe`
    - Select event: `checkout.session.completed`
    - Copy the webhook secret (starts with `whsec_`)
 
@@ -67,7 +67,7 @@ Text your Twilio number:
 
 #### **C. Test Webhook Endpoint:**
 
-Visit: `https://tiktok-transcription-service.onrender.com/docs`
+Visit: `https://api.scribetok.com/docs`
 - Look for `/api/webhook/stripe` endpoint
 - Should be listed under "Payment & Billing" tag
 

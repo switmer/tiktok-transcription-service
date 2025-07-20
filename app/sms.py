@@ -163,6 +163,10 @@ class SMSHandler:
 • /summary - Get a summary of your last transcript
 • /upgrade - Buy more credits ($5 for 10 credits)
 • /referral - Share with friends (both get 5 bonus credits!)
+• /myreferrals - See who you've invited
+• /link @handle - Connect your TikTok account
+• /stats - Your creator dashboard
+• /myvideos - Your top TikTok videos
 • /help - Show this message
 
 Just paste any video link and we'll transcribe it for you! 🎥✨"""
@@ -262,6 +266,268 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
             code += str(random.randint(10, 99))
         
         return code
+    
+    @staticmethod
+    async def handle_myreferrals_command(phone_number: str) -> str:
+        """Handle /myreferrals command to show user's referral activity"""
+        try:
+            # Get user's referral stats using the database function
+            result = supabase.rpc('get_user_referrals', {'user_phone': phone_number}).execute()
+            
+            if not result.data:
+                return "🎁 You haven't invited anyone yet!\n\nShare your link and get 5 bonus credits for each friend who joins!\n\nText /referral to get your sharing link."
+            
+            stats = result.data[0]
+            total_referrals = stats.get('total_referrals', 0)
+            total_credits_earned = stats.get('total_credits_earned', 0)
+            referral_streak = stats.get('referral_streak', 0)
+            recent_referrals = stats.get('recent_referrals', [])
+            
+            if total_referrals == 0:
+                return "🎁 You haven't invited anyone yet!\n\nShare your link and get 5 bonus credits for each friend who joins!\n\nText /referral to get your sharing link."
+            
+            # Build the response message
+            message = f"🎉 You've invited {total_referrals} friend{'s' if total_referrals != 1 else ''}!\n\n"
+            message += f"💰 Total credits earned: {total_credits_earned}\n"
+            
+            if referral_streak > 1:
+                message += f"🔥 Referral streak: {referral_streak} days\n"
+            
+            message += "\n📱 Recent invites:\n"
+            
+            # Show recent referrals with privacy protection
+            if recent_referrals:
+                for i, referral in enumerate(recent_referrals[:5], 1):  # Show last 5
+                    phone_masked = referral.get('phone_masked', 'Friend')
+                    display_name = referral.get('display_name', 'Friend')
+                    joined_date = referral.get('joined_date', '??/??')
+                    days_ago = referral.get('days_ago', 0)
+                    
+                    if days_ago == 0:
+                        time_text = "today"
+                    elif days_ago == 1:
+                        time_text = "yesterday"
+                    elif days_ago < 7:
+                        time_text = f"{int(days_ago)} days ago"
+                    else:
+                        time_text = f"on {joined_date}"
+                    
+                    # Use display name if available, otherwise masked phone
+                    friend_display = display_name if display_name and display_name != 'Friend' else phone_masked
+                    message += f"{i}. {friend_display} (joined {time_text})\n"
+            
+            message += f"\n🎯 Each friend earned you 5 bonus credits!\n"
+            message += f"Keep sharing: Text /referral for your link."
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error in myreferrals command: {str(e)}")
+            return "📊 Sorry, couldn't load your referral stats right now. Please try again later!"
+    
+    @staticmethod
+    async def handle_link_command(phone_number: str, handle_or_url: str) -> str:
+        """Handle /link command to connect TikTok account"""
+        try:
+            if not handle_or_url or handle_or_url.strip() == "":
+                return (
+                    "🔗 Link your TikTok account!\n\n"
+                    "Send: /link @yourusername\n"
+                    "Or: /link https://www.tiktok.com/@yourusername\n\n"
+                    "This lets you see stats for your own videos!"
+                )
+            
+            # Use the database function to link the profile
+            result = supabase.rpc('link_tiktok_profile', {
+                'user_phone': phone_number,
+                'handle_or_url': handle_or_url.strip()
+            }).execute()
+            
+            if not result.data:
+                return "❌ Error linking TikTok account. Please try again."
+            
+            link_result = result.data[0]
+            success = link_result.get('success', False)
+            handle = link_result.get('handle', '')
+            message = link_result.get('message', '')
+            
+            if success:
+                return (
+                    f"✅ Linked TikTok account: @{handle}\n\n"
+                    f"🎯 Now you can:\n"
+                    f"• Text /stats for your creator dashboard\n"
+                    f"• Text /myvideos to see your top videos\n"
+                    f"• Get special stats when you transcribe your own content!"
+                )
+            else:
+                return f"❌ {message}\n\nTry: /link @yourusername or paste your TikTok profile URL"
+            
+        except Exception as e:
+            logger.error(f"Error in link command: {str(e)}")
+            return "❌ Error linking TikTok account. Please check your handle and try again."
+    
+    @staticmethod
+    async def handle_stats_command(phone_number: str) -> str:
+        """Handle /stats command for creator dashboard"""
+        try:
+            # Get comprehensive user stats using the database function
+            result = supabase.rpc('get_user_creator_stats', {'user_phone': phone_number}).execute()
+            
+            if not result.data:
+                return "📊 No stats available yet. Start transcribing videos to build your dashboard!"
+            
+            stats = result.data[0]
+            total_transcribed = stats.get('total_transcribed', 0)
+            credits_remaining = stats.get('credits_remaining', 0)
+            free_credits_used = stats.get('free_credits_used', 0)
+            total_referrals = stats.get('total_referrals', 0)
+            total_referral_credits = stats.get('total_referral_credits', 0)
+            tiktok_handle = stats.get('tiktok_handle')
+            tiktok_linked = stats.get('tiktok_linked', False)
+            joined_date = stats.get('joined_date')
+            most_popular_video = stats.get('most_popular_video', {})
+            top_creators = stats.get('top_creators', [])
+            
+            # Format join date
+            if joined_date:
+                from datetime import datetime
+                join_dt = datetime.fromisoformat(joined_date.replace('Z', '+00:00'))
+                join_str = join_dt.strftime('%b %d, %Y')
+            else:
+                join_str = "Recently"
+            
+            # Build stats message
+            message = f"📊 Your ScribeTok Creator Stats\n\n"
+            
+            # Basic stats
+            message += f"🎥 {total_transcribed} videos transcribed\n"
+            
+            # Credits info
+            free_remaining = max(0, 5 - free_credits_used)
+            if free_remaining > 0:
+                message += f"💳 {credits_remaining} credits ({free_remaining} free remaining)\n"
+            else:
+                message += f"💳 {credits_remaining} credits\n"
+            
+            # Referral stats
+            if total_referrals > 0:
+                message += f"🎁 {total_referrals} friends referred (+{total_referral_credits} bonus credits)\n"
+            
+            # TikTok account status
+            if tiktok_linked and tiktok_handle:
+                message += f"🔗 Linked: @{tiktok_handle}\n"
+            else:
+                message += f"🔗 No TikTok account linked\n"
+            
+            message += f"📅 Member since: {join_str}\n\n"
+            
+            # Most popular video
+            if most_popular_video and most_popular_video.get('title'):
+                title = most_popular_video.get('title', 'Untitled')[:30]
+                views = most_popular_video.get('views', 0)
+                author = most_popular_video.get('author', 'Unknown')
+                
+                if views and views > 0:
+                    if views >= 1000000:
+                        view_str = f"{views/1000000:.1f}M"
+                    elif views >= 1000:
+                        view_str = f"{views/1000:.0f}K"
+                    else:
+                        view_str = str(views)
+                    
+                    message += f"🏆 Most popular: \"{title}\" by @{author} ({view_str} views)\n"
+            
+            # Top creators
+            if top_creators and len(top_creators) > 0:
+                message += f"\n📈 Top creators you follow:\n"
+                for i, creator in enumerate(top_creators[:3], 1):
+                    handle = creator.get('handle', 'unknown')
+                    count = creator.get('count', 0)
+                    message += f"{i}. @{handle} ({count} videos)\n"
+            
+            # Call to actions
+            message += f"\n🎯 "
+            if not tiktok_linked:
+                message += f"Text /link @yourusername to connect your TikTok!"
+            elif total_transcribed < 5:
+                message += f"Keep transcribing to unlock more stats!"
+            else:
+                message += f"Text /myvideos to see your top content!"
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error in stats command: {str(e)}")
+            return "📊 Sorry, couldn't load your stats right now. Please try again later!"
+    
+    @staticmethod
+    async def handle_myvideos_command(phone_number: str) -> str:
+        """Handle /myvideos command to show user's TikTok videos"""
+        try:
+            # Check if user has linked TikTok account
+            user_result = supabase.table("sms_users").select("tiktok_handle, tiktok_linked_at").eq("phone_number", phone_number).execute()
+            
+            if not user_result.data:
+                return "📱 Connect your TikTok account first!\n\nText: /link @yourusername"
+            
+            user_data = user_result.data[0]
+            tiktok_handle = user_data.get('tiktok_handle')
+            
+            if not tiktok_handle:
+                return "📱 Connect your TikTok account first!\n\nText: /link @yourusername"
+            
+            # Get user's videos from transcription history
+            videos_result = supabase.table("user_video_stats").select(
+                "video_title, view_count, like_count, transcribed_at"
+            ).eq("user_phone", phone_number).eq("is_users_video", True).order(
+                "view_count", desc=True
+            ).limit(5).execute()
+            
+            if not videos_result.data or len(videos_result.data) == 0:
+                return (
+                    f"📱 No videos found for @{tiktok_handle}\n\n"
+                    f"🎥 Transcribe your own TikTok videos to see them here!\n"
+                    f"Just send any of your video links."
+                )
+            
+            # Build response
+            message = f"📱 Your Top TikTok Videos (@{tiktok_handle})\n\n"
+            
+            for i, video in enumerate(videos_result.data, 1):
+                title = video.get('video_title', 'Untitled')[:35]
+                views = video.get('view_count', 0)
+                likes = video.get('like_count', 0)
+                
+                # Format numbers
+                if views and views > 0:
+                    if views >= 1000000:
+                        view_str = f"{views/1000000:.1f}M views"
+                    elif views >= 1000:
+                        view_str = f"{views/1000:.0f}K views"
+                    else:
+                        view_str = f"{views} views"
+                else:
+                    view_str = "- views"
+                
+                if likes and likes > 0:
+                    if likes >= 1000000:
+                        like_str = f"{likes/1000000:.1f}M likes"
+                    elif likes >= 1000:
+                        like_str = f"{likes/1000:.0f}K likes"
+                    else:
+                        like_str = f"{likes} likes"
+                else:
+                    like_str = "- likes"
+                
+                message += f"{i}. \"{title}\"\n   {view_str}, {like_str}\n\n"
+            
+            message += f"🎯 Keep creating! Text /stats for your full dashboard."
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error in myvideos command: {str(e)}")
+            return "📱 Sorry, couldn't load your videos right now. Please try again later!"
     
     @staticmethod
     async def use_credit_and_get_message(phone_number: str, video_title: str = "Video") -> tuple:
@@ -635,6 +901,21 @@ Quote: "[best quote from the video]" """
         
         elif body.lower() == '/referral':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_referral_command(from_number))
+        
+        elif body.lower() == '/myreferrals':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_myreferrals_command(from_number))
+        
+        elif body.lower().startswith('/link'):
+            # Extract handle/URL from command
+            parts = body.split(' ', 1)
+            handle_or_url = parts[1] if len(parts) > 1 else ""
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_link_command(from_number, handle_or_url))
+        
+        elif body.lower() == '/stats' or body.lower() == '/profile':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_stats_command(from_number))
+        
+        elif body.lower() == '/myvideos':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_myvideos_command(from_number))
         
         # Check for video URLs
         elif SMSHandler.is_video_url(body):
