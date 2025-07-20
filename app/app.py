@@ -149,6 +149,7 @@ class TranscriptionRequest(BaseModel):
     create_srt: bool = False
     proxy: Optional[str] = None
     api_key: Optional[str] = None
+    user_phone: Optional[str] = None  # Phone number for SMS notifications
 
 class TranscriptionResponse(BaseModel):
     task_id: str
@@ -249,7 +250,7 @@ async def transcribe(
     """Start a new transcription task or return existing one."""
     try:
         # Initialize task (this will check for existing transcriptions)
-        task = await init_task(request.url, user_id)
+        task = await init_task(request.url, user_id, request.user_phone)
         task_id = task['task_id'] # Extract task_id from the returned dict
 
         # Get the task details - Ensure task_id is passed as a string
@@ -1112,6 +1113,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                         .execute
             )
             logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}, thumbnail: {thumbnail_local_path or 'none'}")
+            
+            # Send SMS notification if this was an SMS request
+            if update_data.get('user_phone'):
+                await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text)
+            else:
+                logger.info(f"No SMS notification needed for task {task_id} (no user_phone)")
         else:
             await update_task_status(task_id, "failed", "Transcription failed")
             logger.error(f"Failed to transcribe audio for task {task_id}")
@@ -1119,6 +1126,41 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
     except Exception as e:
         logger.error(f"Error processing task {task_id}: {str(e)}", exc_info=True)
         await update_task_status(task_id, "failed", str(e))
+
+async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str):
+    """Send SMS notification when transcription completes."""
+    try:
+        if not all([os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN')]):
+            logger.warning("Twilio credentials not available, skipping SMS notification")
+            return
+            
+        from twilio.rest import Client
+        
+        # Get first 50 words for SMS preview
+        words = transcript.split(' ')[:50] 
+        preview = ' '.join(words) + ('...' if len(transcript.split(' ')) > 50 else '')
+        
+        message = f"""🎬 Transcript ready: "{title}"
+
+{preview}
+
+📖 Full transcript: https://scribetok.com/v/{task_id}
+
+🚀 Share this link with friends!"""
+
+        client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))
+        
+        sms = await asyncio.to_thread(
+            client.messages.create,
+            body=message,
+            from_=os.getenv('TWILIO_PHONE_NUMBER', '+17744727423'),
+            to=phone_number
+        )
+        
+        logger.info(f"Completion SMS sent to {phone_number} for task {task_id}: {sms.sid}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send completion SMS for task {task_id}: {str(e)}")
 
 async def extract_tags_from_title(title: str) -> List[str]:
     """Extract potential tags from video title."""
