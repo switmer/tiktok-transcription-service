@@ -1830,15 +1830,15 @@ async def link_sms_account(request: Request):
             
         logger.info(f"Creating phone-based auth account for phone {phone}")
         
-        # Check if phone already has auth account
-        existing_user_response = await asyncio.to_thread(
-            supabase.table('auth.users')
-                    .select('id, phone')
-                    .eq('phone', phone)
-                    .execute
+        # Check if phone already has auth account via SMS users table
+        sms_user_response = await asyncio.to_thread(
+            supabase.table('sms_users')
+                    .select('auth_user_id')
+                    .eq('phone_number', phone)
+                    .single,
         )
         
-        if existing_user_response.data:
+        if sms_user_response.data and sms_user_response.data.get('auth_user_id'):
             logger.warning(f"Phone {phone} already has auth account")
             return JSONResponse(
                 status_code=400,
