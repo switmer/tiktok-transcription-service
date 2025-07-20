@@ -961,7 +961,18 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         
         # Download the video and extract audio using the original URL
         # Note: The 'video_url' argument to this function is now ignored.
-        audio_file, video_id, title = transcriber.download_tiktok(original_video_url, output_dir, proxy)
+        download_result = transcriber.download_tiktok(original_video_url, output_dir, proxy)
+        
+        if isinstance(download_result, tuple):
+            # Handle legacy tuple return format
+            audio_file, video_id, title = download_result
+            direct_video_url = None
+        else:
+            # Handle new dict return format with video_url
+            audio_file = download_result.get("audio_file") if download_result else None
+            video_id = download_result.get("video_id") if download_result else None  
+            title = download_result.get("title") if download_result else None
+            direct_video_url = download_result.get("video_url") if download_result else None
         
         if not audio_file or not video_id:
             logger.error(f"Download failed for task {task_id} using URL: {original_video_url}")
@@ -1136,6 +1147,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 update_data['thumbnail_url'] = thumbnail_url
             if thumbnail_local_path:
                 update_data['thumbnail_local_path'] = thumbnail_local_path
+                
+            # Add direct video URL from CDN
+            if direct_video_url:
+                update_data['video_url'] = direct_video_url
+                logger.info(f"Storing direct video URL: {direct_video_url}")
                 
             # Add all rich metadata fields
             update_data.update(rich_metadata)

@@ -128,7 +128,8 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                             "title": title,
                             "audio_file": audio_path,
                             "video_file": video_path,
-                            "metadata_file": metadata_path
+                            "metadata_file": metadata_path,
+                            "video_url": video_url  # Direct CDN URL for database storage
                         }
                         
                     except subprocess.CalledProcessError as e:
