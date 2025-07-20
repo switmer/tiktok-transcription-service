@@ -80,7 +80,7 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                     return None
                 
                 # Download the video file
-                logger.info(f"Downloading video from: {video_url}")
+                logger.info(f"Downloading video from RapidAPI URL: {video_url}")
                 video_response = requests.get(video_url, timeout=120)  # Increased timeout for video download
                 
                 if video_response.status_code == 200:
@@ -123,6 +123,7 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                         with open(metadata_path, 'w') as f:
                             json.dump(metadata, f, indent=2)
                         
+                        logger.info(f"RapidAPI success - returning video_url: {video_url}")
                         return {
                             "video_id": video_id,
                             "title": title,
@@ -298,11 +299,15 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     logger.error("All download methods failed for TikTok URL")
     return None
 
-def format_timestamped_transcript(transcript_data):
+def format_timestamped_transcript(transcript_data, max_duration_seconds=None):
     """Formats verbose_json transcript data with timestamps and bullet points."""
     formatted_lines = []
     timestamp_interval = 30  # Add timestamp every 30 seconds
     last_printed_timestamp_section = -1
+    
+    # Log if we have duration info
+    if max_duration_seconds:
+        logger.info(f"Formatting transcript with max duration: {max_duration_seconds} seconds")
 
     # Handle potential non-dict response if API changes or error occurs
     if not isinstance(transcript_data, dict):
