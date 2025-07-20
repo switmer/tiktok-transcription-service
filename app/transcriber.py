@@ -107,14 +107,16 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                         
                         logger.info(f"Audio extracted successfully: {audio_path}")
                         
-                        # Save metadata
+                        # Save metadata - include full RapidAPI response for rich metadata extraction
                         metadata = {
                             "id": video_id,
                             "title": title,
                             "url": url,
                             "download_method": "rapidapi",
                             "downloaded_at": datetime.now().isoformat(),
-                            "thumbnail_url": video_data.get("cover") or video_data.get("origin_cover") or video_data.get("ai_dynamic_cover")
+                            "thumbnail_url": video_data.get("cover") or video_data.get("origin_cover") or video_data.get("ai_dynamic_cover"),
+                            # Include full RapidAPI response data for rich metadata extraction
+                            "data": video_data  # This contains likes, comments, author info, etc.
                         }
                         
                         metadata_path = os.path.join(output_dir, f"{video_id}.info.json")

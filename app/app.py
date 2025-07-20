@@ -987,11 +987,14 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         
         # Read metadata files for comprehensive data extraction
         metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
+        logger.info(f"Looking for metadata files in {output_dir}, found: {metadata_files}")
+        
         if metadata_files:
             try:
                 with open(metadata_files[0], 'r') as f:
                     metadata = json.load(f)
                     logger.info(f"Processing rich metadata from: {metadata_files[0]}")
+                    logger.info(f"Metadata keys: {list(metadata.keys())}")
                     
                     # Extract thumbnail URL
                     thumbnail_url = metadata.get('thumbnail_url') or metadata.get('thumbnail') or metadata.get('cover')
@@ -1058,6 +1061,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     
             except Exception as e:
                 logger.warning(f"Failed to read metadata for rich data extraction: {str(e)}")
+        else:
+            logger.warning(f"No metadata files found in {output_dir} - rich metadata will be empty")
         
         # Look for downloaded thumbnail files
         thumbnail_extensions = ['.jpg', '.jpeg', '.png', '.webp']
