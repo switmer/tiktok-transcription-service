@@ -936,10 +936,10 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         return
 
     try:
-        # --- Fetch the original URL from the database --- 
+        # --- Fetch the original URL and user_phone from the database --- 
         task_response = await asyncio.to_thread(
             supabase.table('transcriptions')
-                    .select("url") # Fetch only the URL column
+                    .select("url, user_phone") # Fetch URL and user_phone for SMS notifications
                     .eq('task_id', task_id)
                     .single() # Expect exactly one result
                     .execute
@@ -951,7 +951,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
              return
              
         original_video_url = task_response.data['url']
-        logger.info(f"Processing task {task_id} with original URL from DB: {original_video_url}")
+        user_phone = task_response.data.get('user_phone')  # Get user phone for SMS notifications
+        logger.info(f"Processing task {task_id} with original URL from DB: {original_video_url}, SMS phone: {user_phone or 'none'}")
         # -------------------------------------------------
         
         # Create a unique working directory for this task
@@ -1049,14 +1050,18 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 if video_files and os.path.exists(video_files[0]):
                     import cv2
                     video_path = video_files[0]
-                    vidcap = cv2.VideoCapture(video_path)
-                    success, image = vidcap.read()
-                    if success:
-                        thumbnail_path = os.path.join(output_dir, "thumbnail.jpg")
-                        cv2.imwrite(thumbnail_path, image)
-                        thumbnail_local_path = os.path.relpath(thumbnail_path, DOWNLOADS_DIR)
-                        logger.info(f"Extracted thumbnail from video: {thumbnail_path}")
-                    vidcap.release()
+                    vidcap = None
+                    try:
+                        vidcap = cv2.VideoCapture(video_path)
+                        success, image = vidcap.read()
+                        if success:
+                            thumbnail_path = os.path.join(output_dir, "thumbnail.jpg")
+                            cv2.imwrite(thumbnail_path, image)
+                            thumbnail_local_path = os.path.relpath(thumbnail_path, DOWNLOADS_DIR)
+                            logger.info(f"Extracted thumbnail from video: {thumbnail_path}")
+                    finally:
+                        if vidcap is not None:
+                            vidcap.release()
             except Exception as e:
                 logger.warning(f"Failed to extract thumbnail from video: {str(e)}")
         
@@ -1076,7 +1081,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'transcript': transcript_text,
                 'tags': tags,
                 'category': category,
-                'error': None
+                'error': None,
+                'user_phone': user_phone  # Include user_phone for SMS notification check
             }
             
             # Add thumbnail info if available
@@ -1123,10 +1129,26 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         else:
             await update_task_status(task_id, "failed", "Transcription failed")
             logger.error(f"Failed to transcribe audio for task {task_id}")
+            
+        # Clean up temporary files to prevent disk space issues
+        try:
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+                logger.info(f"Cleaned up temporary files for task {task_id}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to cleanup files for task {task_id}: {str(cleanup_error)}")
 
     except Exception as e:
         logger.error(f"Error processing task {task_id}: {str(e)}", exc_info=True)
         await update_task_status(task_id, "failed", str(e))
+        
+        # Clean up temporary files even on error
+        try:
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+                logger.info(f"Cleaned up temporary files for failed task {task_id}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to cleanup files for failed task {task_id}: {str(cleanup_error)}")
 
 async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str):
     """Send SMS notification when transcription completes."""
