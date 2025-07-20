@@ -1807,6 +1807,143 @@ async def _cleanup_stuck_tasks_logic():
         raise HTTPException(status_code=500, detail="Failed to cleanup stuck tasks")
 
 # ===============================
+# ACCOUNT LINKING ENDPOINTS
+
+@app.post("/api/link-sms-account")
+async def link_sms_account(request: Request):
+    """Create auth account and link SMS user's transcription history"""
+    try:
+        body = await request.json()
+        phone = body.get('phone')
+        email = body.get('email')
+        
+        if not phone or not email:
+            raise HTTPException(status_code=400, detail="Phone and email are required")
+            
+        # Normalize phone number
+        phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+        if len(phone) == 10:
+            phone = f"+1{phone}"
+        elif len(phone) == 11 and phone.startswith('1'):
+            phone = f"+{phone}"
+        elif not phone.startswith('+'):
+            phone = f"+{phone}"
+            
+        logger.info(f"Linking SMS account for phone {phone} with email {email}")
+        
+        # Check if email already exists in auth.users
+        existing_user_response = await asyncio.to_thread(
+            supabase.table('auth.users')
+                    .select('id, email')
+                    .eq('email', email)
+                    .execute
+        )
+        
+        if existing_user_response.data:
+            logger.warning(f"Email {email} already registered")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Email already registered"}
+            )
+        
+        # Check if phone has transcriptions to link
+        stats_response = await asyncio.to_thread(
+            supabase.rpc,
+            'get_sms_user_stats',
+            {'p_phone_number': phone}
+        )
+        
+        if not stats_response.data or stats_response.data[0]['total_transcriptions'] == 0:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "No transcription history found for this phone number"}
+            )
+        
+        transcription_count = stats_response.data[0]['total_transcriptions']
+        
+        # Create Supabase auth user
+        try:
+            auth_response = await asyncio.to_thread(
+                supabase.auth.admin.create_user,
+                {
+                    "email": email,
+                    "password": "temp_password_12345",  # User will reset via email
+                    "email_confirm": True,
+                    "user_metadata": {
+                        "linked_from_sms": True,
+                        "sms_phone": phone,
+                        "transcription_count": transcription_count
+                    }
+                }
+            )
+            
+            if not auth_response.user:
+                raise Exception("Failed to create auth user")
+                
+            auth_user_id = auth_response.user.id
+            logger.info(f"Created auth user {auth_user_id} for email {email}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create auth user: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": f"Failed to create account: {str(e)}"}
+            )
+        
+        # Link transcriptions using database function
+        try:
+            link_response = await asyncio.to_thread(
+                supabase.rpc,
+                'link_sms_user_to_auth',
+                {
+                    'p_phone_number': phone,
+                    'p_auth_user_id': auth_user_id
+                }
+            )
+            
+            linked_count = link_response.data[0]['linked_transcriptions'] if link_response.data else 0
+            
+            logger.info(f"Successfully linked {linked_count} transcriptions for phone {phone} to user {auth_user_id}")
+            
+            # Send password reset email so user can set their password
+            try:
+                await asyncio.to_thread(
+                    supabase.auth.admin.generate_link,
+                    {
+                        "type": "recovery",
+                        "email": email
+                    }
+                )
+                logger.info(f"Sent password reset email to {email}")
+            except Exception as e:
+                logger.warning(f"Failed to send password reset email: {str(e)}")
+            
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "linked_transcriptions": linked_count,
+                    "auth_user_id": auth_user_id,
+                    "message": f"Successfully created account and linked {linked_count} transcriptions"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to link transcriptions: {str(e)}")
+            # Clean up created auth user if linking failed
+            try:
+                await asyncio.to_thread(supabase.auth.admin.delete_user, auth_user_id)
+            except:
+                pass
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": f"Failed to link transcriptions: {str(e)}"}
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in link_sms_account: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===============================
 # SMS ENDPOINTS
 # ===============================
 
