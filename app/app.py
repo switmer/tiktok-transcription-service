@@ -412,7 +412,28 @@ def verify_api_key(x_api_key: str = Header(None)):
     return x_api_key
 
 @app.get("/", include_in_schema=False)
-async def root():
+async def root(ref: Optional[str] = None):
+    """Landing page with optional referral code tracking"""
+    if ref:
+        # Track referral code for later use
+        # Store in a simple way that can be retrieved when user texts
+        try:
+            # Store referral code with timestamp in database for tracking
+            supabase.table("pending_referrals").insert({
+                "referral_code": ref,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+            }).execute()
+        except:
+            pass  # Continue even if tracking fails
+        
+        return {
+            "message": "🎁 Welcome to ScribeTok! You've been referred by a friend.",
+            "instructions": f"Text any TikTok or YouTube link to (774) 472-7423 to claim your 5 bonus credits!",
+            "referral_code": ref,
+            "phone_number": "+17744727423"
+        }
+    
     return {"message": "TikTok Transcription API. See /docs for documentation."}
 
 @app.post("/api/public/transcribe", response_model=TranscriptionResponse, tags=["Public Transcription"])
