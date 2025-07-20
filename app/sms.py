@@ -161,9 +161,37 @@ class SMSHandler:
 🗂️ Commands:
 • /vault - View your recent transcripts
 • /summary - Get a summary of your last transcript
+• /upgrade - Buy more credits ($5 for 10 credits)
 • /help - Show this message
 
 Just paste any video link and we'll transcribe it for you! 🎥✨"""
+    
+    @staticmethod
+    async def handle_upgrade_command(phone_number: str) -> str:
+        """Handle /upgrade command for purchasing credits"""
+        try:
+            # Check current credit balance
+            result = supabase.table("sms_users").select("credits_remaining").eq("phone_number", phone_number).execute()
+            
+            current_credits = 0
+            if result.data:
+                current_credits = result.data[0].get("credits_remaining", 0)
+            
+            # Get the Stripe payment link from environment
+            stripe_payment_link = os.getenv("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/test_your_payment_link_here")
+            
+            return (
+                f"💳 Current Credits: {current_credits}\n\n"
+                f"🎯 Buy 10 SMS Credits for $5:\n"
+                f"{stripe_payment_link}\n\n"
+                f"✨ Credits are instantly added to your phone after purchase!\n"
+                f"💬 No account required - credits never expire.\n\n"
+                f"Questions? Reply HELP"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in upgrade command: {str(e)}")
+            return "💳 Sorry, couldn't load upgrade info right now. Please try again later!"
     
     @staticmethod
     async def handle_vault_command(phone_number: str) -> str:
@@ -386,6 +414,9 @@ Quote: "[best quote from the video]" """
         elif body.lower() == '/summary':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_summary_command(from_number))
         
+        elif body.lower() == '/upgrade':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_upgrade_command(from_number))
+        
         # Check for video URLs
         elif SMSHandler.is_video_url(body):
             video_url = SMSHandler.extract_video_url(body)
@@ -418,6 +449,34 @@ Quote: "[best quote from the video]" """
             return SMSHandler.create_twiml_response(
                 "🤖 Hi there! Send me a TikTok or YouTube link to get a transcript.\n\nType /help for more options! 📱"
             )
+
+async def send_sms(phone_number: str, message: str) -> bool:
+    """Send an SMS message to a phone number"""
+    try:
+        if not twilio_client:
+            logger.warning(f"Twilio not available, cannot send SMS to {phone_number}")
+            return False
+            
+        # Use messaging service if available, otherwise use phone number
+        if TWILIO_MESSAGING_SERVICE_SID:
+            message = twilio_client.messages.create(
+                body=message,
+                messaging_service_sid=TWILIO_MESSAGING_SERVICE_SID,
+                to=phone_number
+            )
+        else:
+            message = twilio_client.messages.create(
+                body=message,
+                from_=TWILIO_PHONE_NUMBER,
+                to=phone_number
+            )
+        
+        logger.info(f"SMS sent successfully to {phone_number}: {message.sid}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send SMS to {phone_number}: {str(e)}")
+        return False
 
 async def notify_transcript_complete(phone_number: str, task_id: str, title: str, transcript_preview: str = "") -> bool:
     """Send SMS notification when transcript is complete"""

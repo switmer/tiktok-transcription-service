@@ -27,12 +27,12 @@ Complete API reference for the TikTok/YouTube transcription service with SMS int
 
 **`POST /api/public/transcribe`**
 
-Start transcribing a TikTok or YouTube video.
+Start transcribing a TikTok or YouTube video. YouTube videos are processed instantly via RapidAPI, while TikTok videos go through full metadata extraction.
 
 **Request:**
 ```json
 {
-  "url": "https://tiktok.com/@user/video/123",
+  "url": "https://youtube.com/watch?v=dQw4w9WgXcQ",
   "callback_url": "https://yourapp.com/webhook",
   "extract_audio": true,
   "save_thumbnail": true,
@@ -42,7 +42,13 @@ Start transcribing a TikTok or YouTube video.
 }
 ```
 
+**Supported URL Formats:**
+- **TikTok**: `https://tiktok.com/@user/video/123`, `https://vm.tiktok.com/abc123`
+- **YouTube**: `https://youtube.com/watch?v=abc123`, `https://youtu.be/abc123`, `https://youtube.com/shorts/abc123`
+
 **Response:**
+
+**TikTok Video (Pending Processing):**
 ```json
 {
   "task_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -51,6 +57,20 @@ Start transcribing a TikTok or YouTube video.
   "title": "Amazing TikTok Video",
   "created_at": "2025-07-20T12:00:00Z",
   "thumbnail_url": "https://p16-sign-sg.tiktokcdn.com/..."
+}
+```
+
+**YouTube Video (Instantly Completed):**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "status": "completed",
+  "video_id": "dQw4w9WgXcQ",
+  "title": "Rick Astley - Never Gonna Give You Up",
+  "created_at": "2025-07-20T12:00:00Z",
+  "platform": "youtube",
+  "category": "youtube-transcription",
+  "tags": ["sms-inbound", "youtube"]
 }
 ```
 
@@ -240,15 +260,41 @@ Get list of available content categories.
 
 **`POST /api/sms/inbound`**
 
-Handle incoming SMS messages from Twilio.
+Handle incoming SMS messages from Twilio. Supports both TikTok and YouTube video URLs, plus SMS commands.
 
-**Request (Form Data):**
+**Request Examples (Form Data):**
+
+**TikTok Video:**
 ```
 From=+1234567890
 Body=https://tiktok.com/@user/video/123
 ```
 
+**YouTube Video:**
+```
+From=+1234567890
+Body=https://youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+**SMS Commands:**
+```
+From=+1234567890
+Body=/help
+```
+
 **Response:** TwiML XML for SMS reply
+
+**SMS Command Support:**
+- `/help` - Show available commands
+- `/register` - Create account and link history
+- `/login` - Get OTP verification code
+- `/verify 123456` - Verify with OTP code
+- `/profile` - View account stats
+- `/vault` - View recent transcripts
+
+**Video Processing:**
+- **YouTube**: Instant transcription via RapidAPI with immediate SMS response
+- **TikTok**: Full processing with rich metadata via backend service
 
 ### SMS Status Updates
 
@@ -558,8 +604,9 @@ All transcription responses include extensive metadata extracted from videos:
 
 ### JavaScript/Node.js
 
+**TikTok Transcription:**
 ```javascript
-// Start transcription
+// Start TikTok transcription (async processing)
 const response = await fetch('https://tiktok-transcription-service.onrender.com/api/public/transcribe', {
   method: 'POST',
   headers: {
@@ -594,6 +641,31 @@ const checkStatus = async () => {
 };
 
 checkStatus();
+```
+
+**YouTube Transcription (Instant):**
+```javascript
+// Start YouTube transcription (instant processing)
+const response = await fetch('https://tiktok-transcription-service.onrender.com/api/public/transcribe', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    url: 'https://youtube.com/watch?v=dQw4w9WgXcQ',
+    user_phone: '+1234567890'  // Optional: for SMS notification
+  })
+});
+
+const task = await response.json();
+console.log('Task ID:', task.task_id);
+
+// YouTube videos are completed immediately
+if (task.status === 'completed') {
+  const transcriptResponse = await fetch(`https://tiktok-transcription-service.onrender.com/api/public/transcript/${task.task_id}`);
+  const transcript = await transcriptResponse.text();
+  console.log('YouTube Transcript:', transcript);
+}
 ```
 
 ### Python
@@ -675,10 +747,12 @@ curl -X GET "https://tiktok-transcription-service.onrender.com/api/tasks" \
 ```
 
 ### Common Errors
-- `"Invalid video URL"` - URL format not supported
+- `"Invalid video URL"` - URL format not supported (must be TikTok or YouTube)
 - `"Task not found"` - Task ID doesn't exist
 - `"Transcription failed"` - Video processing error
 - `"Invalid API key"` - Authentication failed
+- `"YouTube RapidAPI error"` - YouTube transcription service unavailable
+- `"Failed to transcribe YouTube video"` - YouTube processing failed
 
 ---
 
@@ -694,6 +768,8 @@ curl -X GET "https://tiktok-transcription-service.onrender.com/api/tasks" \
 ## 📈 Recent Updates (July 2025)
 
 ### New Features
+- ✅ **Dual Platform Support** - TikTok AND YouTube transcription
+- ✅ **YouTube Instant Processing** - Real-time transcription via RapidAPI
 - ✅ **SMS Integration** - Full SMS workflow with Twilio
 - ✅ **Phone-First Authentication** - No email required
 - ✅ **Account Linking** - Connect SMS users to Supabase auth
@@ -713,4 +789,4 @@ curl -X GET "https://tiktok-transcription-service.onrender.com/api/tasks" \
 
 ---
 
-This API provides comprehensive video transcription capabilities with SMS integration, phone-first authentication, and extensive content discovery features. Perfect for building viral social media tools and content analysis applications.
+This API provides comprehensive **dual-platform video transcription** capabilities (TikTok + YouTube) with SMS integration, phone-first authentication, and extensive content discovery features. Features instant YouTube processing via RapidAPI and rich TikTok metadata extraction. Perfect for building viral social media tools and content analysis applications.

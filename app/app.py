@@ -48,6 +48,7 @@ try:
     from . import discovery
     from . import transcriber
     from . import sms
+    from .tiktok_service import tiktok_service
 except ImportError:
     # Fall back to absolute imports (when running directly)
     import sys
@@ -58,6 +59,7 @@ except ImportError:
     import transcriber
     import sms
     from database import supabase
+    from tiktok_service import tiktok_service
 
 # Import tiktok downloader directly
 try:
@@ -446,15 +448,70 @@ async def transcribe(
 
         # If status is not completed, start processing
         if task_data['status'] != 'completed':
-            # Queue the background processing
-            background_tasks.add_task(
-                process_transcription_task,
-                task_id,
-                request.url,
-                request.callback_url,
-                request.proxy
-            )
-            logger.info(f"Task {task_id} queued for processing URL: {request.url}")
+            # For YouTube URLs, try instant transcription first
+            if is_youtube_url(request.url):
+                logger.info(f"Attempting instant YouTube transcription for task {task_id}")
+                
+                try:
+                    youtube_result = transcriber.download_youtube_rapidapi(request.url)
+                    
+                    if youtube_result:
+                        # Update task with completed status and transcript
+                        await asyncio.to_thread(
+                            supabase.table('transcriptions')
+                                    .update({
+                                        'status': 'completed',
+                                        'video_id': youtube_result['video_id'],
+                                        'title': youtube_result['title'],
+                                        'transcript': youtube_result['transcript'],
+                                        'platform': 'youtube',
+                                        'category': 'youtube-transcription',
+                                        'tags': ['sms-inbound', 'youtube'] if request.user_phone else ['youtube']
+                                    })
+                                    .eq('task_id', task_id)
+                                    .execute
+                        )
+                        
+                        # Update task_data for response
+                        task_data['status'] = 'completed'
+                        task_data['video_id'] = youtube_result['video_id']
+                        task_data['title'] = youtube_result['title']
+                        task_data['platform'] = 'youtube'
+                        
+                        logger.info(f"YouTube instant transcription completed for task {task_id}")
+                    else:
+                        logger.warning(f"YouTube instant transcription failed for {task_id}, falling back to background processing")
+                        # Queue the background processing as fallback
+                        background_tasks.add_task(
+                            process_transcription_task,
+                            task_id,
+                            request.url,
+                            request.callback_url,
+                            request.proxy
+                        )
+                        logger.info(f"Task {task_id} queued for background processing (YouTube fallback)")
+                        
+                except Exception as e:
+                    logger.error(f"YouTube instant transcription error for {task_id}: {str(e)}")
+                    # Queue the background processing as fallback
+                    background_tasks.add_task(
+                        process_transcription_task,
+                        task_id,
+                        request.url,
+                        request.callback_url,
+                        request.proxy
+                    )
+                    logger.info(f"Task {task_id} queued for background processing (YouTube error fallback)")
+            else:
+                # Non-YouTube URLs: use background processing
+                background_tasks.add_task(
+                    process_transcription_task,
+                    task_id,
+                    request.url,
+                    request.callback_url,
+                    request.proxy
+                )
+                logger.info(f"Task {task_id} queued for background processing URL: {request.url}")
         else:
             logger.info(f"Returning existing transcription for URL: {request.url}")
         
@@ -676,12 +733,20 @@ async def get_transcript(task_id: str, api_key: str = Depends(verify_api_key)):
 @app.get("/api/healthcheck", response_model=HealthCheckResponse, tags=["System & Health"])
 async def healthcheck():
     """
-    Simple health check endpoint.
+    Health check endpoint with service status.
     """
+    # Check service statuses
+    services = {
+        "openai": "connected" if os.getenv("OPENAI_API_KEY") else "disconnected",
+        "supabase": "connected" if supabase is not None else "disconnected",
+        "rapidapi": "connected" if os.getenv("RAPIDAPI_KEY") else "disconnected"
+    }
+    
     return {
         "status": "ok",
         "version": "1.0.0",
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "services": services
     }
 
 @app.get("/api/test", response_model=str, tags=["System & Health"])
@@ -1090,6 +1155,18 @@ async def process_video_with_external_script(
             shutil.rmtree(task_dir)
         raise RuntimeError(f"Unexpected error: {e}")
 
+def is_youtube_url(url: str) -> bool:
+    """Check if URL is a YouTube video."""
+    import re
+    youtube_patterns = [
+        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([^&\n?#]+)',
+        r'(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+        r'(?:www\.)?youtu\.be/[\w-]+',
+        r'(?:www\.)?youtube\.com/shorts/[\w-]+'
+    ]
+    return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
+
+
 def find_thumbnail_url_in_metadata(metadata):
     """Extract thumbnail URL from metadata."""
     # Direct thumbnails
@@ -1144,6 +1221,51 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         logger.info(f"Processing task {task_id} with original URL from DB: {original_video_url}, SMS phone: {user_phone or 'none'}")
         # -------------------------------------------------
         
+        # Check if this is a YouTube URL for instant transcription
+        if is_youtube_url(original_video_url):
+            logger.info(f"Detected YouTube URL, attempting instant transcription: {original_video_url}")
+            
+            # Try YouTube instant transcription via RapidAPI
+            youtube_result = transcriber.download_youtube_rapidapi(original_video_url)
+            
+            if youtube_result:
+                logger.info(f"YouTube instant transcription successful for task {task_id}")
+                
+                # Update task with completed status and transcript
+                await asyncio.to_thread(
+                    supabase.table('transcriptions')
+                            .update({
+                                'status': 'completed',
+                                'video_id': youtube_result['video_id'],
+                                'title': youtube_result['title'],
+                                'transcript': youtube_result['transcript'],
+                                'platform': 'youtube',
+                                'category': 'youtube-transcription',
+                                'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube']
+                            })
+                            .eq('task_id', task_id)
+                            .execute
+                )
+                
+                # Send SMS notification if user_phone is provided
+                if user_phone:
+                    try:
+                        await sms.send_completion_sms(user_phone, task_id, youtube_result['title'])
+                        logger.info(f"SMS completion notification sent for YouTube task {task_id}")
+                    except Exception as sms_error:
+                        logger.error(f"Failed to send SMS notification for YouTube task {task_id}: {str(sms_error)}")
+                
+                # Clean up - no local files needed for YouTube instant transcription
+                output_dir = os.path.join(DOWNLOADS_DIR, task_id)
+                if os.path.exists(output_dir):
+                    shutil.rmtree(output_dir)
+                    
+                logger.info(f"YouTube instant transcription completed for task {task_id}")
+                return
+            else:
+                logger.warning(f"YouTube instant transcription failed, falling back to standard processing for task {task_id}")
+        
+        # Standard TikTok processing or YouTube fallback
         # Create a unique working directory for this task
         output_dir = os.path.join(DOWNLOADS_DIR, task_id)
         os.makedirs(output_dir, exist_ok=True)
@@ -3144,6 +3266,86 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
     except Exception as e:
         logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving analytics")
+
+# TikTok API Adapter Endpoints
+@app.get("/api/public/tiktok/video-info", tags=["TikTok API"])
+async def get_tiktok_video_info(video_url: str = Query(..., description="TikTok video URL")):
+    """
+    Get TikTok video information using multiple API adapters with automatic failover.
+    
+    This endpoint demonstrates the API adapter pattern for handling rate limits
+    and API failures by automatically switching between different TikTok APIs.
+    """
+    if not video_url:
+        raise HTTPException(status_code=400, detail="video_url parameter is required")
+    
+    try:
+        result = tiktok_service.get_video_info(video_url)
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "data": result["data"],
+                "rate_limit_info": result.get("rate_limit_info")
+            }
+        else:
+            # Return error but don't raise exception to show adapter status
+            return {
+                "success": False,
+                "error": result["error"],
+                "status_code": result.get("status_code"),
+                "adapters_status": tiktok_service.get_adapters_status()
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in get_tiktok_video_info: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/public/tiktok/adapters-status", tags=["TikTok API"])
+async def get_tiktok_adapters_status():
+    """
+    Get the status of all configured TikTok API adapters including rate limits.
+    
+    Useful for monitoring which APIs are available and their rate limit status.
+    """
+    try:
+        status = tiktok_service.get_adapters_status()
+        return status
+    except Exception as e:
+        logger.error(f"Error getting adapters status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/tiktok/refresh-adapters", dependencies=[Depends(verify_api_key)], tags=["TikTok API"])
+async def refresh_tiktok_adapters():
+    """
+    Refresh the TikTok API adapters configuration (requires API key).
+    
+    Useful when environment variables have been updated and you want to
+    reinitialize the adapters without restarting the service.
+    """
+    try:
+        tiktok_service.refresh_manager()
+        return {
+            "success": True,
+            "message": "TikTok adapters refreshed",
+            "status": tiktok_service.get_adapters_status()
+        }
+    except Exception as e:
+        logger.error(f"Error refreshing adapters: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/webhook/stripe", tags=["Payment & Billing"])
+async def handle_stripe_webhook(request: Request):
+    """Handle Stripe webhooks for credit purchases"""
+    try:
+        from stripe_webhook import handle_stripe_webhook
+        result = await handle_stripe_webhook(request)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error handling Stripe webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
 @app.post("/api/webhook/supabase", tags=["System & Health"])
 async def handle_supabase_webhook(

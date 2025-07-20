@@ -44,6 +44,67 @@ class MyLogger(object):
     def error(self, msg):
         print(f"Error: {msg}")
 
+def download_youtube_rapidapi(url: str) -> dict:
+    """Transcribe YouTube video instantly using RapidAPI service"""
+    rapidapi_key = os.environ.get("RAPIDAPI_KEY")
+    if not rapidapi_key:
+        logger.warning("RAPIDAPI_KEY not found, skipping YouTube RapidAPI method")
+        return None
+    
+    try:
+        # Extract video ID from URL
+        import re
+        video_id_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([^&\n?#]+)', url)
+        video_id = video_id_match.group(1) if video_id_match else "unknown"
+        
+        # RapidAPI YouTube Transcript service (same as Edge Function)
+        rapidapi_url = "https://youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com/transcript"
+        headers = {
+            "x-rapidapi-key": rapidapi_key,
+            "x-rapidapi-host": "youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com"
+        }
+        params = {
+            "lang": "en",
+            "url": url,
+            "video_id": video_id
+        }
+        
+        logger.info(f"Attempting YouTube RapidAPI transcription for: {url} (video_id: {video_id})")
+        response = requests.get(rapidapi_url, headers=headers, params=params, timeout=60)
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"YouTube RapidAPI response received")
+            
+            # Extract transcript
+            transcript = data.get("transcript", "")
+            if transcript:
+                # Format transcript with simple line breaks (matching Edge Function style)
+                transcript_text = transcript.strip()
+                
+                logger.info(f"YouTube RapidAPI success - video_id: {video_id}")
+                return {
+                    "video_id": video_id,
+                    "title": data.get("title", "YouTube Video"),
+                    "transcript": transcript_text,
+                    "platform": "youtube",
+                    "download_method": "rapidapi_youtube_fastest",
+                    "transcribed_at": datetime.now().isoformat(),
+                    "metadata": data
+                }
+            else:
+                logger.error(f"No transcript found in YouTube RapidAPI response: {data}")
+                return None
+                
+        else:
+            logger.error(f"YouTube RapidAPI request failed: {response.status_code}: {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"YouTube RapidAPI transcription failed: {str(e)}")
+        return None
+
+
 def download_tiktok_rapidapi(url: str, output_dir: str):
     """Download TikTok video using RapidAPI service"""
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")

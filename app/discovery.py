@@ -17,25 +17,93 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api/public/discover", tags=["discovery"])
 
-class DiscoveryResponse(BaseModel):
-    """
-    Model for discovery endpoint responses.
-    All fields are optional to handle varied data sources.
-    """
-    task_id: str = Field(default="")
-    title: str = Field(default="Untitled")
-    video_id: Optional[str] = None
-    thumbnail_url: Optional[str] = None
-    view_count: int = Field(default=0)
-    category: Optional[str] = None
-    tags: Optional[List[str]] = None
-    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+class AuthorInfo(BaseModel):
+    nickname: str = Field(..., example="SteveHenny")
+    unique_id: str = Field(..., example="step_henny0")
 
-    # Allow additional fields in case of schema changes
+class DiscoveryResponse(BaseModel):
+    task_id: str = Field(default="", example="550e8400-e29b-41d4-a716-446655440000")
+    title: str = Field(default="Untitled", example="Comedy Skit - Banana Phone")
+    video_id: Optional[str] = Field(None, example="7526401258786245902")
+    thumbnail_url: Optional[str] = Field(None, example="https://cdn.tiktok.com/thumb.jpg")
+    view_count: int = Field(default=0, example=94403)
+    like_count: Optional[int] = Field(None, example=7230)
+    comment_count: Optional[int] = Field(None, example=183)
+    share_count: Optional[int] = Field(None, example=27)
+    play_count: Optional[int] = Field(None, example=94403)
+    duration: Optional[int] = Field(None, example=115)
+    platform: Optional[str] = Field(None, example="tiktok")
+    author: Optional[AuthorInfo] = None
+    category: Optional[str] = Field(None, example="comedy")
+    tags: Optional[List[str]] = Field(None, example=["funny", "viral"])
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), example="2024-07-21T10:15:00Z")
     class Config:
         extra = "ignore"
 
-@router.get("/trending")
+class DiscoveryListResponse(BaseModel):
+    tasks: List[DiscoveryResponse]
+
+@router.get(
+    "/trending",
+    response_model=DiscoveryListResponse,
+    tags=["Content Discovery"],
+    description="Get trending public transcriptions. Returns a list of the most popular recent transcriptions with full metadata for each.",
+    responses={
+        200: {
+            "description": "Successful Response",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "tasks": [
+                            {
+                                "task_id": "550e8400-e29b-41d4-a716-446655440000",
+                                "status": "completed",
+                                "title": "Comedy Skit - Banana Phone",
+                                "video_id": "7526401258786245902",
+                                "duration": 115,
+                                "like_count": 7230,
+                                "comment_count": 183,
+                                "share_count": 27,
+                                "play_count": 94403,
+                                "platform": "tiktok",
+                                "author": {
+                                    "nickname": "BananaGuy",
+                                    "unique_id": "bananaguy89"
+                                },
+                                "thumbnail_url": "https://cdn.tiktok.com/thumb.jpg",
+                                "created_at": "2024-07-21T10:15:00Z"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        422: {
+            "description": "Validation Error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "InvalidCategory": {
+                            "value": {
+                                "detail": [
+                                    {"loc": ["query", "category"], "msg": "Invalid category", "type": "value_error.category"}
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "No trending transcriptions found",
+            "content": {"application/json": {"example": {"detail": "No trending transcriptions found"}}}
+        },
+        500: {
+            "description": "Server error",
+            "content": {"application/json": {"example": {"detail": "Database error retrieving trending transcriptions"}}}
+        }
+    }
+)
 async def get_trending_transcriptions(
     time_window: Optional[str] = "week",  # week, month, all
     category: Optional[str] = None,
