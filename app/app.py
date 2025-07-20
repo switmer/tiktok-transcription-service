@@ -1811,14 +1811,13 @@ async def _cleanup_stuck_tasks_logic():
 
 @app.post("/api/link-sms-account")
 async def link_sms_account(request: Request):
-    """Create auth account and link SMS user's transcription history"""
+    """Create phone-based auth account and link SMS user's transcription history"""
     try:
         body = await request.json()
         phone = body.get('phone')
-        email = body.get('email')
         
-        if not phone or not email:
-            raise HTTPException(status_code=400, detail="Phone and email are required")
+        if not phone:
+            raise HTTPException(status_code=400, detail="Phone number is required")
             
         # Normalize phone number
         phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
@@ -1829,21 +1828,21 @@ async def link_sms_account(request: Request):
         elif not phone.startswith('+'):
             phone = f"+{phone}"
             
-        logger.info(f"Linking SMS account for phone {phone} with email {email}")
+        logger.info(f"Creating phone-based auth account for phone {phone}")
         
-        # Check if email already exists in auth.users
+        # Check if phone already has auth account
         existing_user_response = await asyncio.to_thread(
             supabase.table('auth.users')
-                    .select('id, email')
-                    .eq('email', email)
+                    .select('id, phone')
+                    .eq('phone', phone)
                     .execute
         )
         
         if existing_user_response.data:
-            logger.warning(f"Email {email} already registered")
+            logger.warning(f"Phone {phone} already has auth account")
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "Email already registered"}
+                content={"success": False, "error": "Phone number already registered"}
             )
         
         # Check if phone has transcriptions to link
@@ -1861,18 +1860,17 @@ async def link_sms_account(request: Request):
         
         transcription_count = stats_response.data[0]['total_transcriptions']
         
-        # Create Supabase auth user
+        # Create Supabase auth user with phone only
         try:
             auth_response = await asyncio.to_thread(
                 supabase.auth.admin.create_user,
                 {
-                    "email": email,
-                    "password": "temp_password_12345",  # User will reset via email
-                    "email_confirm": True,
+                    "phone": phone,
+                    "phone_confirm": True,
                     "user_metadata": {
                         "linked_from_sms": True,
-                        "sms_phone": phone,
-                        "transcription_count": transcription_count
+                        "transcription_count": transcription_count,
+                        "auth_type": "phone_only"
                     }
                 }
             )
@@ -1881,7 +1879,7 @@ async def link_sms_account(request: Request):
                 raise Exception("Failed to create auth user")
                 
             auth_user_id = auth_response.user.id
-            logger.info(f"Created auth user {auth_user_id} for email {email}")
+            logger.info(f"Created phone-based auth user {auth_user_id} for phone {phone}")
             
         except Exception as e:
             logger.error(f"Failed to create auth user: {str(e)}")
@@ -1905,25 +1903,13 @@ async def link_sms_account(request: Request):
             
             logger.info(f"Successfully linked {linked_count} transcriptions for phone {phone} to user {auth_user_id}")
             
-            # Send password reset email so user can set their password
-            try:
-                await asyncio.to_thread(
-                    supabase.auth.admin.generate_link,
-                    {
-                        "type": "recovery",
-                        "email": email
-                    }
-                )
-                logger.info(f"Sent password reset email to {email}")
-            except Exception as e:
-                logger.warning(f"Failed to send password reset email: {str(e)}")
-            
             return JSONResponse(
                 content={
                     "success": True,
                     "linked_transcriptions": linked_count,
                     "auth_user_id": auth_user_id,
-                    "message": f"Successfully created account and linked {linked_count} transcriptions"
+                    "phone": phone,
+                    "message": f"Successfully created phone-based account and linked {linked_count} transcriptions"
                 }
             )
             
