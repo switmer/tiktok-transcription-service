@@ -177,7 +177,9 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
 
     message += `
 
-🚀 Share this link with friends!`;
+🚀 VIRAL MOMENT: Share this transcript!
+📱 Copy & share: https://share.scribetok.com/v/${taskId}
+🎁 Or go viral: Text /referral for your magic link!`;
 
     await sendSMS(phoneNumber, message);
     console.log('Transcript SMS sent successfully to:', phoneNumber);
@@ -461,17 +463,22 @@ ${verifiedStatus}
       const creditsRemaining = user.credits_remaining || 0;
       const referralLink = `https://scribetok.com/?ref=${referralCode}`;
 
-      return sendTwilioResponse(`🎁 Share ScribeTok and both get 3 bonus credits!
+      return sendTwilioResponse(`🎁 VIRAL REFERRAL POWER! Both get 3 bonus credits!
 
-Your referral link: ${referralLink}
+📱 YOUR MAGIC LINK: ${referralLink}
 
-📊 Friends referred: ${referralsCount}
+💡 SHARE IDEAS:
+• "Found this cool TikTok transcriber! 3 free tries: ${referralLink}"
+• Post in group chats, Discord, Slack
+• Share on TikTok/Twitter: "Transcribe any video instantly!"
+
+📊 Friends referred: ${referralsCount} 🔥
 💳 Your credits: ${creditsRemaining}
 
-When friends use ScribeTok via your link, you both get 3 free credits!
+🎯 PRO TIP: Share your latest transcript + your referral link = double viral power!
 
-💰 Or buy 5 credits for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-🚀 Go unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
+💰 Skip the sharing? 5 credits for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+🚀 Go unlimited: $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
     } catch (error) {
       console.error('Referral error:', error);
       return sendTwilioResponse('❌ Error loading referral info. Try again later.');
@@ -639,7 +646,9 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
 
         message += `
 
-🚀 Share this link with friends!`;
+🚀 VIRAL MOMENT: Share this transcript!
+📱 Copy & share: https://share.scribetok.com/v/${insertedTask.task_id}
+🎁 Or go viral: Text /referral for your magic link!`;
 
         await sendSMS(From, message);
         return sendTwilioResponse('✅ YouTube transcript complete! Check your texts for details.');
