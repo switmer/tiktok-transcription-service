@@ -87,7 +87,42 @@
         <!-- Loading Content -->
         <div class="space-y-4">
             <h1 class="text-xl font-semibold line-clamp-2">{{ title }}</h1>
+            
+            <!-- Quote + TLDR Preview (if available) -->
+            {% if quote or tldr %}
+            <div class="bg-gradient-to-br from-primary/10 to-accent/10 border border-primary/20 rounded-xl px-5 py-4 text-left space-y-4 shadow-sm">
+                {% if quote %}
+                <div class="relative">
+                    <div class="text-primary font-semibold mb-2 flex items-center gap-2">
+                        <span class="text-lg">💡</span>
+                        <span>Memorable Quote</span>
+                    </div>
+                    <div class="text-foreground text-base font-medium leading-relaxed">
+                        <span class="text-primary text-xl">"</span>{{ quote }}<span class="text-primary text-xl">"</span>
+                    </div>
+                </div>
+                {% endif %}
+                
+                {% if tldr %}
+                <div class="border-t border-border/30 pt-3">
+                    <div class="text-primary font-semibold mb-2 flex items-center gap-2">
+                        <span class="text-lg">📝</span>
+                        <span>Key Insights</span>
+                    </div>
+                    <div class="text-muted-foreground text-sm space-y-2 leading-relaxed">
+                        {% for point in tldr[:2] %}
+                        <div class="flex items-start gap-2">
+                            <span class="text-primary mt-1">•</span>
+                            <span>{{ point }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% else %}
             <p class="text-muted-foreground text-sm">{{ og_description }}</p>
+            {% endif %}
             
             <!-- Loading Spinner -->
             <div class="flex items-center justify-center gap-3 py-6">
@@ -96,7 +131,7 @@
                     <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
                     <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
                 </div>
-                <span class="text-sm text-muted-foreground">Loading transcript...</span>
+                <span class="text-sm text-muted-foreground">Loading full content...</span>
             </div>
             
             

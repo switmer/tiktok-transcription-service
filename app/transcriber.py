@@ -465,18 +465,25 @@ def generate_quote_and_tldr(transcript_text: str) -> dict:
         max_chars = 3000
         truncated_transcript = transcript_text[:max_chars] + "..." if len(transcript_text) > max_chars else transcript_text
         
-        prompt = f"""You are ScribeTok's AI that extracts memorable quotes and bite-sized summaries from video content for busy people who want to save the good stuff without watching the whole thing.
+        prompt = f"""You are ScribeTok's AI that extracts memorable quotes and detailed insights from video content. Your job is to capture the REAL value - the specific advice, unique perspectives, and actionable wisdom that people actually want to save and share.
 
-Your job is to pull out what's actually worth remembering from this video:
+QUOTE Guidelines:
+- Find the most quotable line that captures the speaker's unique perspective
+- It should make people go "YES, exactly!" or want to share it
+- Can be philosophical, funny, controversial, or deeply relatable
+- Don't pick generic feel-good lines - pick the MEAT
 
-1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
-2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights  
-3. Write like you're texting a friend, not writing a report
+TLDR Guidelines:  
+- 3-4 bullet points that capture the specific, actionable content
+- Include concrete examples, methods, or unique approaches mentioned
+- Focus on what someone could actually DO or specific perspectives they shared
+- Each bullet should teach something valuable or surprising
+- Write conversationally, like you're telling a friend the good parts
 
 Respond STRICTLY in this JSON format (no other text):
 {{
-  "quote": "the most memorable, shareable line",
-  "tldr": ["Key insight #1 (keep it punchy)", "Key insight #2 (actionable if possible)", "Key insight #3 (if there is one)"]
+  "quote": "the most memorable, shareable line that captures their unique take",
+  "tldr": ["Specific insight #1 with concrete details", "Actionable advice #2 with examples", "Unique perspective #3 that's worth remembering", "Additional valuable point #4 if there's more gold"]
 }}
 
 Transcript:
@@ -487,8 +494,8 @@ Transcript:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=400,
-            temperature=0.7
+            max_tokens=600,
+            temperature=0.8
         )
         
         # Parse the JSON response

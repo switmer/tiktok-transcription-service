@@ -1695,12 +1695,12 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         
         # Use Quote + TLDR format if available, fallback to preview
         if quote and tldr_list:
-            # Shorten TLDR to max 2 items to keep message under 10 segments
-            short_tldr = tldr_list[:2]  # Only first 2 bullet points
-            tldr_bullets = '\n'.join([f"• {item[:60]}..." if len(item) > 60 else f"• {item}" for item in short_tldr])
+            # Show 3-4 TLDR items for richer content (we'll manage length differently)
+            short_tldr = tldr_list[:4]  # Allow up to 4 bullet points
+            tldr_bullets = '\n'.join([f"• {item[:100]}..." if len(item) > 100 else f"• {item}" for item in short_tldr])
             
-            # Shorten quote if too long
-            short_quote = quote[:80] + "..." if len(quote) > 80 else quote
+            # Allow longer quotes for more impact
+            short_quote = quote[:120] + "..." if len(quote) > 120 else quote
             
             message = f"""🧠 "{short_quote}"
 
@@ -1730,10 +1730,24 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         elif credits_remaining == 2:
             message += "\n\n💡 2 credits left! More: stripe.com/4gMcN42NS"
 
-        # Ensure message stays under 10 segments (~700 characters with emojis)
-        if len(message) > 650:
+        # Allow longer messages for richer content (up to ~12-14 segments)
+        if len(message) > 900:
             logger.warning(f"SMS message too long ({len(message)} chars), truncating")
-            message = message[:600] + "..."
+            # Intelligently truncate by removing last TLDR points instead of cutting mid-sentence
+            if "📝 TLDR:" in message and len(short_tldr) > 2:
+                # Fallback to 2 TLDR points if message too long
+                fallback_tldr = tldr_list[:2]
+                fallback_bullets = '\n'.join([f"• {item[:100]}..." if len(item) > 100 else f"• {item}" for item in fallback_tldr])
+                message = f"""🧠 "{short_quote}"
+
+📝 TLDR:
+{fallback_bullets}
+
+💬 /full for more • /tldr to regenerate
+🔗 share.scribetok.com/v/{task_id}
+💳 {credits_remaining} left"""
+            else:
+                message = message[:850] + "..."
         
         logger.info(f"Sending SMS ({len(message)} chars) to {phone_number}")
         client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))
@@ -3230,35 +3244,64 @@ async def rich_link_preview(task_id: str, request: Request):
                 return f"{num/1000:.1f}K"
             return str(num)
         
-        # Build the title
+        # Build the title - prioritize quote/TLDR format
         title = task.get('title', 'TikTok Transcript')
         if len(title) > 60:
             title = title[:57] + "..."
-        og_title = f"TikTok Transcript: '{title}'"
         
-        # Build the description with engagement stats
+        # Enhanced title for quote/TLDR content
+        if task.get('quote'):
+            # Use quote as the main title for maximum shareability
+            og_title = f"\"{task['quote']}\" - ScribeTok"
+        else:
+            og_title = f"TikTok Transcript: '{title}'"
+        
+        # Build the description prioritizing quote and TLDR over transcript
         description_parts = []
         
-        # Add engagement stats if available
-        if task.get('like_count') or task.get('comment_count'):
-            likes = format_number(task.get('like_count', 0))
-            comments = format_number(task.get('comment_count', 0))
-            description_parts.append(f"{likes} likes, {comments} comments")
+        # Strategy: If we have a quote in the title, use TLDR + context in description
+        if task.get('quote') and task.get('tldr') and isinstance(task['tldr'], list) and task['tldr']:
+            # Quote is in title, so focus on TLDR + context
+            tldr_text = " • ".join(task['tldr'][:2])  # Show first 2 TLDR points
+            description_parts.append(f"Key insights: {tldr_text}")
+            
+            # Add creator and video context
+            context_parts = []
+            if task.get('uploader'):
+                context_parts.append(f"by @{task['uploader']}")
+            if task.get('duration'):
+                context_parts.append(f"{task['duration']}s video")
+            if task.get('like_count'):
+                context_parts.append(f"{format_number(task['like_count'])} likes")
+            
+            if context_parts:
+                description_parts.append(" • ".join(context_parts))
+                
+        else:
+            # Fallback to original format when no quote/TLDR available
+            # Priority 1: Use quote if available
+            if task.get('quote'):
+                description_parts.append(f"💡 \"{task['quote']}\"")
+            
+            # Priority 2: Add TLDR summary if available
+            if task.get('tldr') and isinstance(task['tldr'], list) and task['tldr']:
+                tldr_text = " • ".join(task['tldr'][:2])  # Show first 2 TLDR points
+                description_parts.append(f"📝 {tldr_text}")
+            
+            # Add engagement stats if available
+            if task.get('like_count') or task.get('comment_count'):
+                likes = format_number(task.get('like_count', 0))
+                comments = format_number(task.get('comment_count', 0))
+                description_parts.append(f"{likes} likes, {comments} comments")
+            
+            # Add creator info
+            if task.get('uploader'):
+                description_parts.append(f"by {task['uploader']}")
         
-        # Add creator and duration info
-        creator_info = []
-        if task.get('duration'):
-            creator_info.append(f"{task['duration']}s video")
-        if task.get('uploader'):
-            creator_info.append(f"by {task['uploader']}")
+        # Join all parts
+        og_description = " • ".join(description_parts) if description_parts else "ScribeTok transcript"
         
-        if creator_info:
-            description_parts.append(" • ".join(creator_info))
-        
-        description_parts.append("Read the full transcript on ScribeTok")
-        og_description = " • ".join(description_parts)
-        
-        # Ensure LinkedIn length requirements (≥100 chars)
+        # Ensure LinkedIn length requirements (≥100 chars) - fallback to transcript preview
         if len(og_description) < 100 and task.get('transcript'):
             preview_snippet = task['transcript'][:120]
             if len(task['transcript']) > 120:
@@ -3267,7 +3310,7 @@ async def rich_link_preview(task_id: str, request: Request):
         
         # Final fallback padding
         if len(og_description) < 100:
-            og_description += " — View, copy, and download TikTok and YouTube transcripts instantly on ScribeTok."
+            og_description += " — Get Quote + TLDR summaries and full transcripts on ScribeTok."
         
         # Use the thumbnail URL or fallback to ScribeTok branded image
         og_image = task.get('thumbnail_url', 'https://uploadthingy.s3.us-west-1.amazonaws.com/wLTDGGWCxxxDWormAJufuo/ScribeTok-bg.png')
@@ -3361,6 +3404,8 @@ async def rich_link_preview(task_id: str, request: Request):
             "transcript_preview": transcript_preview,
             "transcript_segments": transcript_segments,
             "transcript_text": task.get('transcript', ''),
+            "quote": task.get('quote'),
+            "tldr": task.get('tldr', []),
             "duration": format_duration(task.get('duration')),
             "upload_date": format_date(task.get('upload_date')),
             "like_count": format_number(task.get('like_count', 0)),

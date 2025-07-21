@@ -597,12 +597,14 @@ Reply /help for more commands!`);
       const { data: transcripts, error } = await supabase.from('transcriptions').select('task_id, title, transcript, status').eq('user_phone', normalizePhoneNumber(From)).order('created_at', { ascending: false }).limit(1);
       
       if (error || !transcripts || transcripts.length === 0) {
-        return sendTwilioResponse('📄 No transcripts found. Send a video link first!');
+        await sendSMS(From, '📄 No transcripts found. Send a video link first!');
+        return sendTwilioResponse('');
       }
 
       const latest = transcripts[0];
       if (latest.status !== 'completed' || !latest.transcript) {
-        return sendTwilioResponse('📄 Latest transcript not ready yet. Try again in a moment!');
+        await sendSMS(From, '📄 Latest transcript not ready yet. Try again in a moment!');
+        return sendTwilioResponse('');
       }
 
       const title = latest.title || 'Video';
@@ -610,23 +612,28 @@ Reply /help for more commands!`);
       const words = transcript.split(' ');
       
       // SMS has character limits, so we need to chunk long transcripts
+      let message;
       if (words.length > 100) {
         const chunk = words.slice(0, 100).join(' ') + '...';
-        return sendTwilioResponse(`📄 Full transcript: "${title}"
+        message = `📄 Full transcript: "${title}"
 
 ${chunk}
 
-💡 This is a preview. Full version: https://share.scribetok.com/v/${latest.task_id}`);
+💡 This is a preview. Full version: https://share.scribetok.com/v/${latest.task_id}`;
       } else {
-        return sendTwilioResponse(`📄 Full transcript: "${title}"
+        message = `📄 Full transcript: "${title}"
 
 ${transcript}
 
-🔗 Share: https://share.scribetok.com/v/${latest.task_id}`);
+🔗 Share: https://share.scribetok.com/v/${latest.task_id}`;
       }
+      
+      await sendSMS(From, message);
+      return sendTwilioResponse('');
     } catch (error) {
       console.error('Full transcript error:', error);
-      return sendTwilioResponse('📄 Error loading transcript. Try again later!');
+      await sendSMS(From, '📄 Error loading transcript. Try again later!');
+      return sendTwilioResponse('');
     }
   }
 
@@ -636,28 +643,35 @@ ${transcript}
       const { data: transcripts, error } = await supabase.from('transcriptions').select('quote, title, task_id, status').eq('user_phone', normalizePhoneNumber(From)).order('created_at', { ascending: false }).limit(1);
       
       if (error || !transcripts || transcripts.length === 0) {
-        return sendTwilioResponse('🧠 No transcripts found. Send a video link first!');
+        await sendSMS(From, '🧠 No transcripts found. Send a video link first!');
+        return sendTwilioResponse('');
       }
 
       const latest = transcripts[0];
       if (latest.status !== 'completed') {
-        return sendTwilioResponse('🧠 Latest video not ready yet. Try again in a moment!');
+        await sendSMS(From, '🧠 Latest video not ready yet. Try again in a moment!');
+        return sendTwilioResponse('');
       }
 
       if (!latest.quote) {
-        return sendTwilioResponse('🧠 No quote found for this video. Try /tldr instead!');
+        await sendSMS(From, '🧠 No quote found for this video. Try /tldr instead!');
+        return sendTwilioResponse('');
       }
 
       const title = latest.title || 'Video';
-      return sendTwilioResponse(`🧠 Quote from "${title}":
+      const message = `🧠 Quote from "${title}":
 
 "${latest.quote}"
 
 🔗 Share: https://share.scribetok.com/v/${latest.task_id}
-💡 Want the TLDR? Reply /tldr`);
+💡 Want the TLDR? Reply /tldr`;
+
+      await sendSMS(From, message);
+      return sendTwilioResponse('');
     } catch (error) {
       console.error('Quote command error:', error);
-      return sendTwilioResponse('🧠 Error loading quote. Try again later!');
+      await sendSMS(From, '🧠 Error loading quote. Try again later!');
+      return sendTwilioResponse('');
     }
   }
 
