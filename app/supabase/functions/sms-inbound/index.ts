@@ -274,6 +274,20 @@ Deno.serve(async (req)=>{
   }
   // Initialize Supabase client for all commands
   const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
+  
+  // Log all incoming messages to user_messages table
+  try {
+    const command = Body.trim().startsWith('/') ? Body.trim().split(' ')[0].toLowerCase() : null;
+    await supabase.from('user_messages').insert({
+      from_phone: normalizePhoneNumber(From),
+      message_body: Body,
+      command: command
+    });
+  } catch (logError) {
+    console.error('Error logging message to user_messages:', logError);
+    // Continue processing even if logging fails
+  }
+  
   // Check rate limiting (max 5 commands per minute)
   const rateLimitOk = await checkRateLimit(From, supabase);
   if (!rateLimitOk) {
