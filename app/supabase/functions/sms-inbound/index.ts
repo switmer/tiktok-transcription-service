@@ -471,14 +471,11 @@ When friends use ScribeTok via your link, you both get 5 credits!
         return sendTwilioResponse('❌ Error saving feedback. Try again later.');
       }
 
-      // Store feedback in user_messages table with special type
+      // Store feedback in user_messages table using command field
       const { error } = await supabase.from('user_messages').insert({
         from_phone: normalizePhoneNumber(From),
-        to_phone: 'SYSTEM',
         message_body: feedbackText,
-        message_type: 'feedback',
-        direction: 'inbound',
-        created_at: new Date().toISOString()
+        command: 'feedback'
       });
 
       if (error) {
