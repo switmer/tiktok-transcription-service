@@ -62,7 +62,7 @@
     <!-- Redirect to actual frontend after meta tags are crawled -->
     <script>
         setTimeout(function() {
-            window.location.href = 'https://share.scribetok.com/v/{{ task_id }}';
+            window.location.href = 'https://scribetok.com/v/{{ task_id }}';
         }, 1500);
     </script>
     
@@ -99,43 +99,6 @@
                 <span class="text-sm text-muted-foreground">Loading transcript...</span>
             </div>
             
-            <!-- Made with ScribeTok Badge -->
-            <div class="bg-gradient-to-r from-pink-500/10 to-purple-500/10 border border-pink-200/50 rounded-lg px-4 py-3 text-center">
-                <div class="text-xs font-medium text-muted-foreground mb-1">Made with</div>
-                <div class="text-sm font-bold bg-gradient-to-r from-pink-500 to-purple-500 bg-clip-text text-transparent">
-                    📱 ScribeTok
-                </div>
-                <div class="text-xs text-muted-foreground mt-1">
-                    Transcribe your own TikToks & YouTube videos instantly!
-                </div>
-            </div>
-            
-            <!-- Viral CTA for New Users -->
-            <div class="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 text-center space-y-2">
-                <div class="text-sm font-semibold text-primary">🎁 Get 3 Free Transcripts</div>
-                <div class="text-xs text-muted-foreground">
-                    Text any TikTok or YouTube link to <strong>(774) 472-7423</strong>
-                </div>
-                <button onclick="copyPhoneNumber()" class="text-xs bg-primary text-primary-foreground px-3 py-1 rounded-full hover:bg-primary/90 transition-colors">
-                    Copy Phone Number
-                </button>
-            </div>
-            
-            <!-- Social Sharing Buttons -->
-            <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200/50 rounded-lg px-4 py-3">
-                <div class="text-xs font-medium text-muted-foreground text-center mb-2">Share this transcript</div>
-                <div class="flex justify-center space-x-2">
-                    <button onclick="shareToTwitter()" class="text-xs bg-blue-500 text-white px-3 py-1 rounded-full hover:bg-blue-600 transition-colors">
-                        🐦 Twitter
-                    </button>
-                    <button onclick="copyViralText()" class="text-xs bg-purple-500 text-white px-3 py-1 rounded-full hover:bg-purple-600 transition-colors">
-                        📋 Copy Viral Text
-                    </button>
-                    <button onclick="shareTranscript()" class="text-xs bg-green-500 text-white px-3 py-1 rounded-full hover:bg-green-600 transition-colors">
-                        📱 Share
-                    </button>
-                </div>
-            </div>
             
             <!-- Redirect Notice -->
             <div class="text-xs text-muted-foreground bg-secondary/30 rounded-lg px-4 py-3">
@@ -174,68 +137,22 @@
         }
         
         function shareTranscript() {
-            const viralText = `🎬 Check out this transcript from "{{ title|default("this video")|replace('"', '\\"') }}":\n\n${transcriptText.substring(0, 120)}...\n\n📱 Made with ScribeTok - Get your own transcripts free! Text any TikTok/YouTube link to (774) 472-7423`;
-            
             if (navigator.share) {
                 navigator.share({
-                    title: '🎬 {{ task.title|default("Video Transcript")|replace("'", "\\'") }} - ScribeTok',
-                    text: viralText,
+                    title: '{{ task.title|default("Video Transcript")|replace("'", "\\'") }}',
+                    text: transcriptText.substring(0, 100) + '...',
                     url: window.location.href
                 }).catch(err => {
                     console.error('Share failed: ', err);
-                    // Fallback to copy viral text
-                    copyViralText();
+                    // Fallback to copy
+                    copyTranscript();
                 });
             } else {
-                // Fallback to copy viral text for browsers that don't support native sharing
-                copyViralText();
+                // Fallback to copy for browsers that don't support native sharing
+                copyTranscript();
             }
         }
         
-        function copyViralText() {
-            const viralText = `🎬 Check out this transcript from "{{ title|default("this video")|replace('"', '\\"') }}":\n\n${transcriptText.substring(0, 120)}...\n\n📱 Made with ScribeTok - Get your own transcripts free!\nText any TikTok/YouTube link to (774) 472-7423\n\n🔗 ${window.location.href}`;
-            
-            navigator.clipboard.writeText(viralText).then(() => {
-                alert('📋 Viral share text copied! Perfect for social media posts.');
-            }).catch(err => {
-                console.error('Failed to copy viral text: ', err);
-                prompt('Copy this viral share text:', viralText);
-            });
-        }
-        
-        function shareToTwitter() {
-            const tweetText = `🎬 Just transcribed "{{ title|default("this video")|replace('"', '\\"') }}" with @ScribeTok 📝\n\nGet instant transcripts for ANY TikTok/YouTube video!\n\n🎁 3 FREE transcripts: Text any link to (774) 472-7423`;
-            const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}&url=${encodeURIComponent(window.location.href)}`;
-            window.open(tweetUrl, '_blank', 'width=550,height=420');
-        }
-        
-        function sharePublicLink() {
-            navigator.clipboard.writeText(window.location.href).then(() => {
-                alert('Public link copied to clipboard!');
-            }).catch(err => {
-                console.error('Failed to copy link: ', err);
-                // Fallback: show the URL in a prompt
-                prompt('Copy this link:', window.location.href);
-            });
-        }
-        
-        function copyPhoneNumber() {
-            const phoneNumber = '(774) 472-7423';
-            navigator.clipboard.writeText(phoneNumber).then(() => {
-                const button = event.target;
-                const originalText = button.textContent;
-                button.textContent = '📋 Copied!';
-                button.style.backgroundColor = '#22c55e';
-                setTimeout(() => {
-                    button.textContent = originalText;
-                    button.style.backgroundColor = '';
-                }, 2000);
-            }).catch(err => {
-                console.error('Failed to copy phone number: ', err);
-                // Fallback: show the number in a prompt
-                prompt('Copy this phone number:', phoneNumber);
-            });
-        }
         
         function toggleTechnicalDetails() {
             const content = document.getElementById('tech-details-content');
