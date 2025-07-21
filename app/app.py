@@ -40,7 +40,7 @@ import asyncio
 import sys
 import numpy as np
 from functools import wraps
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from supabase.client import create_client, Client
 
 # Fix imports for deployment
@@ -263,7 +263,7 @@ class TranscriptionResponse(BaseModel):
     description: Optional[str] = Field(None, example="Check out this amazing tech tutorial! #technology #viral")
     duration: Optional[int] = Field(None, example=122)
     platform: Optional[str] = Field(None, example="tiktok")
-    # Creator Information
+    # Creator Information  
     creator: Optional[str] = Field(None, example="Tech Guru")
     uploader_url: Optional[str] = Field(None, example="https://tiktok.com/@techguru")
     # Engagement Metrics
@@ -524,13 +524,13 @@ async def transcribe(
                     else:
                         logger.warning(f"YouTube instant transcription failed for {task_id}, falling back to background processing")
                         # Queue the background processing as fallback
-                        background_tasks.add_task(
-                            process_transcription_task,
-                            task_id,
-                            request.url,
-                            request.callback_url,
-                            request.proxy
-                        )
+            background_tasks.add_task(
+                process_transcription_task,
+                task_id,
+                request.url,
+                request.callback_url,
+                request.proxy
+            )
                         logger.info(f"Task {task_id} queued for background processing (YouTube fallback)")
                         
                 except Exception as e:
@@ -671,14 +671,14 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
                     .execute
         )
         if hasattr(response, 'error') and response.error:
-            logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
-            raise HTTPException(status_code=500, detail="Database error retrieving task")
+             logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
+             raise HTTPException(status_code=500, detail="Database error retrieving task")
         if not response.data:
             raise HTTPException(status_code=404, detail="Task not found")
         task_data = response.data
         return TranscriptionResponse(**task_data)
     except HTTPException:
-        raise
+         raise
     except Exception as e:
         logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error retrieving task")
@@ -1236,6 +1236,36 @@ def find_thumbnail_url_in_metadata(metadata):
     
     return None
 
+def create_square_thumbnail(input_path: str, output_path: str, size: int = 1200) -> bool:
+    """
+    Create a square (1:1) thumbnail from an input image for optimal iMessage/WhatsApp previews.
+    
+    Args:
+        input_path: Path to the original thumbnail image
+        output_path: Path where the square thumbnail will be saved
+        size: Size of the square (default 1200x1200 for OG images)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        with Image.open(input_path) as img:
+            # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Center-crop to square using ImageOps.fit
+            square_img = ImageOps.fit(img, (size, size), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            
+            # Save with high quality
+            square_img.save(output_path, "JPEG", quality=95, optimize=True)
+            logger.info(f"Created square thumbnail: {output_path}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error creating square thumbnail: {str(e)}")
+        return False
+
 @task_timeout(1800)  # 30-minute timeout
 async def process_transcription_task(task_id: str, video_url: str, callback_url: Optional[str] = None, proxy: Optional[str] = None):
     """Process a transcription task asynchronously."""
@@ -1433,6 +1463,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 # Save relative path for serving
                 thumbnail_local_path = os.path.relpath(thumbnail_file, DOWNLOADS_DIR)
                 logger.info(f"Found thumbnail file: {thumbnail_file}")
+                
+                # Create square thumbnail for optimal iMessage/WhatsApp previews
+                square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
+                if create_square_thumbnail(thumbnail_file, square_thumbnail_path):
+                    logger.info(f"Created square thumbnail: {square_thumbnail_path}")
                 break
         
         # If no thumbnail downloaded, try extracting from video
@@ -1451,6 +1486,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             cv2.imwrite(thumbnail_path, image)
                             thumbnail_local_path = os.path.relpath(thumbnail_path, DOWNLOADS_DIR)
                             logger.info(f"Extracted thumbnail from video: {thumbnail_path}")
+                            
+                            # Create square thumbnail for optimal iMessage/WhatsApp previews
+                            square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
+                            if create_square_thumbnail(thumbnail_path, square_thumbnail_path):
+                                logger.info(f"Created square thumbnail from video extraction: {square_thumbnail_path}")
                     finally:
                         if vidcap is not None:
                             vidcap.release()
@@ -2022,6 +2062,103 @@ async def public_get_thumbnail(task_id: str):
     except Exception as e:
         logger.error(f"Error fetching public thumbnail for task {task_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error fetching thumbnail")
+
+@app.get("/api/public/thumbnail_square/{task_id}", tags=["Public Transcription"])
+async def public_get_square_thumbnail(task_id: str):
+    """Get the square (1:1) thumbnail image for a task without API key - optimized for iMessage/WhatsApp"""
+    if supabase is None:
+        logger.error(f"Cannot get public square thumbnail for {task_id}: Supabase client not initialized.")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+
+    try:
+        # Fetch task details from Supabase
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path")
+                    .eq('task_id', task_id)
+                    .maybe_single()
+                    .execute
+        )
+
+        if hasattr(response, 'error') and response.error:
+             logger.error(f"Database error fetching public square thumbnail for {task_id}: {response.error}")
+             raise HTTPException(status_code=500, detail="Database error retrieving task info")
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = response.data
+
+        if task["status"] == "failed":
+            error_message = task.get("error", "Unknown error")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Transcription failed: {error_message}"
+            )
+            
+        if task["status"] != "completed":
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Transcription not completed yet. Current status: {task['status']}"
+            )
+        
+        # Priority 1: Serve square thumbnail if it exists
+        output_dir = os.path.join(DOWNLOADS_DIR, task_id)
+        square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
+        
+        if os.path.exists(square_thumbnail_path):
+            logger.info(f"Serving square thumbnail file: {square_thumbnail_path}")
+            return FileResponse(square_thumbnail_path, media_type="image/jpeg")
+        
+        # Priority 2: Create square thumbnail on-the-fly from existing thumbnail
+        if task.get("thumbnail_local_path"):
+            local_thumbnail_full_path = os.path.join(DOWNLOADS_DIR, task["thumbnail_local_path"])
+            if os.path.exists(local_thumbnail_full_path):
+                # Create square thumbnail on-demand
+                if create_square_thumbnail(local_thumbnail_full_path, square_thumbnail_path):
+                    logger.info(f"Created square thumbnail on-demand: {square_thumbnail_path}")
+                    return FileResponse(square_thumbnail_path, media_type="image/jpeg")
+        
+        # Priority 3: Look for any existing thumbnail and convert it
+        for ext in ['.jpg', '.png', '.jpeg', '.webp']:
+            files = glob.glob(os.path.join(output_dir, f"**/*{ext}"), recursive=True)
+            # Exclude the square thumbnail we're trying to create
+            files = [f for f in files if not f.endswith('thumbnail_square.jpg')]
+            if files:
+                original_thumbnail = files[0]
+                if create_square_thumbnail(original_thumbnail, square_thumbnail_path):
+                    logger.info(f"Created square thumbnail from fallback image: {square_thumbnail_path}")
+                    return FileResponse(square_thumbnail_path, media_type="image/jpeg")
+                break
+        
+        # Final Fallback: Create default square thumbnail
+        logger.warning(f"No thumbnail found for task {task_id}, creating default square thumbnail")
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        default_square_thumbnail = os.path.join(static_dir, "default_square_thumbnail.jpg")
+        
+        if not os.path.exists(default_square_thumbnail):
+            try:
+                # Create a square default image
+                img = Image.new('RGB', (1200, 1200), color=(53, 59, 72))
+                draw = ImageDraw.Draw(img)
+                text = "ScribeTok"
+                try: font = ImageFont.truetype("Arial", 120)
+                except: font = ImageFont.load_default()
+                text_width, text_height = draw.textsize(text, font=font) if hasattr(draw, 'textsize') else (400, 80)
+                position = ((1200-text_width)//2, (1200-text_height)//2)
+                draw.text(position, text, fill=(236, 240, 241), font=font)
+                img.save(default_square_thumbnail)
+                logger.info(f"Created default square thumbnail at {default_square_thumbnail}")
+            except Exception as e:
+                logger.error(f"Error creating default square thumbnail: {str(e)}")
+                raise HTTPException(status_code=404, detail="Square thumbnail not found and could not create default")
+        
+        return FileResponse(default_square_thumbnail, media_type="image/jpeg")
+
+    except Exception as e:
+        logger.error(f"Error fetching public square thumbnail for task {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Server error fetching square thumbnail")
 
 @app.post("/api/tasks", tags=["Private Task Management"])
 async def submit_task(
@@ -2956,8 +3093,22 @@ async def rich_link_preview(task_id: str, request: Request):
         description_parts.append("Read the full transcript on ScribeTok")
         og_description = " • ".join(description_parts)
         
+        # Ensure LinkedIn length requirements (≥100 chars)
+        if len(og_description) < 100 and task.get('transcript'):
+            preview_snippet = task['transcript'][:120]
+            if len(task['transcript']) > 120:
+                preview_snippet += "..."
+            og_description = f"{og_description} — \"{preview_snippet}\""
+        
+        # Final fallback padding
+        if len(og_description) < 100:
+            og_description += " — View, copy, and download TikTok and YouTube transcripts instantly on ScribeTok."
+        
         # Use the thumbnail URL or fallback to ScribeTok branded image
         og_image = task.get('thumbnail_url', 'https://uploadthingy.s3.us-west-1.amazonaws.com/wLTDGGWCxxxDWormAJufuo/ScribeTok-bg.png')
+        
+        # For optimal iMessage/WhatsApp support, also generate square image URL
+        og_image_square = f"https://share.scribetok.com/api/public/thumbnail_square/{task_id}"
         
         # Get the full URL for this page
         og_url = f"https://scribetok.com/v/{task_id}"
@@ -3039,6 +3190,7 @@ async def rich_link_preview(task_id: str, request: Request):
             "og_title": og_title,
             "og_description": og_description,
             "og_image": og_image,
+            "og_image_square": og_image_square,
             "og_url": og_url,
             "video_url": video_url,
             "transcript_preview": transcript_preview,
