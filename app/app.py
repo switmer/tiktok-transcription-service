@@ -2942,8 +2942,8 @@ async def rich_link_preview(task_id: str, request: Request):
         description_parts.append("Read the full transcript on ScribeTok")
         og_description = " • ".join(description_parts)
         
-        # Use the thumbnail URL or fallback
-        og_image = task.get('thumbnail_url', 'https://scribetok.com/api/public/thumbnail/' + task_id)
+        # Use the thumbnail URL or fallback to ScribeTok branded image
+        og_image = task.get('thumbnail_url', 'https://uploadthingy.s3.us-west-1.amazonaws.com/wLTDGGWCxxxDWormAJufuo/ScribeTok-bg.png')
         
         # Get the full URL for this page
         og_url = f"https://scribetok.com/v/{task_id}"
