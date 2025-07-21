@@ -62,6 +62,7 @@ except ImportError:
     import sms
     from database import supabase
     from tiktok_service import tiktok_service
+    from storage_utils import upload_thumbnail_to_supabase
 
 # Import tiktok downloader directly
 try:
@@ -972,7 +973,12 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str):
             
             # Generate quote and TLDR
             logger.info(f"Generating quote and TLDR for task {task_id}")
-            quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            quote_tldr_result = {}
+            try:
+                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            except Exception as e:
+                logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
+                # Continue without quote/TLDR rather than failing the entire enrichment
             
             # Update Supabase with transcript content, file path, quote and TLDR
             update_data = {
@@ -1349,17 +1355,50 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.info(f"YouTube instant transcription successful for task {task_id}")
                 
                 # Update task with completed status and transcript
+                # For YouTube, still do full enrichment to ensure complete rows
+                transcript_text = youtube_result['transcript']
+                video_id = youtube_result['video_id']
+                title = youtube_result['title']
+                platform = 'youtube'
+                
+                # Generate quote and TLDR for YouTube too
+                quote_tldr_result = {}
+                try:
+                    quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+                    logger.info(f"Generated quote/TLDR for YouTube video {video_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate quote/TLDR for YouTube video: {str(e)}")
+                
+                # Prepare complete update data for YouTube
+                update_data = {
+                    'status': 'completed',
+                    'video_id': video_id,
+                    'title': title,
+                    'transcript': transcript_text,
+                    'platform': platform,
+                    'category': 'youtube-transcription',
+                    'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube'],
+                    'error': None,
+                    'view_count': 1,  # Initialize view count
+                    'visibility': 'public'
+                }
+                
+                # Add quote and TLDR if generated successfully
+                if quote_tldr_result.get("quote"):
+                    update_data["quote"] = quote_tldr_result["quote"]
+                    logger.info(f"Generated quote: {quote_tldr_result['quote']}")
+                if quote_tldr_result.get("tldr"):
+                    import json
+                    update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])
+                    logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
+                
+                # Add user_phone if available (SMS context)
+                if user_phone:
+                    update_data['user_phone'] = user_phone
+                
                 await asyncio.to_thread(
                     supabase.table('transcriptions')
-                            .update({
-                                'status': 'completed',
-                                'video_id': youtube_result['video_id'],
-                                'title': youtube_result['title'],
-                                'transcript': youtube_result['transcript'],
-                                'platform': 'youtube',
-                                'category': 'youtube-transcription',
-                                'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube']
-                            })
+                            .update(update_data)
                             .eq('task_id', task_id)
                             .execute
                 )
@@ -1500,23 +1539,44 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         
         # Look for downloaded thumbnail files
         thumbnail_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        supabase_thumbnail_url = None
+        square_supabase_url = None
         for ext in thumbnail_extensions:
             thumbnail_files = glob.glob(os.path.join(output_dir, f"*{ext}"))
             if thumbnail_files:
                 # Use the first thumbnail found
                 thumbnail_file = thumbnail_files[0]
-                # Save relative path for serving
+                # Save relative path for serving (legacy fallback)
                 thumbnail_local_path = os.path.relpath(thumbnail_file, DOWNLOADS_DIR)
                 logger.info(f"Found thumbnail file: {thumbnail_file}")
+                
+                # Upload to Supabase Storage for persistent storage
+                try:
+                    supabase_thumbnail_url = await upload_thumbnail_to_supabase(thumbnail_file, task_id, video_id)
+                    if supabase_thumbnail_url:
+                        logger.info(f"Uploaded thumbnail to Supabase: {supabase_thumbnail_url}")
+                        # Use Supabase URL as primary thumbnail_url
+                        thumbnail_url = supabase_thumbnail_url
+                    else:
+                        logger.warning(f"Failed to upload thumbnail to Supabase, using external URL fallback")
+                except Exception as e:
+                    logger.error(f"Error uploading thumbnail to Supabase: {str(e)}")
                 
                 # Create square thumbnail for optimal iMessage/WhatsApp previews
                 square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
                 if create_square_thumbnail(thumbnail_file, square_thumbnail_path):
                     logger.info(f"Created square thumbnail: {square_thumbnail_path}")
+                    # Also upload square thumbnail to Supabase
+                    try:
+                        square_supabase_url = await upload_thumbnail_to_supabase(square_thumbnail_path, task_id, f"{video_id}_square")
+                        if square_supabase_url:
+                            logger.info(f"Uploaded square thumbnail to Supabase: {square_supabase_url}")
+                    except Exception as e:
+                        logger.error(f"Error uploading square thumbnail to Supabase: {str(e)}")
                 break
         
         # If no thumbnail downloaded, try extracting from video
-        if not thumbnail_local_path:
+        if not thumbnail_local_path and not supabase_thumbnail_url:
             try:
                 video_files = glob.glob(os.path.join(output_dir, "*.mp4"))
                 if video_files and os.path.exists(video_files[0]):
@@ -1532,10 +1592,27 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             thumbnail_local_path = os.path.relpath(thumbnail_path, DOWNLOADS_DIR)
                             logger.info(f"Extracted thumbnail from video: {thumbnail_path}")
                             
+                            # Upload extracted thumbnail to Supabase Storage
+                            try:
+                                supabase_thumbnail_url = await upload_thumbnail_to_supabase(thumbnail_path, task_id, video_id)
+                                if supabase_thumbnail_url:
+                                    logger.info(f"Uploaded extracted thumbnail to Supabase: {supabase_thumbnail_url}")
+                                    # Use Supabase URL as primary thumbnail_url
+                                    thumbnail_url = supabase_thumbnail_url
+                            except Exception as e:
+                                logger.error(f"Error uploading extracted thumbnail to Supabase: {str(e)}")
+                            
                             # Create square thumbnail for optimal iMessage/WhatsApp previews
                             square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
                             if create_square_thumbnail(thumbnail_path, square_thumbnail_path):
                                 logger.info(f"Created square thumbnail from video extraction: {square_thumbnail_path}")
+                                # Upload square thumbnail to Supabase
+                                try:
+                                    square_supabase_url = await upload_thumbnail_to_supabase(square_thumbnail_path, task_id, f"{video_id}_square")
+                                    if square_supabase_url:
+                                        logger.info(f"Uploaded extracted square thumbnail to Supabase: {square_supabase_url}")
+                                except Exception as e:
+                                    logger.error(f"Error uploading extracted square thumbnail to Supabase: {str(e)}")
                     finally:
                         if vidcap is not None:
                             vidcap.release()
@@ -1567,7 +1644,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             
             # Generate quote and TLDR
             logger.info(f"Generating quote and TLDR for task {task_id}")
-            quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            quote_tldr_result = {}
+            try:
+                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            except Exception as e:
+                logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
+                # Continue without quote/TLDR rather than failing the entire enrichment
             
             # Update Supabase with transcript, tags, category, thumbnail, and rich metadata
             update_data = {
@@ -1576,7 +1658,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'tags': tags,
                 'category': category,
                 'error': None,
-                'user_phone': user_phone  # Include user_phone for SMS notification check
+                'user_phone': user_phone,  # Include user_phone for SMS notification check
+                'view_count': 1,  # Initialize view count for new videos
+                'visibility': 'public',  # Default visibility
+                'platform': 'tiktok',  # Default platform for this path
+                'language': 'english'  # Default language
             }
             
             # Add quote and TLDR if generated successfully
@@ -1594,6 +1680,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 update_data['thumbnail_url'] = thumbnail_url
             if thumbnail_local_path:
                 update_data['thumbnail_local_path'] = thumbnail_local_path
+            if supabase_thumbnail_url:
+                update_data['supabase_thumbnail_url'] = supabase_thumbnail_url
+                logger.info(f"Storing Supabase thumbnail URL: {supabase_thumbnail_url}")
+            # Square thumbnail URL will be added if available
+            if square_supabase_url:
+                update_data['square_thumbnail_url'] = square_supabase_url
+                logger.info(f"Storing square thumbnail URL: {square_supabase_url}")
                 
             # Add direct video URL from CDN
             if direct_video_url:
@@ -2138,7 +2231,7 @@ async def public_get_thumbnail(task_id: str):
         # Fetch task details from Supabase
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path") # Select only needed fields
+                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url") # Select thumbnail fields
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute
@@ -2166,7 +2259,17 @@ async def public_get_thumbnail(task_id: str):
                 detail=f"Transcription not completed yet. Current status: {task['status']}"
             )
         
-        # Priority 1: Serve locally stored thumbnail file if path exists
+        # Priority 1: Redirect to Supabase Storage URL if available (persistent, CDN-backed)
+        if task.get("supabase_thumbnail_url"):
+            logger.info(f"Redirecting to Supabase thumbnail URL: {task['supabase_thumbnail_url']}")
+            return RedirectResponse(url=task["supabase_thumbnail_url"])
+            
+        # Priority 2: Redirect to external thumbnail URL if available (TikTok CDN)
+        if task.get("thumbnail_url"):
+            logger.info(f"Redirecting to external thumbnail URL: {task['thumbnail_url']}")
+            return RedirectResponse(url=task["thumbnail_url"])
+
+        # Priority 3: Serve locally stored thumbnail file if path exists (fallback for persistent storage)
         if task.get("thumbnail_local_path"):
             local_thumbnail_full_path = os.path.join(DOWNLOADS_DIR, task["thumbnail_local_path"])
             if os.path.exists(local_thumbnail_full_path):
@@ -2180,11 +2283,17 @@ async def public_get_thumbnail(task_id: str):
                 return FileResponse(local_thumbnail_full_path, media_type=media_type)
             else:
                  logger.warning(f"Local thumbnail path found in task data ({task['thumbnail_local_path']}), but file does not exist.")
-
-        # Priority 2: Redirect to external thumbnail URL if available
-        if task.get("thumbnail_url"):
-            logger.info(f"Redirecting to thumbnail URL from task data: {task['thumbnail_url']}")
-            return RedirectResponse(url=task["thumbnail_url"])
+                 # Clear the local path from database since file is missing (ephemeral storage)
+                 try:
+                     await asyncio.to_thread(
+                         supabase.table('transcriptions')
+                                .update({"thumbnail_local_path": None})
+                                .eq('task_id', task_id)
+                                .execute
+                     )
+                     logger.info(f"Cleared invalid thumbnail_local_path for task {task_id}")
+                 except Exception as e:
+                     logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
         
         # Fallback: If no local file or URL, try searching manually (redundant if process_transcription_task works)
         # This section can be simplified or removed if the above logic is reliable
@@ -2244,7 +2353,7 @@ async def public_get_square_thumbnail(task_id: str):
         # Fetch task details from Supabase
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path")
+                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url, square_thumbnail_url")
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute
@@ -2288,8 +2397,35 @@ async def public_get_square_thumbnail(task_id: str):
                 if create_square_thumbnail(local_thumbnail_full_path, square_thumbnail_path):
                     logger.info(f"Created square thumbnail on-demand: {square_thumbnail_path}")
                     return FileResponse(square_thumbnail_path, media_type="image/jpeg")
+            else:
+                # Clear the local path from database since file is missing (ephemeral storage)
+                try:
+                    await asyncio.to_thread(
+                        supabase.table('transcriptions')
+                               .update({"thumbnail_local_path": None})
+                               .eq('task_id', task_id)
+                               .execute
+                    )
+                    logger.info(f"Cleared invalid thumbnail_local_path for task {task_id} (square endpoint)")
+                except Exception as e:
+                    logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
         
-        # Priority 3: Look for any existing thumbnail and convert it
+        # Priority 3: Use Supabase square thumbnail if available
+        if task.get("square_thumbnail_url"):
+            logger.info(f"Redirecting to Supabase square thumbnail URL: {task['square_thumbnail_url']}")
+            return RedirectResponse(url=task["square_thumbnail_url"])
+            
+        # Priority 4: Use Supabase regular thumbnail if available
+        if task.get("supabase_thumbnail_url"):
+            logger.info(f"Redirecting to Supabase thumbnail URL (fallback for square): {task['supabase_thumbnail_url']}")
+            return RedirectResponse(url=task["supabase_thumbnail_url"])
+            
+        # Priority 5: Use external thumbnail URL if available (TikTok CDN)
+        if task.get("thumbnail_url"):
+            logger.info(f"No local square thumbnail, redirecting to external URL: {task['thumbnail_url']}")
+            return RedirectResponse(url=task["thumbnail_url"])
+        
+        # Priority 6: Look for any existing thumbnail and convert it
         for ext in ['.jpg', '.png', '.jpeg', '.webp']:
             files = glob.glob(os.path.join(output_dir, f"**/*{ext}"), recursive=True)
             # Exclude the square thumbnail we're trying to create
