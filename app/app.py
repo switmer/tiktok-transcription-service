@@ -1960,6 +1960,18 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
         
         task = result.data
         
+        # Parse JSONB fields from database
+        if task.get('tldr'):
+            try:
+                # Parse tldr if it's a JSON string from database
+                if isinstance(task['tldr'], str):
+                    task['tldr'] = json.loads(task['tldr'])
+                elif not isinstance(task['tldr'], list):
+                    task['tldr'] = []
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse tldr for task {task_id}: {task.get('tldr')}")
+                task['tldr'] = []
+        
         if task["status"] == "failed":
             error_message = task.get("error", "Unknown error")
             raise HTTPException(
@@ -3232,6 +3244,20 @@ async def rich_link_preview(task_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Transcript not found")
         
         task = response.data
+        
+        # Parse JSONB fields from database
+        if task.get('tldr'):
+            try:
+                # Parse tldr if it's a JSON string from database
+                if isinstance(task['tldr'], str):
+                    task['tldr'] = json.loads(task['tldr'])
+                elif not isinstance(task['tldr'], list):
+                    task['tldr'] = []
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse tldr for task {task_id}: {task.get('tldr')}")
+                task['tldr'] = []
+        else:
+            task['tldr'] = []
         
         # Generate dynamic meta tags based on the video data
         def format_number(num):
