@@ -424,12 +424,22 @@ async def validate_api_key(api_key: str = Depends(api_key_header)) -> str:
 
 # API key dependency
 def verify_api_key(x_api_key: str = Header(None)):
-    """Dependency for API key validation"""
+    """Dependency for API key validation using environment variable fallback"""
     # Handle potential None value from Header
     if x_api_key is None:
          logger.warning("API key validation failed: X-API-Key header missing.")
          raise HTTPException(status_code=401, detail="X-API-Key header required")
-    validate_api_key(x_api_key)
+    
+    # Simple validation against environment variable API_KEYS
+    api_keys_env = os.getenv("API_KEYS", "").strip()
+    if api_keys_env:
+        valid_keys = [key.strip() for key in api_keys_env.split(",") if key.strip()]
+        if x_api_key not in valid_keys:
+            logger.warning("API key validation failed: Invalid API key provided.")
+            raise HTTPException(status_code=403, detail="Invalid API Key")
+    else:
+        logger.warning("No API_KEYS environment variable set, allowing all keys for development")
+    
     return x_api_key
 
 @app.get("/", include_in_schema=False)
@@ -456,6 +466,21 @@ async def root(ref: Optional[str] = None):
         }
     
     return {"message": "TikTok Transcription API. See /docs for documentation."}
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    """Serve robots.txt from static directory"""
+    return FileResponse("static/robots.txt", media_type="text/plain")
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+async def apple_touch_icon():
+    """Serve apple-touch-icon.png from static directory"""
+    return FileResponse("static/apple-touch-icon.png", media_type="image/png")
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico():
+    """Serve favicon.ico from static directory"""
+    return FileResponse("static/favicon.ico", media_type="image/x-icon")
 
 @app.post("/api/public/transcribe", response_model=TranscriptionResponse, tags=["Public Transcription"])
 async def transcribe(
@@ -524,13 +549,13 @@ async def transcribe(
                     else:
                         logger.warning(f"YouTube instant transcription failed for {task_id}, falling back to background processing")
                         # Queue the background processing as fallback
-            background_tasks.add_task(
-                process_transcription_task,
-                task_id,
-                request.url,
-                request.callback_url,
-                request.proxy
-            )
+                        background_tasks.add_task(
+                            process_transcription_task,
+                            task_id,
+                            request.url,
+                            request.callback_url,
+                            request.proxy
+                        )
                         logger.info(f"Task {task_id} queued for background processing (YouTube fallback)")
                         
                 except Exception as e:
@@ -1601,13 +1626,33 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             logger.warning(f"Failed to cleanup files for failed task {task_id}: {str(cleanup_error)}")
 
 async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str):
-    """Send SMS notification when transcription completes."""
+    """Send SMS notification when transcription completes with modern credit/upsell logic."""
     try:
         if not all([os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN')]):
             logger.warning("Twilio credentials not available, skipping SMS notification")
             return
             
         from twilio.rest import Client
+        
+        # Get user's current credits from SMS users table
+        normalized_phone = phone_number.replace('+1', '').replace('+', '') if phone_number.startswith('+1') else phone_number.replace('+', '')
+        if len(normalized_phone) == 10:
+            normalized_phone = f"+1{normalized_phone}"
+        elif len(normalized_phone) == 11 and normalized_phone.startswith('1'):
+            normalized_phone = f"+{normalized_phone}"
+        
+        credits_remaining = 0
+        try:
+            response = await asyncio.to_thread(
+                supabase.table('sms_users')
+                .select('credits_remaining')
+                .eq('phone_number', normalized_phone)
+                .single()
+                .execute
+            )
+            credits_remaining = response.data.get('credits_remaining', 0) if response.data else 0
+        except Exception as e:
+            logger.warning(f"Could not fetch credits for {phone_number}: {e}")
         
         # Get first 50 words for SMS preview
         words = transcript.split(' ')[:50] 
@@ -1617,7 +1662,30 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 
 {preview}
 
-📖 Full transcript: https://scribetok.com/v/{task_id}
+📖 Full transcript: https://share.scribetok.com/v/{task_id}
+💳 Credits remaining: {credits_remaining}"""
+
+        # Add upsell messages based on credits remaining - optimized conversion flow
+        if credits_remaining == 0:
+            message += """
+
+💳 You've used all 3 free transcripts!
+Get 5 more for just $1.99 - cheaper than 1 jukebox song!
+🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+
+🎁 Or invite friends: /referral"""
+        elif credits_remaining == 1:
+            message += """
+
+⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+🎁 Or invite friends: /referral"""
+        elif credits_remaining == 2:
+            message += """
+
+💡 Only 2 free transcripts left! 
+🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01"""
+
+        message += """
 
 🚀 Share this link with friends!"""
 
@@ -2566,6 +2634,27 @@ async def send_sms(
         logger.error(f"Error sending SMS: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to send SMS")
 
+@app.post("/api/sms/summary", tags=["SMS Integration"])
+async def generate_sms_summary(request: Request):
+    """Generate AI summary of user's latest transcript for SMS"""
+    try:
+        body = await request.json()
+        phone = body.get("phone")
+        
+        if not phone:
+            raise HTTPException(status_code=400, detail="Phone number is required")
+        
+        # Use the SMS handler to generate summary
+        summary_result = await sms.SMSHandler.handle_summary_command(phone)
+        
+        return {"summary": summary_result}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating SMS summary: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate summary")
+
 async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str, job_id: str = None):
     """Process transcription and send SMS notification when complete"""
     try:
@@ -2596,7 +2685,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
             if task_data['status'] == 'completed':
                 # Update job status to completed
                 if job_id:
-                    public_link = f"{os.getenv('BASE_URL', 'https://scribetok.com')}/v/{task_id}"
+                    public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
                     await asyncio.to_thread(
                         supabase.table('transcript_jobs')
                                 .update({
@@ -2624,7 +2713,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                 preview = '\n'.join(preview_lines)[:150] + '...' if preview_lines else 'Transcript ready!'
                 
                 # Enhanced SMS with public link
-                public_link = f"{os.getenv('BASE_URL', 'https://scribetok.com')}/v/{task_id}"
+                public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
                 
                 success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\n💬 Reply /summary for AI summary or /vault for history!"
                 
@@ -3111,7 +3200,7 @@ async def rich_link_preview(task_id: str, request: Request):
         og_image_square = f"https://share.scribetok.com/api/public/thumbnail_square/{task_id}"
         
         # Get the full URL for this page
-        og_url = f"https://scribetok.com/v/{task_id}"
+        og_url = f"https://share.scribetok.com/v/{task_id}"
         
         # Get a preview of the transcript (first 150 chars)
         transcript_preview = ""

@@ -44,12 +44,12 @@ async function getOrCreateSMSUser(phoneNumber, supabase) {
   let { data: smsUser, error } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone).single();
   if (!smsUser && error?.code === 'PGRST116') {
     // SMS user doesn't exist, create both main user and SMS user
-    // Create SMS user without auth requirement (SMS-only users) with 5 free credits
+    // Create SMS user without auth requirement (SMS-only users) with 3 free credits
     const { data: newSmsUser, error: createError } = await supabase.from('sms_users').insert({
       phone_number: normalizedPhone,
       auth_user_id: null,
       last_active: new Date().toISOString(),
-      credits_remaining: 5  // Start with 5 free credits
+      credits_remaining: 3  // Start with 3 free credits
     }).select('*').single();
     if (createError) {
       console.error('Error creating SMS user:', createError);
@@ -154,21 +154,25 @@ ${shortTranscript}
 📖 Full transcript: https://share.scribetok.com/v/${taskId}
 💳 Credits remaining: ${creditsRemaining}`;
 
-    // Add upsell messages based on credits remaining
-    if (creditsRemaining === 1) {
+    // Add upsell messages based on credits remaining - optimized conversion flow
+    if (creditsRemaining === 0) {
       message += `
 
-⚠️ Only 1 credit left! Buy more: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
+💳 You've used all 3 free transcripts!
+Get 5 more for just $1.99 - cheaper than 1 jukebox song!
+🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+
 🎁 Or invite friends: /referral`;
-    } else if (creditsRemaining === 0) {
+    } else if (creditsRemaining === 1) {
       message += `
 
-❌ No credits left! Buy more: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
+⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
 🎁 Or invite friends: /referral`;
-    } else if (creditsRemaining <= 2) {
+    } else if (creditsRemaining === 2) {
       message += `
 
-🎁 Running low? Invite friends for free credits: /referral`;
+💡 Only 2 free transcripts left! 
+🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
     }
 
     message += `
@@ -304,13 +308,15 @@ Deno.serve(async (req)=>{
 /verify 123456 - Verify with code
 /profile - View your stats & credits
 /vault - View transcripts
+/summary - AI summary of your latest transcript
 /referral - Get your referral link for free credits
 /feedback [message] - Send feedback to improve ScribeTok
 
 💳 Credits:
-• New users get 5 free transcripts
-• Buy more: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
-• Refer friends: Both get 5 bonus credits!
+• New users get 3 free transcripts
+• 5 more for just $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+• Unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02
+• Refer friends: Both get 3 bonus credits!
 
 Just text any TikTok/YouTube link to transcribe!`);
   }
@@ -455,16 +461,17 @@ ${verifiedStatus}
       const creditsRemaining = user.credits_remaining || 0;
       const referralLink = `https://scribetok.com/?ref=${referralCode}`;
 
-      return sendTwilioResponse(`🎁 Share ScribeTok and both get 5 bonus credits!
+      return sendTwilioResponse(`🎁 Share ScribeTok and both get 3 bonus credits!
 
 Your referral link: ${referralLink}
 
 📊 Friends referred: ${referralsCount}
 💳 Your credits: ${creditsRemaining}
 
-When friends use ScribeTok via your link, you both get 5 credits!
+When friends use ScribeTok via your link, you both get 3 free credits!
 
-💰 Or buy 10 credits for $4.75: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00`);
+💰 Or buy 5 credits for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+🚀 Go unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
     } catch (error) {
       console.error('Referral error:', error);
       return sendTwilioResponse('❌ Error loading referral info. Try again later.');
@@ -511,6 +518,35 @@ Reply /help for more commands!`);
     }
   }
 
+  // Summary command
+  if (Body.trim().toLowerCase() === '/summary') {
+    try {
+      // Call the Python backend's summary endpoint
+      const renderApiUrl = `${Deno.env.get('RENDER_SERVICE_URL')}/api/sms/summary`;
+      const summaryResponse = await fetch(renderApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function'
+        },
+        body: JSON.stringify({
+          phone: normalizePhoneNumber(From)
+        })
+      });
+
+      if (summaryResponse.ok) {
+        const result = await summaryResponse.json();
+        return sendTwilioResponse(result.summary);
+      } else {
+        console.error('Summary API failed:', summaryResponse.status, await summaryResponse.text());
+        return sendTwilioResponse('📝 Sorry, summary feature unavailable right now. Try again later!');
+      }
+    } catch (error) {
+      console.error('Summary error:', error);
+      return sendTwilioResponse('📝 Sorry, summary feature unavailable right now. Try again later!');
+    }
+  }
+
   // More robust URL detection using regex
   const urlRegex = /(https?:\/\/[^\s]+)/i;
   const match = Body.trim().match(urlRegex);
@@ -529,12 +565,13 @@ Reply /help for more commands!`);
     // Check if user has credits remaining
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0) {
-      return sendTwilioResponse(`❌ You're out of credits! 
+      return sendTwilioResponse(`💳 You've used all your free transcripts!
 
-💳 Buy 10 more for $4.75: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
-🎁 Or invite friends for 5 free credits each: /referral
+Get 5 more for just $1.99 - cheaper than 1 jukebox song!
+🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
 
-Reply /help for more options.`);
+🎁 Or invite friends for 3 free credits each: /referral
+💻 Go unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
     }
 
     // Deduct one credit for this transcription
@@ -579,21 +616,25 @@ ${shortTranscript}
 📖 Full transcript: https://share.scribetok.com/v/${insertedTask.task_id}
 💳 Credits remaining: ${newCreditsRemaining}`;
 
-        // Add upsell messages based on credits remaining
-        if (newCreditsRemaining === 1) {
+        // Add upsell messages based on credits remaining - optimized conversion flow
+        if (newCreditsRemaining === 0) {
           message += `
 
-⚠️ Only 1 credit left! Buy more: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
+💳 You've used all 3 free transcripts!
+Get 5 more for just $1.99 - cheaper than 1 jukebox song!
+🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+
 🎁 Or invite friends: /referral`;
-        } else if (newCreditsRemaining === 0) {
+        } else if (newCreditsRemaining === 1) {
           message += `
 
-❌ No credits left! Buy more: https://buy.stripe.com/bJe4gyewA3zt7No1Ku6Vq00
+⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
 🎁 Or invite friends: /referral`;
-        } else if (newCreditsRemaining <= 2) {
+        } else if (newCreditsRemaining === 2) {
           message += `
 
-🎁 Running low? Invite friends for free credits: /referral`;
+💡 Only 2 free transcripts left! 
+🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
         }
 
         message += `
@@ -628,10 +669,14 @@ ${shortTranscript}
     let initialMessage = `🎥 Got your link! We're transcribing now. (💳 Credits: ${newCreditsRemaining} left)
 You'll get your transcript shortly.`;
     
-    if (newCreditsRemaining <= 2 && newCreditsRemaining > 0) {
+    if (newCreditsRemaining === 1) {
       initialMessage += `
 
-🎁 Running low? Invite friends for free credits: /referral`;
+⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
+    } else if (newCreditsRemaining === 2) {
+      initialMessage += `
+
+💡 Only 2 free transcripts left! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
     }
     
     const initialResponse = sendTwilioResponse(initialMessage);
