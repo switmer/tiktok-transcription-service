@@ -164,18 +164,23 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Set up templates and static files
-templates = Jinja2Templates(directory="templates")
+# ---------------------------------------------------------------------------
+# Templates & Static setup (paths relative to this file)
+# ---------------------------------------------------------------------------
 
-# Set up static files if directory exists
 import os
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-else:
-    # Create empty static directory for future use
-    os.makedirs(static_dir, exist_ok=True)
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Jinja2 templates directory (e.g. app/templates)
+templates_dir = os.path.join(BASE_DIR, "templates")
+templates = Jinja2Templates(directory=templates_dir)
+
+# Static assets directory (e.g. app/static)
+static_dir = os.path.join(BASE_DIR, "static")
+# Ensure the directory exists (allows local dev & avoids Render crash)
+os.makedirs(static_dir, exist_ok=True)
+# Mount at /static so CSS/JS/images are served
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # Create a directory for downloads if it doesn't exist
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
