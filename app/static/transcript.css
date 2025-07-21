@@ -258,6 +258,19 @@ p {
     to { transform: scale(1); opacity: 1; }
 }
 
+@keyframes bounce {
+    0%, 80%, 100% { 
+        transform: scale(0);
+    } 
+    40% { 
+        transform: scale(1.0);
+    }
+}
+
+.animate-bounce {
+    animation: bounce 1.4s infinite ease-in-out both;
+}
+
 /* Scrollbar styling */
 @media (hover: hover) {
     ::-webkit-scrollbar {
