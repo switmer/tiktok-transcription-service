@@ -738,28 +738,64 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
     
     @staticmethod
     async def handle_summary_command(phone_number: str) -> str:
-        """Handle /summary command with Claude AI"""
+        """Handle /tldr command using stored quote+TLDR data"""
         transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
         
         if not transcripts:
-            return "📝 No transcripts found to summarize. Send a video link first!"
+            return "🧠 No transcripts found. Send a video link first!"
         
         transcript_data = transcripts[0]
-        transcript_text = transcript_data.get('transcriptions', {}).get('transcript', '') if transcript_data.get('transcriptions') else ''
+        transcriptions = transcript_data.get('transcriptions', {}) if transcript_data.get('transcriptions') else {}
         
+        # Try to use stored quote and TLDR first
+        stored_quote = transcriptions.get('quote', '')
+        stored_tldr = transcriptions.get('tldr', None)
+        task_id = transcriptions.get('task_id', '')
+        
+        if stored_quote and stored_tldr:
+            # Parse TLDR from JSON if it's stored as string
+            try:
+                import json
+                if isinstance(stored_tldr, str):
+                    tldr_list = json.loads(stored_tldr)
+                else:
+                    tldr_list = stored_tldr
+                    
+                # Format the stored data
+                tldr_bullets = '\n'.join([f"- {item}" for item in tldr_list])
+                
+                message = f"""🧠 Quote: "{stored_quote}"
+
+📝 TLDR:
+{tldr_bullets}"""
+                
+                # Add footer with link to full transcript
+                footer = f"\n\n📖 Full transcript? /full" + (f"\n🔗 Share: https://share.scribetok.com/v/{task_id}" if task_id else "")
+                
+                return f"{message}{footer}"
+                
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Error parsing stored TLDR: {e}")
+                # Fall through to generation
+        
+        # Fallback: Generate fresh if stored data not available
+        transcript_text = transcriptions.get('transcript', '')
         if not transcript_text:
-            return "📝 Transcript not ready yet or no content found. Try again in a moment!"
+            return "🧠 Transcript not ready yet or no content found. Try again in a moment!"
         
         try:
-            # Generate summary using Claude prompt
-            summary = await SMSHandler.generate_summary(transcript_text)
-            title = transcript_data.get('transcriptions', {}).get('title', 'Video') if transcript_data.get('transcriptions') else 'Video'
+            logger.info("Stored quote+TLDR not found, generating fresh")
+            # Generate TLDR using updated prompt
+            tldr_result = await SMSHandler.generate_summary(transcript_text)
             
-            return f"📝 Summary of '{title}':\n\n{summary}"
+            # Add footer with link to full transcript
+            footer = f"\n\n📖 Full transcript? /full" + (f"\n🔗 Share: https://share.scribetok.com/v/{task_id}" if task_id else "")
+            
+            return f"{tldr_result}{footer}"
             
         except Exception as e:
-            logger.error(f"Error generating summary: {str(e)}")
-            return "📝 Sorry, couldn't generate summary right now. Try again later!"
+            logger.error(f"Error generating TLDR: {str(e)}")
+            return "🧠 Too long, didn't watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!"
     
     @staticmethod
     async def generate_summary(transcript_text: str) -> str:
@@ -800,21 +836,23 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
                 "anthropic-version": "2023-06-01"
             }
             
-            # ScribeTok Claude prompt optimized for viral content
-            prompt = f"""You are ScribeTok, a smart AI assistant that summarizes short-form video transcripts for creators, writers, and busy professionals.
+            # ScribeTok Claude prompt optimized for TLDR + Quote format
+            prompt = f"""You are ScribeTok's AI that extracts memorable quotes and bite-sized summaries from video content for busy people who want to save the good stuff without watching the whole thing.
 
-Given this transcript of a TikTok or YouTube video, your job is to:
+Your job is to pull out what's actually worth remembering from this video:
 
-1. Write a short, bold summary of the main idea in 1-2 sentences.
-2. Extract one or two punchy, tweet-worthy quotes or lines from the transcript.
-3. Be concise, specific, and energetic—sound like a great curator, not a dry robot.
-4. Avoid referencing "TikTok" or "YouTube" directly; focus on the content/message.
+1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
+2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights
+3. Write like you're texting a friend, not writing a report
 
-Format your response exactly like this:
+Format your response EXACTLY like this:
 
-Summary: <your summary here>
+🧠 Quote: "<the most memorable, shareable line>"
 
-Quote: "<memorable quote or phrase from transcript>"
+📝 TLDR:
+- Key insight #1 (keep it punchy)
+- Key insight #2 (actionable if possible)  
+- Key insight #3 (if there is one)
 
 Transcript:
 \"\"\"
@@ -850,21 +888,29 @@ Transcript:
             from openai import OpenAI
             client = OpenAI(api_key=api_key)
             
-            prompt = f"""You are ScribeTok, a smart summarizer for short-form video transcripts.
+            prompt = f"""You are ScribeTok's AI that extracts memorable quotes and bite-sized summaries from video content for busy people who want to save the good stuff without watching the whole thing.
 
-Here is a transcript of a TikTok/YouTube video. Your job is to:
-1. Summarize the key point in 1-2 short sentences (max 100 words)
-2. Highlight any punchy quotes or phrases that would make a great tweet
-3. Keep it conversational and engaging
+Your job is to pull out what's actually worth remembering from this video:
+
+1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
+2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights
+3. Write like you're texting a friend, not writing a report
+
+Format your response EXACTLY like this:
+
+🧠 Quote: "<the most memorable, shareable line>"
+
+📝 TLDR:
+- Key insight #1 (keep it punchy)
+- Key insight #2 (actionable if possible)  
+- Key insight #3 (if there is one)
 
 Transcript:
 \"\"\"
-{transcript_text[:2000]}
+{transcript_text[:1500]}
 \"\"\"
 
-Respond in this format:
-Summary: [your summary]
-Quote: "[best quote from the video]" """
+Remember: Quote + TLDR format only, be conversational and focus on what's actually worth saving."""
 
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",

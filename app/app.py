@@ -220,6 +220,9 @@ class TranscriptionRequest(BaseModel):
     output_template: Optional[str] = Field(None,
         description="Custom output filename template"
     )
+    user_phone: Optional[str] = Field(None,
+        description="Phone number for SMS notifications (for SMS-initiated requests)"
+    )
     extract_audio: bool = Field(True,
         description="Extract audio from video for transcription"
     )
@@ -492,6 +495,7 @@ async def transcribe(
     try:
         # Initialize task (this will check for existing transcriptions)
         # For SMS users, only use user_phone (not user_id since SMS users aren't in auth.users)
+        logger.info(f"Transcribe request: url={request.url}, user_phone={request.user_phone}")
         task = await init_task(request.url, user_id, request.user_phone)
         task_id = task['task_id'] # Extract task_id from the returned dict
 
@@ -966,15 +970,31 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str):
             with open(transcript_file_path_abs, 'r', encoding='utf-8') as f:
                 transcript_text = f.read()
             
-            # Update Supabase with transcript content and file path
+            # Generate quote and TLDR
+            logger.info(f"Generating quote and TLDR for task {task_id}")
+            quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            
+            # Update Supabase with transcript content, file path, quote and TLDR
+            update_data = {
+                "status": final_status,
+                "error": final_error,
+                "transcript": transcript_text,
+                "transcript_file_path": transcript_file_path
+            }
+            
+            # Add quote and TLDR if generated successfully
+            if quote_tldr_result.get("quote"):
+                update_data["quote"] = quote_tldr_result["quote"]
+                logger.info(f"Generated quote: {quote_tldr_result['quote']}")
+            
+            if quote_tldr_result.get("tldr"):
+                import json
+                update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])  # Store as JSON
+                logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
+            
             await asyncio.to_thread(
                 supabase.table('transcriptions')
-                        .update({
-                            "status": final_status,
-                            "error": final_error,
-                            "transcript": transcript_text,
-                            "transcript_file_path": transcript_file_path
-                        })
+                        .update(update_data)
                         .eq('task_id', task_id)
                         .execute
             )
@@ -1545,6 +1565,10 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.warning(f"Used fallback transcript extraction ({len(transcript_text)} characters)")
             category = await guess_category(title or '', transcript_text)
             
+            # Generate quote and TLDR
+            logger.info(f"Generating quote and TLDR for task {task_id}")
+            quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            
             # Update Supabase with transcript, tags, category, thumbnail, and rich metadata
             update_data = {
                 'status': 'completed',
@@ -1554,6 +1578,16 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'error': None,
                 'user_phone': user_phone  # Include user_phone for SMS notification check
             }
+            
+            # Add quote and TLDR if generated successfully
+            if quote_tldr_result.get("quote"):
+                update_data["quote"] = quote_tldr_result["quote"]
+                logger.info(f"Generated quote: {quote_tldr_result['quote']}")
+            
+            if quote_tldr_result.get("tldr"):
+                import json
+                update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])  # Store as JSON
+                logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
             
             # Add thumbnail info if available
             if thumbnail_url:
@@ -1598,9 +1632,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             
             # Send SMS notification if this was an SMS request
             if update_data.get('user_phone'):
-                await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text)
+                logger.info(f"Sending SMS completion notification to {update_data['user_phone']} for task {task_id}")
+                # Get the generated quote and TLDR for SMS
+                quote = quote_tldr_result.get("quote", "")
+                tldr_list = quote_tldr_result.get("tldr", [])
+                await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text, quote, tldr_list)
             else:
-                logger.info(f"No SMS notification needed for task {task_id} (no user_phone)")
+                logger.info(f"No SMS notification needed for task {task_id} (no user_phone in update_data: {list(update_data.keys())})")
         else:
             await update_task_status(task_id, "failed", "Transcription failed")
             logger.error(f"Failed to transcribe audio for task {task_id}")
@@ -1625,9 +1663,10 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         except Exception as cleanup_error:
             logger.warning(f"Failed to cleanup files for failed task {task_id}: {str(cleanup_error)}")
 
-async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str):
+async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str, quote: str = "", tldr_list: list = None):
     """Send SMS notification when transcription completes with modern credit/upsell logic."""
     try:
+        logger.info(f"send_completion_sms called: task_id={task_id}, phone={phone_number}, quote={bool(quote)}, tldr={bool(tldr_list)}")
         if not all([os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN')]):
             logger.warning("Twilio credentials not available, skipping SMS notification")
             return
@@ -1654,51 +1693,88 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         except Exception as e:
             logger.warning(f"Could not fetch credits for {phone_number}: {e}")
         
-        # Get first 50 words for SMS preview
-        words = transcript.split(' ')[:50] 
-        preview = ' '.join(words) + ('...' if len(transcript.split(' ')) > 50 else '')
-        
-        message = f"""🎬 Transcript ready: "{title}"
+        # Use Quote + TLDR format if available, fallback to preview
+        if quote and tldr_list:
+            # Shorten TLDR to max 2 items to keep message under 10 segments
+            short_tldr = tldr_list[:2]  # Only first 2 bullet points
+            tldr_bullets = '\n'.join([f"• {item[:60]}..." if len(item) > 60 else f"• {item}" for item in short_tldr])
+            
+            # Shorten quote if too long
+            short_quote = quote[:80] + "..." if len(quote) > 80 else quote
+            
+            message = f"""🧠 "{short_quote}"
+
+📝 TLDR:
+{tldr_bullets}
+
+💬 /full for more • /tldr to regenerate
+🔗 share.scribetok.com/v/{task_id}
+💳 {credits_remaining} left"""
+        else:
+            # Fallback to old format if quote+TLDR generation failed
+            words = transcript.split(' ')[:50] 
+            preview = ' '.join(words) + ('...' if len(transcript.split(' ')) > 50 else '')
+            
+            message = f"""🧠 Here's what's worth remembering: "{title}"
 
 {preview}
 
 📖 Full transcript: https://share.scribetok.com/v/{task_id}
 💳 Credits remaining: {credits_remaining}"""
 
-        # Add upsell messages based on credits remaining - optimized conversion flow
+        # Add short upsell messages 
         if credits_remaining == 0:
-            message += """
-
-💳 You've used all 3 free transcripts!
-Get 5 more for just $1.99 - cheaper than 1 jukebox song!
-🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-
-🎁 Or invite friends: /referral"""
+            message += "\n\n💳 All free credits used! 5 more for $1.99:\nstripe.com/4gMcN42NS • /referral for free"
         elif credits_remaining == 1:
-            message += """
-
-⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-🎁 Or invite friends: /referral"""
+            message += "\n\n⚠️ Last free credit! 5 for $1.99: stripe.com/4gMcN42NS"
         elif credits_remaining == 2:
-            message += """
+            message += "\n\n💡 2 credits left! More: stripe.com/4gMcN42NS"
 
-💡 Only 2 free transcripts left! 
-🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01"""
-
-        message += """
-
-🚀 Share this link with friends!"""
-
+        # Ensure message stays under 10 segments (~700 characters with emojis)
+        if len(message) > 650:
+            logger.warning(f"SMS message too long ({len(message)} chars), truncating")
+            message = message[:600] + "..."
+        
+        logger.info(f"Sending SMS ({len(message)} chars) to {phone_number}")
         client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))
+        
+        # Include status callback for delivery tracking
+        status_callback_url = f'{os.getenv("SUPABASE_URL")}/functions/v1/sms-status-callback' if os.getenv("SUPABASE_URL") else None
         
         sms = await asyncio.to_thread(
             client.messages.create,
             body=message,
             from_=os.getenv('TWILIO_PHONE_NUMBER', '+17744727423'),
-            to=phone_number
+            to=phone_number,
+            status_callback=status_callback_url
         )
         
         logger.info(f"Completion SMS sent to {phone_number} for task {task_id}: {sms.sid}")
+        
+        # Log the outbound message to user_messages table
+        try:
+            # Normalize phone number function
+            def normalize_phone(phone):
+                digits = phone.replace('+', '').replace('-', '').replace('(', '').replace(')', '').replace(' ', '')
+                if len(digits) == 10:
+                    return f"+1{digits}"
+                elif len(digits) == 11 and digits.startswith('1'):
+                    return f"+{digits}"
+                return phone
+                
+            await asyncio.to_thread(
+                supabase.table('user_messages').insert({
+                    'from_phone': os.getenv('TWILIO_PHONE_NUMBER', '+17744727423'),
+                    'to_phone': normalize_phone(phone_number),
+                    'message_body': message,
+                    'direction': 'outbound',
+                    'message_sid': sms.sid,
+                    'delivery_status': sms.status or 'queued'
+                }).execute
+            )
+            logger.info(f"Logged completion SMS to user_messages: {sms.sid}")
+        except Exception as log_error:
+            logger.error(f"Error logging completion SMS to database: {log_error}")
         
     except Exception as e:
         logger.error(f"Failed to send completion SMS for task {task_id}: {str(e)}")

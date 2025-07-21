@@ -452,4 +452,70 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str):
     
     except Exception as e:
         logger.error(f"Error transcribing audio: {str(e)}")
-        return None, None 
+        return None, None
+
+def generate_quote_and_tldr(transcript_text: str) -> dict:
+    """Generate a shareable quote and TLDR summary from transcript text"""
+    if client is None:
+        logger.error("Cannot generate quote+TLDR: OpenAI client not initialized")
+        return {"quote": None, "tldr": None}
+    
+    try:
+        # Truncate transcript if too long (GPT-3.5 has token limits)
+        max_chars = 3000
+        truncated_transcript = transcript_text[:max_chars] + "..." if len(transcript_text) > max_chars else transcript_text
+        
+        prompt = f"""You are ScribeTok's AI that extracts memorable quotes and bite-sized summaries from video content for busy people who want to save the good stuff without watching the whole thing.
+
+Your job is to pull out what's actually worth remembering from this video:
+
+1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
+2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights  
+3. Write like you're texting a friend, not writing a report
+
+Respond STRICTLY in this JSON format (no other text):
+{{
+  "quote": "the most memorable, shareable line",
+  "tldr": ["Key insight #1 (keep it punchy)", "Key insight #2 (actionable if possible)", "Key insight #3 (if there is one)"]
+}}
+
+Transcript:
+\"\"\"
+{truncated_transcript}
+\"\"\""""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.7
+        )
+        
+        # Parse the JSON response
+        result_text = response.choices[0].message.content.strip()
+        logger.info(f"Quote+TLDR raw response: {result_text}")
+        
+        # Try to parse JSON
+        try:
+            parsed_result = json.loads(result_text)
+            quote = parsed_result.get("quote", "").strip('"')  # Remove extra quotes
+            tldr = parsed_result.get("tldr", [])
+            
+            # Validate results
+            if not quote or not tldr:
+                logger.warning("Quote or TLDR missing from response")
+                return {"quote": None, "tldr": None}
+                
+            logger.info(f"Generated quote: {quote}")
+            logger.info(f"Generated TLDR: {tldr}")
+            
+            return {"quote": quote, "tldr": tldr}
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse quote+TLDR JSON: {e}")
+            logger.error(f"Raw response was: {result_text}")
+            return {"quote": None, "tldr": None}
+            
+    except Exception as e:
+        logger.error(f"Error generating quote+TLDR: {str(e)}")
+        return {"quote": None, "tldr": None} 

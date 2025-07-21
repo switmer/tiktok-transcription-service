@@ -122,8 +122,8 @@ async function pollForCompletion(taskId, phoneNumber, videoUrl) {
         continue;
       }
       if (task.status === 'completed' && task.transcript) {
-        // Send transcript via SMS
-        await sendTranscriptSMS(phoneNumber, task.title || 'Video', task.transcript, taskId);
+        // Backend handles SMS notification, no need to send from Edge Function
+        console.log(`Task ${taskId} completed, backend will send SMS notification`);
         break;
       } else if (task.status === 'failed') {
         await sendFailureSMS(phoneNumber);
@@ -155,6 +155,7 @@ ${shortTranscript}
 💳 Credits remaining: ${creditsRemaining}`;
 
     // Add upsell messages based on credits remaining - optimized conversion flow
+    // Note: creditsRemaining is the CURRENT amount (after this transcription was deducted)
     if (creditsRemaining === 0) {
       message += `
 
@@ -177,9 +178,9 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
 
     message += `
 
-🚀 VIRAL MOMENT: Share this transcript!
-📱 Copy & share: https://share.scribetok.com/v/${taskId}
-🎁 Or go viral: Text /referral for your magic link!`;
+💬 Share with friends who'd love this!
+📱 Send link: https://share.scribetok.com/v/${taskId}
+🎁 Want free credits? Text /referral for your sharing link!`;
 
     await sendSMS(phoneNumber, message);
     console.log('Transcript SMS sent successfully to:', phoneNumber);
@@ -201,12 +202,18 @@ async function sendSMS(phoneNumber, message) {
   const twilioAccountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
   const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN');
   const twilioPhoneNumber = Deno.env.get('TWILIO_PHONE_NUMBER') || '+17744727423';
+  
   if (!twilioAccountSid || !twilioAuthToken) {
     console.error('Twilio credentials not configured');
-    return;
+    return null;
   }
+
   const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
   const auth = btoa(`${twilioAccountSid}:${twilioAuthToken}`);
+  
+  // Status callback URL
+  const statusCallbackUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/sms-status-callback`;
+  
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -216,11 +223,39 @@ async function sendSMS(phoneNumber, message) {
     body: new URLSearchParams({
       To: phoneNumber,
       From: twilioPhoneNumber,
-      Body: message
+      Body: message,
+      StatusCallback: statusCallbackUrl
     })
   });
-  if (!response.ok) {
+
+  if (response.ok) {
+    const result = await response.json();
+    
+    try {
+      // Log the outgoing message to user_messages table
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL'), 
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+      );
+      
+      await supabase.from('user_messages').insert({
+        from_phone: twilioPhoneNumber,
+        to_phone: normalizePhoneNumber(phoneNumber),
+        message_body: message,
+        direction: 'outbound',
+        message_sid: result.sid,
+        delivery_status: result.status || 'queued'
+      });
+      
+      console.log(`SMS sent and logged: ${result.sid} to ${phoneNumber}`);
+    } catch (dbError) {
+      console.error('Error logging outbound SMS:', dbError);
+    }
+    
+    return result.sid;
+  } else {
     console.error('Twilio API error:', await response.text());
+    return null;
   }
 }
 // --- YouTube helpers ---
@@ -310,7 +345,9 @@ Deno.serve(async (req)=>{
 /verify 123456 - Verify with code
 /profile - View your stats & credits
 /vault - View transcripts
-/summary - AI summary of your latest transcript
+/tldr - AI summary of your latest transcript
+/quote - Get the best quote from latest video
+/full - See full transcript of latest video
 /referral - Get your referral link for free credits
 /feedback [message] - Send feedback to improve ScribeTok
 
@@ -320,7 +357,7 @@ Deno.serve(async (req)=>{
 • Unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02
 • Refer friends: Both get 3 bonus credits!
 
-Just text any TikTok/YouTube link to transcribe!`);
+Just text any TikTok/YouTube link to save the good stuff!`);
   }
   // Login command - send OTP
   if (Body.trim().toLowerCase() === '/login') {
@@ -463,21 +500,21 @@ ${verifiedStatus}
       const creditsRemaining = user.credits_remaining || 0;
       const referralLink = `https://scribetok.com/?ref=${referralCode}`;
 
-      return sendTwilioResponse(`🎁 VIRAL REFERRAL POWER! Both get 3 bonus credits!
+      return sendTwilioResponse(`🎁 Get 3 bonus credits for each friend you invite!
 
-📱 YOUR MAGIC LINK: ${referralLink}
+📱 Your sharing link: ${referralLink}
 
-💡 SHARE IDEAS:
-• "Found this cool TikTok transcriber! 3 free tries: ${referralLink}"
+💡 Easy ways to share:
+• "Found this cool TikTok transcriber! Try it: ${referralLink}"
 • Post in group chats, Discord, Slack
-• Share on TikTok/Twitter: "Transcribe any video instantly!"
+• Share on social: "Transcribe any video instantly!"
 
-📊 Friends referred: ${referralsCount} 🔥
+📊 Friends you've helped: ${referralsCount}
 💳 Your credits: ${creditsRemaining}
 
-🎯 PRO TIP: Share your latest transcript + your referral link = double viral power!
+💡 TIP: When friends use your link, you both get 3 free credits!
 
-💰 Skip the sharing? 5 credits for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+💰 Or buy credits: 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
 🚀 Go unlimited: $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
     } catch (error) {
       console.error('Referral error:', error);
@@ -525,8 +562,8 @@ Reply /help for more commands!`);
     }
   }
 
-  // Summary command
-  if (Body.trim().toLowerCase() === '/summary') {
+  // TLDR command (formerly /summary)
+  if (Body.trim().toLowerCase() === '/tldr' || Body.trim().toLowerCase() === '/summary') {
     try {
       // Call the Python backend's summary endpoint
       const renderApiUrl = `${Deno.env.get('RENDER_SERVICE_URL')}/api/sms/summary`;
@@ -545,12 +582,82 @@ Reply /help for more commands!`);
         const result = await summaryResponse.json();
         return sendTwilioResponse(result.summary);
       } else {
-        console.error('Summary API failed:', summaryResponse.status, await summaryResponse.text());
-        return sendTwilioResponse('📝 Sorry, summary feature unavailable right now. Try again later!');
+        console.error('TLDR API failed:', summaryResponse.status, await summaryResponse.text());
+        return sendTwilioResponse('🧠 Too long, didn\'t watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!');
       }
     } catch (error) {
-      console.error('Summary error:', error);
-      return sendTwilioResponse('📝 Sorry, summary feature unavailable right now. Try again later!');
+      console.error('TLDR error:', error);
+      return sendTwilioResponse('🧠 Too long, didn\'t watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!');
+    }
+  }
+
+  // Full transcript command
+  if (Body.trim().toLowerCase() === '/full') {
+    try {
+      const { data: transcripts, error } = await supabase.from('transcriptions').select('task_id, title, transcript, status').eq('user_phone', normalizePhoneNumber(From)).order('created_at', { ascending: false }).limit(1);
+      
+      if (error || !transcripts || transcripts.length === 0) {
+        return sendTwilioResponse('📄 No transcripts found. Send a video link first!');
+      }
+
+      const latest = transcripts[0];
+      if (latest.status !== 'completed' || !latest.transcript) {
+        return sendTwilioResponse('📄 Latest transcript not ready yet. Try again in a moment!');
+      }
+
+      const title = latest.title || 'Video';
+      const transcript = latest.transcript;
+      const words = transcript.split(' ');
+      
+      // SMS has character limits, so we need to chunk long transcripts
+      if (words.length > 100) {
+        const chunk = words.slice(0, 100).join(' ') + '...';
+        return sendTwilioResponse(`📄 Full transcript: "${title}"
+
+${chunk}
+
+💡 This is a preview. Full version: https://share.scribetok.com/v/${latest.task_id}`);
+      } else {
+        return sendTwilioResponse(`📄 Full transcript: "${title}"
+
+${transcript}
+
+🔗 Share: https://share.scribetok.com/v/${latest.task_id}`);
+      }
+    } catch (error) {
+      console.error('Full transcript error:', error);
+      return sendTwilioResponse('📄 Error loading transcript. Try again later!');
+    }
+  }
+
+  // Quote command - get the best quote from latest video
+  if (Body.trim().toLowerCase() === '/quote') {
+    try {
+      const { data: transcripts, error } = await supabase.from('transcriptions').select('quote, title, task_id, status').eq('user_phone', normalizePhoneNumber(From)).order('created_at', { ascending: false }).limit(1);
+      
+      if (error || !transcripts || transcripts.length === 0) {
+        return sendTwilioResponse('🧠 No transcripts found. Send a video link first!');
+      }
+
+      const latest = transcripts[0];
+      if (latest.status !== 'completed') {
+        return sendTwilioResponse('🧠 Latest video not ready yet. Try again in a moment!');
+      }
+
+      if (!latest.quote) {
+        return sendTwilioResponse('🧠 No quote found for this video. Try /tldr instead!');
+      }
+
+      const title = latest.title || 'Video';
+      return sendTwilioResponse(`🧠 Quote from "${title}":
+
+"${latest.quote}"
+
+🔗 Share: https://share.scribetok.com/v/${latest.task_id}
+💡 Want the TLDR? Reply /tldr`);
+    } catch (error) {
+      console.error('Quote command error:', error);
+      return sendTwilioResponse('🧠 Error loading quote. Try again later!');
     }
   }
 
@@ -646,9 +753,9 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
 
         message += `
 
-🚀 VIRAL MOMENT: Share this transcript!
-📱 Copy & share: https://share.scribetok.com/v/${insertedTask.task_id}
-🎁 Or go viral: Text /referral for your magic link!`;
+💬 Share with friends who'd love this!
+📱 Send link: https://share.scribetok.com/v/${insertedTask.task_id}
+🎁 Want free credits? Text /referral for your sharing link!`;
 
         await sendSMS(From, message);
         return sendTwilioResponse('✅ YouTube transcript complete! Check your texts for details.');
@@ -657,26 +764,11 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
         return sendTwilioResponse('❌ Failed to transcribe YouTube video. Try again later.');
       }
     }
-    // Perform database insert before responding
-    const { data: insertedTask, error } = await supabase.from('transcriptions').insert({
-      url: url,
-      status: 'pending',
-      tags: [
-        'sms-inbound'
-      ],
-      category: 'sms-transcription',
-      title: null,
-      user_phone: From,
-      user_id: null
-    }).select('task_id').single();
-    if (error) {
-      console.error('Supabase insert error:', error);
-      return sendTwilioResponse('⚠️ Error logging your request. Try again.');
-    }
-    console.log('Database record created with task_id:', insertedTask?.task_id);
+    // Don't create a database record here - let the main API handle it
+    // The main API will create the proper task record with background processing
     // Send immediate response to user FIRST with credit info
-    let initialMessage = `🎥 Got your link! We're transcribing now. (💳 Credits: ${newCreditsRemaining} left)
-You'll get your transcript shortly.`;
+    let initialMessage = `🧠 Got your link! Extracting the good stuff now. (💳 Credits: ${newCreditsRemaining} left)
+You'll get the key points shortly.`;
     
     if (newCreditsRemaining === 1) {
       initialMessage += `
@@ -715,7 +807,7 @@ You'll get your transcript shortly.`;
       }
     }, 0);
     // Backend will handle SMS notification when transcription completes
-    console.log(`Task ${insertedTask.task_id} queued for phone ${From}`);
+    console.log(`Transcription queued for phone ${From}`);
     return initialResponse;
   } catch (err) {
     console.error('Unexpected error:', err);
