@@ -51,6 +51,7 @@ try:
     from . import transcriber
     from . import sms
     from .tiktok_service import tiktok_service
+    from . import health_check
 except ImportError:
     # Fall back to absolute imports (when running directly)
     import sys
@@ -60,6 +61,7 @@ except ImportError:
     import discovery
     import transcriber
     import sms
+    import health_check
     from database import supabase
     from tiktok_service import tiktok_service
     from storage_utils import upload_thumbnail_to_supabase
@@ -485,6 +487,38 @@ async def apple_touch_icon():
 async def favicon_ico():
     """Serve favicon.ico from static directory"""
     return FileResponse("static/favicon.ico", media_type="image/x-icon")
+
+# ===========================================
+# HEALTH CHECK ENDPOINTS
+# ===========================================
+
+@app.get("/health", tags=["Health Check"])
+async def health_simple():
+    """Simple health check for load balancers"""
+    return await health_check.get_simple_health()
+
+@app.get("/health/detailed", tags=["Health Check"])
+async def health_detailed():
+    """Comprehensive health check with all service status"""
+    return await health_check.get_health_status()
+
+@app.get("/health/ready", tags=["Health Check"])
+async def health_ready():
+    """Readiness probe for orchestration systems"""
+    return await health_check.get_readiness()
+
+@app.get("/health/live", tags=["Health Check"])
+async def health_live():
+    """Liveness probe for orchestration systems"""
+    try:
+        # Basic liveness check - can we respond?
+        return {
+            "status": "alive",
+            "timestamp": datetime.utcnow().isoformat(),
+            "uptime_seconds": int(time.time() - health_check.health_checker.start_time)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service not alive: {str(e)}")
 
 @app.post("/api/public/transcribe", response_model=TranscriptionResponse, tags=["Public Transcription"])
 async def transcribe(
