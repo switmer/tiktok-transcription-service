@@ -54,7 +54,7 @@ async def upload_thumbnail_to_supabase(local_file_path: str, task_id: str, video
             file_options={
                 'content-type': content_type, 
                 'cache-control': '3600',
-                'upsert': True  # Allow overwriting if file exists
+                'upsert': 'true'  # Allow overwriting if file exists
             }
         )
         
@@ -71,7 +71,12 @@ async def upload_thumbnail_to_supabase(local_file_path: str, task_id: str, video
             return None
             
         # Extract URL from response
-        public_url = public_url_response.get('publicURL') or public_url_response.get('data', {}).get('publicUrl') or str(public_url_response)
+        if isinstance(public_url_response, str):
+            public_url = public_url_response
+        elif hasattr(public_url_response, 'get'):
+            public_url = public_url_response.get('publicURL') or public_url_response.get('data', {}).get('publicUrl') or str(public_url_response)
+        else:
+            public_url = str(public_url_response)
         
         logger.info(f"Successfully uploaded thumbnail to Supabase: {public_url}")
         return public_url
