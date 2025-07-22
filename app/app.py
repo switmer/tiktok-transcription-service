@@ -575,7 +575,7 @@ async def transcribe(
                                         'tags': ['sms-inbound', 'youtube'] if request.user_phone else ['youtube']
                                     })
                                     .eq('task_id', task_id)
-                                    .execute
+                                    .execute()
                         )
                         
                         # Update task_data for response
@@ -1036,7 +1036,7 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str):
                 supabase.table('transcriptions')
                         .update(update_data)
                         .eq('task_id', task_id)
-                        .execute
+                        .execute()
             )
             logger.info(f"Task {task_id} completed successfully with transcript saved")
         else:
@@ -1434,7 +1434,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     supabase.table('transcriptions')
                             .update(update_data)
                             .eq('task_id', task_id)
-                            .execute
+                            .execute()
                 )
                 
                 # Send SMS notification if user_phone is provided
@@ -1753,7 +1753,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 supabase.table('transcriptions')
                         .update(update_data)
                         .eq('task_id', task_id)
-                        .execute
+                        .execute()
             )
             logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}, thumbnail: {thumbnail_local_path or 'none'}")
             
@@ -2323,7 +2323,7 @@ async def public_get_thumbnail(task_id: str):
                          supabase.table('transcriptions')
                                 .update({"thumbnail_local_path": None})
                                 .eq('task_id', task_id)
-                                .execute
+                                .execute()
                      )
                      logger.info(f"Cleared invalid thumbnail_local_path for task {task_id}")
                  except Exception as e:
@@ -2438,7 +2438,7 @@ async def public_get_square_thumbnail(task_id: str):
                         supabase.table('transcriptions')
                                .update({"thumbnail_local_path": None})
                                .eq('task_id', task_id)
-                               .execute
+                               .execute()
                     )
                     logger.info(f"Cleared invalid thumbnail_local_path for task {task_id} (square endpoint)")
                 except Exception as e:
@@ -2802,7 +2802,7 @@ async def handle_inbound_sms(
                                 'status': 'queued',
                                 'message_sid': MessageSid
                             })
-                            .execute
+                            .execute()
                 )
                 
                 if job_response.data:
@@ -2817,7 +2817,7 @@ async def handle_inbound_sms(
                         supabase.table('transcript_jobs')
                                 .update({'transcript_id': task_id})
                                 .eq('id', job_id)
-                                .execute
+                                .execute()
                     )
                     
                     # Store user phone number for notifications
@@ -2825,7 +2825,7 @@ async def handle_inbound_sms(
                         supabase.table('transcriptions')
                                 .update({'user_phone': From})
                                 .eq('task_id', task_id)
-                                .execute
+                                .execute()
                     )
                     
                     # Queue background processing
@@ -2936,7 +2936,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                 supabase.table('transcript_jobs')
                         .update({'status': 'processing'})
                         .eq('id', job_id)
-                        .execute
+                        .execute()
             )
         
         # Run the normal transcription process
@@ -2965,7 +2965,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                                     'public_link': public_link
                                 })
                                 .eq('id', job_id)
-                                .execute
+                                .execute()
                     )
                 
                 # Send success notification with enhanced message
@@ -3005,7 +3005,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                                     'error': task_data.get('error', 'Unknown error')
                                 })
                                 .eq('id', job_id)
-                                .execute
+                                .execute()
                     )
                 
                 # Send failure notification
@@ -3028,7 +3028,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                                 'error': str(e)
                             })
                             .eq('id', job_id)
-                            .execute
+                            .execute()
                 )
             except:
                 pass
@@ -3360,7 +3360,7 @@ async def handle_supabase_webhook(
                 supabase.table('transcript_jobs')
                         .update({'transcript_id': task_id})
                         .eq('id', job_id)
-                        .execute
+                        .execute()
             )
             
             # Store user phone number for notifications
@@ -3368,7 +3368,7 @@ async def handle_supabase_webhook(
                 supabase.table('transcriptions')
                         .update({'user_phone': from_phone})
                         .eq('task_id', task_id)
-                        .execute
+                        .execute()
             )
             
             # Queue background processing

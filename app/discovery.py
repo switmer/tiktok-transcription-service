@@ -125,7 +125,7 @@ async def get_trending_transcriptions(
                 supabase.table('transcriptions')
                         .select('*')
                         .limit(1)
-                        .execute
+                        .execute()
             )
             
             logger.info(f"Schema check response: {len(response.data) if response.data else 0} rows")
@@ -214,7 +214,7 @@ async def get_similar_transcriptions(
                         .select('tags, category')
                         .eq('task_id', task_id)
                         .single()
-                        .execute
+                        .execute()
             )
             
             if not source.data:
@@ -304,7 +304,7 @@ async def get_recent_transcriptions(
                 supabase.table('transcriptions')
                         .select('*')
                         .limit(1)
-                        .execute
+                        .execute()
             )
             
             if not sample.data:

@@ -41,8 +41,9 @@ async function checkRateLimit(phoneNumber, supabase) {
 async function getOrCreateSMSUser(phoneNumber, supabase) {
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
   // Try to find existing SMS user
-  let { data: smsUser, error } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone).single();
-  if (!smsUser && error?.code === 'PGRST116') {
+  let { data: smsUsers, error } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone);
+  let smsUser = smsUsers && smsUsers.length > 0 ? smsUsers[0] : null;
+  if (!smsUser) {
     // SMS user doesn't exist, create both main user and SMS user
     // Create SMS user without auth requirement (SMS-only users) with 3 free credits
     const { data: newSmsUser, error: createError } = await supabase.from('sms_users').insert({
@@ -238,13 +239,16 @@ async function sendSMS(phoneNumber, message) {
         Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
       );
       
-      await supabase.from('user_messages').insert({
+      await supabase.from('user_messages').upsert({
+        id: crypto.randomUUID(), // Generate unique ID
         from_phone: twilioPhoneNumber,
         to_phone: normalizePhoneNumber(phoneNumber),
         message_body: message,
         direction: 'outbound',
         message_sid: result.sid,
         delivery_status: result.status || 'queued'
+      }, { 
+        onConflict: 'id' 
       });
       
       console.log(`SMS sent and logged: ${result.sid} to ${phoneNumber}`);
@@ -319,10 +323,13 @@ Deno.serve(async (req)=>{
   // Log all incoming messages to user_messages table
   try {
     const command = Body.trim().startsWith('/') ? Body.trim().split(' ')[0].toLowerCase() : null;
-    await supabase.from('user_messages').insert({
+    await supabase.from('user_messages').upsert({
+      id: crypto.randomUUID(), // Generate unique ID
       from_phone: normalizePhoneNumber(From),
       message_body: Body,
       command: command
+    }, { 
+      onConflict: 'id' 
     });
   } catch (logError) {
     console.error('Error logging message to user_messages:', logError);
@@ -537,10 +544,13 @@ ${verifiedStatus}
       }
 
       // Store feedback in user_messages table using command field
-      const { error } = await supabase.from('user_messages').insert({
+      const { error } = await supabase.from('user_messages').upsert({
+        id: crypto.randomUUID(), // Generate unique ID
         from_phone: normalizePhoneNumber(From),
         message_body: feedbackText,
         command: 'feedback'
+      }, { 
+        onConflict: 'id' 
       });
 
       if (error) {
