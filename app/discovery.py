@@ -404,4 +404,159 @@ async def get_categories():
             "food", "fitness", "tech", "other"
         ]
         logger.info(f"Using default categories due to error: {default_categories}")
-        return default_categories 
+        return default_categories
+
+class SearchResponse(BaseModel):
+    task_id: str = Field(..., example="550e8400-e29b-41d4-a716-446655440000")
+    title: str = Field(..., example="Motivational Speech About Success")
+    quote: Optional[str] = Field(None, example="Success is not final, failure is not fatal")
+    tldr: Optional[Any] = Field(None, example=["Key point 1", "Key point 2"])
+    platform: Optional[str] = Field(None, example="tiktok")
+    like_count: Optional[int] = Field(None, example=15420)
+    view_count: Optional[int] = Field(None, example=94403)
+    created_at: str = Field(..., example="2024-07-21T10:15:00Z")
+    search_rank: float = Field(..., example=0.8567)
+
+class SearchListResponse(BaseModel):
+    query: str = Field(..., example="motivation success")
+    results: List[SearchResponse]
+    total_results: int = Field(..., example=42)
+
+@router.get(
+    "/search",
+    response_model=SearchListResponse,
+    tags=["Content Discovery"],
+    description="Lightning-fast full-text search across transcript, quote, and TLDR content with relevance ranking."
+)
+async def search_content(
+    q: str,  # Search query
+    limit: int = 20,
+    offset: int = 0
+):
+    """Search transcriptions using full-text search across all content."""
+    try:
+        if supabase is None:
+            logger.error("Cannot search: Supabase client not initialized")
+            return SearchListResponse(query=q, results=[], total_results=0)
+
+        if not q or len(q.strip()) < 2:
+            logger.warning("Search query too short")
+            return SearchListResponse(query=q, results=[], total_results=0)
+
+        logger.info(f"Performing FTS search: query='{q}', limit={limit}, offset={offset}")
+
+        try:
+            # Use the production FTS function
+            response = await asyncio.to_thread(
+                supabase.rpc('search_content', {
+                    'search_query': q.strip(),
+                    'limit_count': limit,
+                    'offset_count': offset
+                }).execute
+            )
+
+            if not response.data:
+                logger.info(f"No search results for query: {q}")
+                return SearchListResponse(query=q, results=[], total_results=0)
+
+            # Process results
+            results = []
+            for item in response.data:
+                try:
+                    result = SearchResponse(
+                        task_id=item.get("task_id", ""),
+                        title=item.get("title", "Untitled"),
+                        quote=item.get("quote"),
+                        tldr=item.get("tldr"),
+                        platform=item.get("platform"),
+                        like_count=item.get("like_count"),
+                        view_count=item.get("view_count"),
+                        created_at=item.get("created_at", datetime.now().isoformat()),
+                        search_rank=float(item.get("search_rank", 0.0))
+                    )
+                    results.append(result)
+                except Exception as e:
+                    logger.warning(f"Skipping search result due to error: {str(e)}")
+
+            logger.info(f"FTS search returned {len(results)} results for query: {q}")
+            
+            return SearchListResponse(
+                query=q,
+                results=results,
+                total_results=len(results)  # Could be enhanced with actual count
+            )
+
+        except Exception as e:
+            logger.error(f"Error executing FTS search: {str(e)}")
+            return SearchListResponse(query=q, results=[], total_results=0)
+
+    except Exception as e:
+        logger.error(f"Error in search endpoint: {str(e)}", exc_info=True)
+        return SearchListResponse(query=q, results=[], total_results=0)
+
+@router.get(
+    "/viral",
+    response_model=List[SearchResponse],
+    tags=["Content Discovery"],
+    description="Search for viral quotes with high engagement and relevance ranking."
+)
+async def search_viral_content(
+    q: str,  # Search query
+    min_likes: int = 10,
+    limit: int = 10
+):
+    """Search for viral quotes with high engagement."""
+    try:
+        if supabase is None:
+            logger.error("Cannot search viral: Supabase client not initialized")
+            return []
+
+        if not q or len(q.strip()) < 2:
+            logger.warning("Viral search query too short")
+            return []
+
+        logger.info(f"Performing viral search: query='{q}', min_likes={min_likes}, limit={limit}")
+
+        try:
+            # Use the viral quotes FTS function
+            response = await asyncio.to_thread(
+                supabase.rpc('search_viral_quotes', {
+                    'search_query': q.strip(),
+                    'min_likes': min_likes,
+                    'limit_count': limit
+                }).execute
+            )
+
+            if not response.data:
+                logger.info(f"No viral results for query: {q}")
+                return []
+
+            # Process results
+            results = []
+            for item in response.data:
+                try:
+                    result = SearchResponse(
+                        task_id=item.get("task_id", ""),
+                        title=item.get("title", "Untitled"),
+                        quote=item.get("quote"),
+                        tldr=None,  # Viral search focuses on quotes
+                        platform=item.get("platform"),
+                        like_count=item.get("like_count"),
+                        view_count=None,
+                        created_at=datetime.now().isoformat(),  # Not returned by viral function
+                        search_rank=float(item.get("search_rank", 0.0))
+                    )
+                    results.append(result)
+                except Exception as e:
+                    logger.warning(f"Skipping viral result due to error: {str(e)}")
+
+            logger.info(f"Viral search returned {len(results)} results for query: {q}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error executing viral search: {str(e)}")
+            return []
+
+    except Exception as e:
+        logger.error(f"Error in viral search endpoint: {str(e)}", exc_info=True)
+        return [] 
