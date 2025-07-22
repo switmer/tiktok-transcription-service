@@ -9,6 +9,10 @@ import uuid
 from typing import Dict, Any, Optional
 from unittest.mock import Mock, AsyncMock
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import app components
 import sys
@@ -198,9 +202,8 @@ class TestDataBuilder:
     
     @staticmethod
     def sms_user(phone: str = TEST_USER_PHONE, credits: int = 5, **kwargs) -> Dict[str, Any]:
-        """Build SMS user test data"""
+        """Build SMS user test data matching actual schema"""
         base = {
-            "id": str(uuid.uuid4()),
             "phone_number": phone,
             "phone_verified": True,
             "credits_remaining": credits,
@@ -208,11 +211,30 @@ class TestDataBuilder:
             "total_credits_purchased": 0,
             "total_videos_transcribed": 0,
             "referral_code": f"TEST{uuid.uuid4().hex[:6].upper()}",
-            "created_at": datetime.now().isoformat(),
-            "last_active": datetime.now().isoformat()
+            "last_active": datetime.now().isoformat(),
+            # Only include fields that exist in actual schema
+            "referrals_count": 0,
+            "total_referral_credits_earned": 0,
+            "referral_streak": 0
         }
         base.update(kwargs)
         return base
+    
+    @staticmethod
+    def create_or_update_sms_user(phone: str = TEST_USER_PHONE, credits: int = 5, **kwargs) -> Dict[str, Any]:
+        """Create or update SMS user using UPSERT to avoid conflicts"""
+        if supabase is None:
+            return TestDataBuilder.sms_user(phone, credits, **kwargs)
+            
+        user_data = TestDataBuilder.sms_user(phone, credits, **kwargs)
+        
+        try:
+            # Try to upsert the user
+            result = supabase.table('sms_users').upsert(user_data, on_conflict='phone_number').execute()
+            return result.data[0] if result.data else user_data
+        except Exception as e:
+            print(f"Warning: Could not upsert user {phone}: {e}")
+            return user_data
     
     @staticmethod
     def transcription(task_id: str = None, user_phone: str = TEST_USER_PHONE, status: str = "completed", **kwargs) -> Dict[str, Any]:
