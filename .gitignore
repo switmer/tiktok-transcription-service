@@ -68,7 +68,11 @@ app/static/
 
 # Downloads and temporary files
 app/downloads/
-app/static/
+app/static/*
+!app/static/favicon.ico
+!app/static/favicon.png
+!app/static/transcript.css
+!app/static/.gitkeep
 **/*.tmp
 temp_input.json
 
