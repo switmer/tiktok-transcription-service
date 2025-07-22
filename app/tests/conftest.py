@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from database import supabase
 from app import app
-from fastapi.testclient import TestClient
+import httpx
 
 # Test configuration
 TEST_PHONE_NUMBER = "+15551234567"
@@ -30,8 +30,9 @@ TEST_TASK_ID = "550e8400-e29b-41d4-a716-446655440000"
 
 @pytest.fixture
 def client():
-    """FastAPI test client"""
-    return TestClient(app)
+    """HTTP client for API testing"""
+    # Return a simple httpx client for now - tests will need to handle server startup
+    return httpx.Client(base_url="http://localhost:8000")
 
 @pytest.fixture
 def mock_supabase():
