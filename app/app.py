@@ -148,8 +148,10 @@ Perfect for building viral social media tools and content analysis applications.
     ],
 )
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files (only if directory exists)
+import os
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Add CORS middleware
 app.add_middleware(
