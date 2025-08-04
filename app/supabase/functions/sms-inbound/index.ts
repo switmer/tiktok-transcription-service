@@ -426,12 +426,14 @@ ${verifiedStatus}
         return sendTwilioResponse('✅ You already have an account!\n\n💻 Access web: https://scribetok.com/login\n📱 Use your phone number to sign in');
       }
       // Call backend to create phone-based account and link transcriptions
-      const renderApiUrl = `${Deno.env.get('RENDER_SERVICE_URL')}/api/link-sms-account`;
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/link-sms-account`;
       const linkResponse = await fetch(renderApiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function'
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
         },
         body: JSON.stringify({
           phone: From
@@ -576,12 +578,14 @@ Reply /help for more commands!`);
   if (Body.trim().toLowerCase() === '/tldr' || Body.trim().toLowerCase() === '/summary') {
     try {
       // Call the Python backend's summary endpoint
-      const renderApiUrl = `${Deno.env.get('RENDER_SERVICE_URL')}/api/sms/summary`;
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/summary`;
       const summaryResponse = await fetch(renderApiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function'
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
         },
         body: JSON.stringify({
           phone: normalizePhoneNumber(From)
@@ -808,13 +812,15 @@ You'll get the key points shortly.`;
     // Call Render service to start processing (async, don't wait)
     setTimeout(async ()=>{
       try {
-        const renderApiUrl = `${Deno.env.get('RENDER_SERVICE_URL')}/api/public/transcribe`;
+        const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+        const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/public/transcribe`;
         console.log('Calling Render API:', renderApiUrl);
         const transcribeResponse = await fetch(renderApiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'User-Agent': 'Supabase-Edge-Function'
+            'User-Agent': 'Supabase-Edge-Function',
+            'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
           },
           body: JSON.stringify({
             url: url,

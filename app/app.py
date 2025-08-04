@@ -148,6 +148,9 @@ Perfect for building viral social media tools and content analysis applications.
     ],
 )
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -969,7 +972,8 @@ async def fallback_download(
                 transcribe_and_save,
                 task_id=task_id,
                 audio_file=target_file,
-                output_dir=task_dir
+                output_dir=task_dir,
+                video_id=result["video_id"]
             )
             
             return JSONResponse(
@@ -988,11 +992,10 @@ async def fallback_download(
     except Exception as e:
         return f"Error in fallback download: {str(e)}"
 
-async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str):
+async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, video_id: str):
     """Transcribe an audio file and save the transcript"""
     try:
-        # Transcribe the audio file
-        audio_file = download_result["audio_file"]
+        # Transcribe the audio file (audio_file parameter is already the correct path)
         transcript_response, transcript_file_path_abs = transcriber.transcribe_audio(audio_file, output_dir, video_id)
         
         if transcript_response:
