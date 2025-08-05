@@ -1753,44 +1753,59 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             logger.info(f"Updating task {task_id} with {len(update_data)} metadata fields")
             logger.info(f"Update data keys: {list(update_data.keys())}")
                 
-            # Try direct HTTP request to bypass PostGREST client library issue
+            # Use Edge Function to bypass PostGREST ON CONFLICT issue
             import requests
             import json
             
-            try:
-                # Use direct HTTP PATCH request instead of Supabase client
-                supabase_url = os.getenv('SUPABASE_URL')
-                supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
-                
-                headers = {
-                    'apikey': supabase_key,
-                    'Authorization': f'Bearer {supabase_key}',
-                    'Content-Type': 'application/json',
-                    'Prefer': 'return=representation'
-                }
-                
-                url = f"{supabase_url}/rest/v1/transcriptions?task_id=eq.{task_id}"
-                response = requests.patch(url, headers=headers, json=update_data)
-                
-                if response.status_code == 200:
-                    result_data = response.json()
-                    logger.info(f"Direct HTTP update successful for task {task_id}")
-                    # Create a mock result object to maintain compatibility
-                    class MockResult:
-                        def __init__(self, data):
-                            self.data = data
-                    result = MockResult(result_data)
-                else:
-                    logger.error(f"Direct HTTP update failed: {response.status_code} - {response.text}")
-                    # Fall back to minimal Supabase client update
-                    minimal_update = {'status': 'completed', 'transcript': update_data.get('transcript')}
-                    result = supabase.table('transcriptions').update(minimal_update).eq('task_id', task_id).execute()
+            def update_transcription_via_edge_function(task_id, update_data):
+                """Update transcription using Edge Function to avoid PostGREST bugs"""
+                try:
+                    supabase_url = os.getenv('SUPABASE_URL')
+                    supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
                     
-            except Exception as e:
-                logger.error(f"Direct HTTP request failed: {e}")
-                # Final fallback to minimal Supabase client update
-                minimal_update = {'status': 'completed', 'transcript': update_data.get('transcript')}
-                result = supabase.table('transcriptions').update(minimal_update).eq('task_id', task_id).execute()
+                    # Edge Function endpoint
+                    endpoint = f"{supabase_url}/functions/v1/update-transcription"
+                    
+                    # Prepare headers
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {supabase_key}"
+                    }
+                    
+                    # Prepare request body
+                    body = {
+                        "task_id": task_id,
+                        "update_data": update_data
+                    }
+                    
+                    # Make the request
+                    response = requests.post(endpoint, headers=headers, json=body, timeout=30)
+                    
+                    if response.status_code == 200:
+                        result_data = response.json()
+                        logger.info(f"Edge Function update successful for task {task_id}")
+                        # Create a mock result object to maintain compatibility
+                        class MockResult:
+                            def __init__(self, data):
+                                self.data = [data.get('data')] if data.get('data') else []
+                        return MockResult(result_data)
+                    else:
+                        logger.error(f"Edge Function update failed: {response.status_code} - {response.text}")
+                        return None
+                        
+                except Exception as e:
+                    logger.error(f"Edge Function request failed: {e}")
+                    return None
+            
+            # Try the Edge Function approach
+            result = update_transcription_via_edge_function(task_id, update_data)
+            
+            # If Edge Function fails, we're out of options - mark as failed
+            if result is None:
+                logger.error(f"All update methods failed for task {task_id}")
+                # Don't attempt any more Supabase client calls - they all fail with same error
+                # Let the task be marked as failed in the error handling below
+                raise Exception("All transcription update methods failed due to PostGREST ON CONFLICT bug")
             if result.data:
                 logger.info(f"Successfully updated transcription record for task {task_id}")
             else:
