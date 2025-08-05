@@ -1756,7 +1756,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             # Try direct HTTP request to bypass PostGREST client library issue
             import requests
             import json
-            import os
             
             try:
                 # Use direct HTTP PATCH request instead of Supabase client
