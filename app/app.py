@@ -1751,6 +1751,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     update_data['auto_tags'] = all_tags
                     
             logger.info(f"Updating task {task_id} with {len(update_data)} metadata fields")
+            logger.info(f"Update data keys: {list(update_data.keys())}")
                 
             result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
             if result.data:
