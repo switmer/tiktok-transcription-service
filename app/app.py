@@ -1753,7 +1753,45 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             logger.info(f"Updating task {task_id} with {len(update_data)} metadata fields")
             logger.info(f"Update data keys: {list(update_data.keys())}")
                 
-            result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+            # Try direct HTTP request to bypass PostGREST client library issue
+            import requests
+            import json
+            import os
+            
+            try:
+                # Use direct HTTP PATCH request instead of Supabase client
+                supabase_url = os.getenv('SUPABASE_URL')
+                supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+                
+                headers = {
+                    'apikey': supabase_key,
+                    'Authorization': f'Bearer {supabase_key}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=representation'
+                }
+                
+                url = f"{supabase_url}/rest/v1/transcriptions?task_id=eq.{task_id}"
+                response = requests.patch(url, headers=headers, json=update_data)
+                
+                if response.status_code == 200:
+                    result_data = response.json()
+                    logger.info(f"Direct HTTP update successful for task {task_id}")
+                    # Create a mock result object to maintain compatibility
+                    class MockResult:
+                        def __init__(self, data):
+                            self.data = data
+                    result = MockResult(result_data)
+                else:
+                    logger.error(f"Direct HTTP update failed: {response.status_code} - {response.text}")
+                    # Fall back to minimal Supabase client update
+                    minimal_update = {'status': 'completed', 'transcript': update_data.get('transcript')}
+                    result = supabase.table('transcriptions').update(minimal_update).eq('task_id', task_id).execute()
+                    
+            except Exception as e:
+                logger.error(f"Direct HTTP request failed: {e}")
+                # Final fallback to minimal Supabase client update
+                minimal_update = {'status': 'completed', 'transcript': update_data.get('transcript')}
+                result = supabase.table('transcriptions').update(minimal_update).eq('task_id', task_id).execute()
             if result.data:
                 logger.info(f"Successfully updated transcription record for task {task_id}")
             else:
