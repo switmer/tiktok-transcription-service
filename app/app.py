@@ -1741,6 +1741,15 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             if metadata_files:
                 update_data['info_file_path'] = os.path.relpath(metadata_files[0], DOWNLOADS_DIR)
                 
+                # Store complete raw metadata for analytics and debugging
+                try:
+                    with open(metadata_files[0], 'r') as f:
+                        raw_metadata_content = json.load(f)
+                        update_data['raw_metadata'] = raw_metadata_content
+                        logger.info(f"Added raw_metadata with {len(raw_metadata_content)} keys")
+                except Exception as e:
+                    logger.warning(f"Failed to read raw metadata: {e}")
+                
             # Add auto-extracted tags array (combine with existing tags)
             if rich_metadata.get('description'):
                 # Extract hashtags from description
