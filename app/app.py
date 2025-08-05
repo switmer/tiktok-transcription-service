@@ -1037,12 +1037,11 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, vi
                 update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])  # Store as JSON
                 logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
             
-            await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .update(update_data)
-                        .eq('task_id', task_id)
-                        .execute()
-            )
+            result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+            if result.data:
+                logger.info(f"Successfully updated transcription with quote/TLDR for task {task_id}")
+            else:
+                logger.warning(f"Quote/TLDR update returned no data for task {task_id}: {result}")
             logger.info(f"Task {task_id} completed successfully with transcript saved")
         else:
             final_status = "failed"
@@ -1435,12 +1434,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 if user_phone:
                     update_data['user_phone'] = user_phone
                 
-                await asyncio.to_thread(
-                    supabase.table('transcriptions')
-                            .update(update_data)
-                            .eq('task_id', task_id)
-                            .execute()
-                )
+                result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+                if result.data:
+                    logger.info(f"Successfully updated transcription with download results for task {task_id}")
+                else:
+                    logger.warning(f"Download results update returned no data for task {task_id}: {result}")
                 
                 # Send SMS notification if user_phone is provided
                 if user_phone:
@@ -1481,16 +1479,16 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             return
             
         # Update task with initial download results
-        await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .update({
-                        'status': 'processing',
-                        'video_id': video_id,
-                        'title': title
-                    })
-                    .eq('task_id', task_id)
-                    .execute
-        )
+        result = supabase.table('transcriptions').update({
+            'status': 'processing',
+            'video_id': video_id,
+            'title': title
+        }).eq('task_id', task_id).execute()
+        
+        if result.data:
+            logger.info(f"Successfully updated task {task_id} to processing status")
+        else:
+            logger.warning(f"Processing status update returned no data for task {task_id}: {result}")
         
         # Extract rich metadata from .info.json files
         thumbnail_url = None
@@ -1754,12 +1752,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     
             logger.info(f"Updating task {task_id} with {len(update_data)} metadata fields")
                 
-            await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .update(update_data)
-                        .eq('task_id', task_id)
-                        .execute()
-            )
+            result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+            if result.data:
+                logger.info(f"Successfully updated transcription record for task {task_id}")
+            else:
+                logger.warning(f"Update returned no data for task {task_id}: {result}")
             logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}, thumbnail: {thumbnail_local_path or 'none'}")
             
             # Send SMS notification if this was an SMS request
@@ -2324,12 +2321,7 @@ async def public_get_thumbnail(task_id: str):
                  logger.warning(f"Local thumbnail path found in task data ({task['thumbnail_local_path']}), but file does not exist.")
                  # Clear the local path from database since file is missing (ephemeral storage)
                  try:
-                     await asyncio.to_thread(
-                         supabase.table('transcriptions')
-                                .update({"thumbnail_local_path": None})
-                                .eq('task_id', task_id)
-                                .execute()
-                     )
+                     result = supabase.table('transcriptions').update({"thumbnail_local_path": None}).eq('task_id', task_id).execute()
                      logger.info(f"Cleared invalid thumbnail_local_path for task {task_id}")
                  except Exception as e:
                      logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
@@ -2439,12 +2431,7 @@ async def public_get_square_thumbnail(task_id: str):
             else:
                 # Clear the local path from database since file is missing (ephemeral storage)
                 try:
-                    await asyncio.to_thread(
-                        supabase.table('transcriptions')
-                               .update({"thumbnail_local_path": None})
-                               .eq('task_id', task_id)
-                               .execute()
-                    )
+                    result = supabase.table('transcriptions').update({"thumbnail_local_path": None}).eq('task_id', task_id).execute()
                     logger.info(f"Cleared invalid thumbnail_local_path for task {task_id} (square endpoint)")
                 except Exception as e:
                     logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
@@ -2799,16 +2786,12 @@ async def handle_inbound_sms(
             video_url = sms.SMSHandler.extract_video_url(Body)
             if video_url:
                 # Create transcript job entry
-                job_response = await asyncio.to_thread(
-                    supabase.table('transcript_jobs')
-                            .insert({
-                                'from_phone': From,
-                                'video_url': video_url,
-                                'status': 'queued',
-                                'message_sid': MessageSid
-                            })
-                            .execute()
-                )
+                job_response = supabase.table('transcript_jobs').insert({
+                    'from_phone': From,
+                    'video_url': video_url,
+                    'status': 'queued',
+                    'message_sid': MessageSid
+                }).execute()
                 
                 if job_response.data:
                     job_id = job_response.data[0]['id']
@@ -2818,20 +2801,18 @@ async def handle_inbound_sms(
                     task_id = task['task_id']
                     
                     # Link the job to the transcription
-                    await asyncio.to_thread(
-                        supabase.table('transcript_jobs')
-                                .update({'transcript_id': task_id})
-                                .eq('id', job_id)
-                                .execute()
-                    )
+                    result = supabase.table('transcript_jobs').update({'transcript_id': task_id}).eq('id', job_id).execute()
+                    if result.data:
+                        logger.info(f"Linked job {job_id} to task {task_id}")
+                    else:
+                        logger.warning(f"Failed to link job {job_id} to task {task_id}: {result}")
                     
                     # Store user phone number for notifications
-                    await asyncio.to_thread(
-                        supabase.table('transcriptions')
-                                .update({'user_phone': From})
-                                .eq('task_id', task_id)
-                                .execute()
-                    )
+                    result = supabase.table('transcriptions').update({'user_phone': From}).eq('task_id', task_id).execute()
+                    if result.data:
+                        logger.info(f"Stored user phone for task {task_id}")
+                    else:
+                        logger.warning(f"Failed to store user phone for task {task_id}: {result}")
                     
                     # Queue background processing
                     background_tasks.add_task(
@@ -2844,13 +2825,11 @@ async def handle_inbound_sms(
                     logger.info(f"Queued transcription task {task_id} for SMS user {From}")
         
         # Mark message as responded
-        await asyncio.to_thread(
-            supabase.table('user_messages')
-                    .update({'response_sent': True})
-                    .eq('from_phone', From)
-                    .eq('message_body', Body)
-                    .execute
-        )
+        result = supabase.table('user_messages').update({'response_sent': True}).eq('from_phone', From).eq('message_body', Body).execute()
+        if result.data:
+            logger.info(f"Marked message as responded for {From}")
+        else:
+            logger.warning(f"Failed to mark message as responded for {From}: {result}")
         
         # Return TwiML response
         return Response(content=twiml_response, media_type="application/xml")
