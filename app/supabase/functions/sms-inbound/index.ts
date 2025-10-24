@@ -110,30 +110,67 @@ async function verifyOTP(phoneNumber, code, supabase) {
     userId: user.id
   };
 }
-// Background function to poll for completion and send SMS
-async function pollForCompletion(taskId, phoneNumber, videoUrl) {
-  try {
-    const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
-    // Poll for up to 10 minutes
-    for(let attempt = 0; attempt < 60; attempt++){
-      await new Promise((resolve)=>setTimeout(resolve, 10000)); // Wait 10 seconds
-      const { data: task, error } = await supabase.from('transcriptions').select('status, transcript, title').eq('task_id', taskId).single();
-      if (error) {
-        console.error('Error checking task status:', error);
+// Background polling that respects 409 Not Ready from backend and avoids double sends
+async function pollForCompletion(taskId: string, phoneNumber: string) {
+  const baseUrl = (Deno.env.get('RENDER_SERVICE_URL') || '').replace(/\/$/, '');
+  const apiKey = Deno.env.get('RENDER_API_KEY') || '';
+  const headers: Record<string, string> = {
+    'User-Agent': 'Supabase-Edge-Function',
+  };
+  // Public transcript endpoint should not require API key; include if set just in case env expects it
+  if (apiKey) headers['X-API-Key'] = apiKey;
+
+  let delayMs = 2000; // start with 2s
+  const maxDelayMs = 15000; // cap backoff
+  const deadline = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+  while (Date.now() < deadline) {
+    try {
+      await new Promise((r) => setTimeout(r, delayMs));
+      const resp = await fetch(`${baseUrl}/api/public/transcript/${taskId}`, { method: 'GET', headers });
+      if (resp.status === 200) {
+        // Success: backend will send completion SMS; do not double-send
+        console.log(`Task ${taskId} ready; letting backend SMS stand.`);
+        return;
+      }
+      if (resp.status === 409) {
+        // Not ready; respect retry_after_ms if present
+        let retryAfterMs = delayMs;
+        try {
+          const body = await resp.json();
+          if (typeof body?.retry_after_ms === 'number' && body.retry_after_ms > 0) {
+            retryAfterMs = body.retry_after_ms;
+          }
+          console.log(`Task ${taskId} not ready: ${body?.status || 'pending'}; retry in ${retryAfterMs}ms`);
+        } catch {
+          // fallback to exponential backoff
+          retryAfterMs = Math.min(maxDelayMs, delayMs * 1.5);
+        }
+        delayMs = Math.min(maxDelayMs, retryAfterMs);
         continue;
       }
-      if (task.status === 'completed' && task.transcript) {
-        // Backend handles SMS notification, no need to send from Edge Function
-        console.log(`Task ${taskId} completed, backend will send SMS notification`);
-        break;
-      } else if (task.status === 'failed') {
-        await sendFailureSMS(phoneNumber);
-        break;
+      if (resp.status === 404) {
+        // Task not found; stop
+        console.warn(`Task ${taskId} not found while polling.`);
+        return;
       }
+      // Other errors: try task status to see if failed
+      const statusResp = await fetch(`${baseUrl}/api/public/tasks/${taskId}`, { headers });
+      if (statusResp.ok) {
+        const t = await statusResp.json();
+        if (t?.status === 'failed') {
+          await sendFailureSMS(phoneNumber);
+          return;
+        }
+      }
+      // brief backoff before next loop
+      delayMs = Math.min(maxDelayMs, delayMs * 1.5);
+    } catch (e) {
+      console.error('Polling error:', e);
+      delayMs = Math.min(maxDelayMs, delayMs * 1.5);
     }
-  } catch (error) {
-    console.error('Error in polling:', error);
   }
+  console.warn(`Polling timed out for task ${taskId}`);
 }
 // Send transcript via SMS using Twilio
 async function sendTranscriptSMS(phoneNumber, title, transcript, taskId) {
@@ -794,21 +831,8 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
     }
     // Don't create a database record here - let the main API handle it
     // The main API will create the proper task record with background processing
-    // Send immediate response to user FIRST with credit info
-    let initialMessage = `🧠 Got your link! Extracting the good stuff now. (💳 Credits: ${newCreditsRemaining} left)
-You'll get the key points shortly.`;
-    
-    if (newCreditsRemaining === 1) {
-      initialMessage += `
-
-⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
-    } else if (newCreditsRemaining === 2) {
-      initialMessage += `
-
-💡 Only 2 free transcripts left! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
-    }
-    
-    const initialResponse = sendTwilioResponse(initialMessage);
+    // Just send simple Twilio acknowledgment - let backend handle SMS notifications
+    const initialResponse = sendTwilioResponse('👍 Got it! Processing your video...');
     // Call Render service to start processing (async, don't wait)
     setTimeout(async ()=>{
       try {
@@ -831,6 +855,17 @@ You'll get the key points shortly.`;
         console.log('Render API response:', transcribeResponse.status, responseText);
         if (!transcribeResponse.ok) {
           console.error('Render API failed:', transcribeResponse.status, responseText);
+        } else {
+          // Try to extract task_id and start polling (non-blocking, no double-send)
+          try {
+            const parsed = JSON.parse(responseText);
+            const taskId = parsed?.task_id;
+            if (taskId) {
+              pollForCompletion(taskId, From);
+            }
+          } catch (e) {
+            console.warn('Could not parse transcribe response JSON:', e);
+          }
         }
       } catch (apiError) {
         console.error('Failed to call Render API:', apiError);
