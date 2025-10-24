@@ -39,8 +39,9 @@ Deno.serve(async (req) => {
 
     // Use the PostgreSQL function to safely update the record
     // This bypasses the PostGREST ON CONFLICT issue
+    // Explicitly cast task_id to UUID to avoid function overloading ambiguity
     const { data, error } = await supabaseClient.rpc('update_transcription', {
-      p_task_id: task_id,
+      p_task_id: task_id as string, // TypeScript knows it's a string
       p_update_data: update_data
     });
 

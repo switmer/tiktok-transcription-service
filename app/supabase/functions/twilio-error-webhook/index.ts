@@ -28,8 +28,30 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Parse the Twilio error webhook payload
-    const payload: TwilioErrorPayload = await req.json()
+    // Parse the Twilio error webhook payload (sent as form data, not JSON)
+    const formData = await req.formData()
+    
+    // Parse Payload field (might be JSON string)
+    let payloadData: any = {}
+    try {
+      const payloadStr = formData.get('Payload') as string
+      if (payloadStr) {
+        payloadData = JSON.parse(payloadStr)
+      }
+    } catch (e) {
+      console.warn('Failed to parse Payload field as JSON:', e)
+      payloadData = { raw: formData.get('Payload') }
+    }
+    
+    const payload: TwilioErrorPayload = {
+      AccountSid: formData.get('AccountSid') as string,
+      Sid: formData.get('Sid') as string,
+      ParentAccountSid: formData.get('ParentAccountSid') as string || undefined,
+      Timestamp: formData.get('Timestamp') as string,
+      Level: formData.get('Level') as 'Error' | 'Warning',
+      PayloadType: formData.get('PayloadType') as string,
+      Payload: payloadData
+    }
     
     console.log(`Twilio ${payload.Level} received:`, {
       sid: payload.Sid,
