@@ -122,4 +122,32 @@ downloads/
     ├── audio/     # Extracted audio files
     ├── video/     # Downloaded videos
     └── transcript.txt # Generated transcript
-``` 
+```
+
+## SwiftBar 101 (Menu-bar Transcription Tool)
+
+SwiftBar lets any script become a macOS menu-bar item. We ship a plugin that wraps `app/local_scripts/transcribe_video.py` so you can transcribe any media file from the menu bar.
+
+Quick start:
+```bash
+brew install swiftbar
+mkdir -p "$HOME/Library/Application Support/SwiftBar/Plugins"
+# The plugin is created automatically by our setup, but if needed place
+# transcribe_anything.sh in that folder and make it executable:
+# chmod +x "$HOME/Library/Application Support/SwiftBar/Plugins/transcribe_anything.sh"
+```
+
+Usage:
+- Click the "Transcribe" menubar item → Pick file(s) → transcripts are saved next to originals as `_transcript.txt` (also `.srt`/`.vtt`).
+- Choose model via the plugin menu (persisted).
+- View progress live in the menu title; open logs via "Open last log".
+- Cancel mid-run from the menu; jobs are killed as a process group.
+
+Progress convention:
+- Our Python tool prints lines like `PROGRESS: 0.42` to STDERR.
+- The plugin parses these to render percent; keep this if you extend the tool.
+
+Troubleshooting:
+- If ffmpeg isn’t found, install with `brew install ffmpeg`.
+- Ensure `openai-whisper` or `faster-whisper` is installed in the Python environment used by `/usr/bin/python3`.
+- If the menu doesn’t appear, relaunch SwiftBar or verify the Plugins folder path. 

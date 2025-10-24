@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
+from pydantic import field_validator
 from typing import Optional, Dict, Any, List, Tuple, Literal
 import uvicorn
 import httpx
@@ -42,6 +43,7 @@ import numpy as np
 from functools import wraps
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from supabase.client import create_client, Client
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # Fix imports for deployment
 try:
@@ -152,6 +154,9 @@ Perfect for building viral social media tools and content analysis applications.
 import os
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# In-memory task map used by legacy test endpoints; keep defined to avoid runtime/lint errors
+tasks: Dict[str, Dict[str, Any]] = {}
 
 # Add CORS middleware
 app.add_middleware(
@@ -1290,12 +1295,26 @@ def is_youtube_url(url: str) -> bool:
     """Check if URL is a YouTube video."""
     import re
     youtube_patterns = [
-        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([^&\n?#]+)',
+        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|m\.youtube\.com/watch\?v=)([^&\n?#]+)',
         r'(?:www\.)?youtube\.com/watch\?v=[\w-]+',
         r'(?:www\.)?youtu\.be/[\w-]+',
-        r'(?:www\.)?youtube\.com/shorts/[\w-]+'
+        r'(?:www\.)?youtube\.com/shorts/[\w-]+',
+        r'(?:m\.)?youtube\.com/watch\?v=[\w-]+'
     ]
     return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
+
+def normalize_proxy(proxy: Optional[str]) -> Optional[str]:
+    """Return a well-formed proxy URL or None."""
+    if not proxy:
+        return None
+    try:
+        val = str(proxy).strip()
+        parts = urlsplit(val)
+        if parts.scheme and parts.netloc:
+            return val
+    except Exception:
+        pass
+    return None
 
 
 def find_thumbnail_url_in_metadata(metadata):
@@ -1456,7 +1475,69 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.info(f"YouTube instant transcription completed for task {task_id}")
                 return
             else:
-                logger.warning(f"YouTube instant transcription failed, falling back to standard processing for task {task_id}")
+                logger.warning(f"YouTube instant transcription failed, attempting yt-dlp fallback for task {task_id}")
+                # Try YouTube yt-dlp fallback path before generic pipeline
+                try:
+                    output_dir = os.path.join(DOWNLOADS_DIR, task_id)
+                    os.makedirs(output_dir, exist_ok=True)
+                    ytdlp_audio, ytdlp_video_id, ytdlp_title = transcriber.download_youtube_ytdlp(original_video_url, output_dir)
+                    if ytdlp_audio and ytdlp_video_id:
+                        # Proceed with transcription using downloaded audio
+                        await update_task_status(task_id, "transcribing")
+                        transcript_response, transcript_file_path = transcriber.transcribe_audio(ytdlp_audio, output_dir, ytdlp_video_id)
+                        if transcript_response:
+                            await update_task_status(task_id, "generating")
+                            # Load transcript text
+                            transcript_text = ""
+                            if transcript_file_path and os.path.exists(transcript_file_path):
+                                with open(transcript_file_path, 'r', encoding='utf-8') as f:
+                                    transcript_text = f.read()
+                            # Quote/TLDR
+                            quote_tldr_result = {}
+                            try:
+                                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+                            except Exception as e:
+                                logger.error(f"Failed to generate quote/TLDR (yt-dlp path) for task {task_id}: {e}")
+                            # Update DB
+                            update_data = {
+                                'status': 'completed',
+                                'video_id': ytdlp_video_id,
+                                'title': ytdlp_title,
+                                'transcript': transcript_text,
+                                'platform': 'youtube',
+                                'category': 'youtube-transcription',
+                                'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube'],
+                                'error': None,
+                                'view_count': 1,
+                                'visibility': 'public'
+                            }
+                            if quote_tldr_result.get('quote'):
+                                update_data['quote'] = quote_tldr_result['quote']
+                            if quote_tldr_result.get('tldr'):
+                                import json
+                                update_data['tldr'] = json.dumps(quote_tldr_result['tldr'])
+                            supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+                            # SMS notify
+                            if user_phone:
+                                try:
+                                    await sms.send_completion_sms(user_phone, task_id, ytdlp_title)
+                                except Exception as sms_error:
+                                    logger.error(f"Failed to send SMS notification (yt-dlp path) for task {task_id}: {sms_error}")
+                            # Cleanup
+                            try:
+                                if os.path.exists(output_dir):
+                                    shutil.rmtree(output_dir)
+                            except Exception:
+                                pass
+                            logger.info(f"YouTube yt-dlp fallback completed for task {task_id}")
+                            return
+                        else:
+                            logger.error(f"Transcription failed on yt-dlp fallback for task {task_id}")
+                    else:
+                        logger.warning(f"yt-dlp fallback did not yield audio/video_id for task {task_id}")
+                except Exception as e:
+                    logger.warning(f"YouTube yt-dlp fallback error for task {task_id}: {e}")
+                logger.warning(f"Falling back to generic pipeline for task {task_id}")
         
         # Standard TikTok processing or YouTube fallback
         # Create a unique working directory for this task
@@ -1788,18 +1869,23 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     }
                     
                     # Make the request
+                    logger.info(f"Calling Edge Function at {endpoint} for task {task_id}")
+                    logger.info(f"Update data keys: {list(update_data.keys())}")
                     response = requests.post(endpoint, headers=headers, json=body, timeout=30)
                     
+                    logger.info(f"Edge Function response: {response.status_code}")
                     if response.status_code == 200:
                         result_data = response.json()
-                        logger.info(f"Edge Function update successful for task {task_id}")
+                        logger.info(f"Edge Function update successful for task {task_id}: {result_data.get('success', False)}")
                         # Create a mock result object to maintain compatibility
                         class MockResult:
                             def __init__(self, data):
                                 self.data = [data.get('data')] if data.get('data') else []
                         return MockResult(result_data)
                     else:
-                        logger.error(f"Edge Function update failed: {response.status_code} - {response.text}")
+                        error_text = response.text
+                        logger.error(f"Edge Function update failed: {response.status_code}")
+                        logger.error(f"Edge Function error response: {error_text}")
                         return None
                         
                 except Exception as e:
@@ -3681,6 +3767,452 @@ async def rich_link_preview(task_id: str, request: Request):
 </body>
 </html>"""
         return Response(content=fallback_html, media_type="text/html")
+
+# ====================================================================================
+# COMMENT EXTRACTION API (PRO FEATURE)
+# ====================================================================================
+
+@app.post("/api/pro/comments/fetch", tags=["Pro Features - Comments"])
+async def fetch_video_comments(
+    task_id: str,
+    count: int = 30,
+    include_replies: bool = False,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Fetch and store comments for a transcribed video (Pro Feature).
+    
+    Requires:
+    - Valid API key
+    - User must have credits or be authenticated
+    - Video must be already transcribed
+    
+    Cost: 1 credit per request (covers up to 30 comments + replies)
+    """
+    try:
+        # Check if transcription exists
+        response = await asyncio.to_thread(
+            supabase.table('transcriptions')
+                    .select('task_id, video_id, user_phone')
+                    .eq('task_id', task_id)
+                    .maybe_single()
+                    .execute
+        )
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+        
+        task = response.data
+        video_id = task.get('video_id')
+        user_phone = task.get('user_phone')
+        
+        if not video_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Video ID not available for this transcription"
+            )
+        
+        # Check user credits if phone number provided
+        if user_phone:
+            credits_check = await asyncio.to_thread(
+                supabase.table('sms_users')
+                        .select('credits_remaining')
+                        .eq('phone_number', user_phone)
+                        .maybe_single()
+                        .execute
+            )
+            
+            if credits_check.data:
+                credits = credits_check.data.get('credits_remaining', 0)
+                if credits < 1:
+                    raise HTTPException(
+                        status_code=402,
+                        detail="Insufficient credits. Comment extraction requires 1 credit."
+                    )
+        
+        # Initialize comments adapter
+        from adapters.comments_adapter import TikTokCommentsAdapter
+        
+        rapidapi_key = os.getenv('RAPIDAPI_KEY')
+        if not rapidapi_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Comment extraction not configured"
+            )
+        
+        adapter = TikTokCommentsAdapter([rapidapi_key])
+        
+        # Fetch comments
+        logger.info(f"Fetching comments for video {video_id} (task {task_id})")
+        result = adapter.fetch_comments(video_id, count=count)
+        
+        if result.get('error'):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to fetch comments: {result['error']}"
+            )
+        
+        comments = result.get('comments', [])
+        
+        # Store comments in database
+        stored_count = 0
+        for comment in comments:
+            try:
+                await asyncio.to_thread(
+                    supabase.table('video_comments').insert({
+                        'task_id': task_id,
+                        'comment_id': comment.comment_id,
+                        'video_id': video_id,
+                        'text': comment.text,
+                        'author_name': comment.author_name,
+                        'author_username': comment.author_username,
+                        'author_avatar': comment.author_avatar,
+                        'created_at_timestamp': comment.created_at,
+                        'likes': comment.likes,
+                        'reply_count': comment.reply_count,
+                        'parent_comment_id': comment.parent_comment_id,
+                        'provider': result.get('provider'),
+                        'raw_data': comment.raw_data
+                    }).execute
+                )
+                stored_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to store comment {comment.comment_id}: {e}")
+                continue
+        
+        # Update transcription record
+        await asyncio.to_thread(
+            supabase.table('transcriptions').update({
+                'comments_fetched': True,
+                'comments_count': stored_count,
+                'comments_fetched_at': datetime.now().isoformat()
+            }).eq('task_id', task_id).execute
+        )
+        
+        # Deduct credit if user has account
+        if user_phone:
+            try:
+                await asyncio.to_thread(
+                    supabase.rpc('decrement_credits', {
+                        'user_phone': user_phone,
+                        'amount': 1
+                    }).execute
+                )
+                logger.info(f"Deducted 1 credit from {user_phone} for comment extraction")
+            except Exception as e:
+                logger.warning(f"Failed to deduct credit: {e}")
+        
+        return {
+            "success": True,
+            "task_id": task_id,
+            "comments_fetched": stored_count,
+            "provider": result.get('provider'),
+            "has_more": result.get('has_more', False),
+            "cursor": result.get('cursor')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching comments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/comments/{task_id}", tags=["Public Transcription"])
+async def get_video_comments(
+    task_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    sort_by: str = "likes",  # "likes", "recent", or "replies"
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get stored comments for a transcribed video.
+    
+    Parameters:
+    - task_id: Transcription task ID
+    - limit: Number of comments to return (max 100)
+    - offset: Pagination offset
+    - sort_by: Sort order (likes, recent, replies)
+    """
+    try:
+        limit = min(limit, 100)  # Cap at 100
+        
+        # Build query based on sort order
+        query = supabase.table('video_comments').select('*').eq('task_id', task_id)
+        
+        # Apply sorting
+        if sort_by == "likes":
+            query = query.order('likes', desc=True)
+        elif sort_by == "recent":
+            query = query.order('fetched_at', desc=True)
+        elif sort_by == "replies":
+            query = query.order('reply_count', desc=True)
+        else:
+            query = query.order('likes', desc=True)
+        
+        # Apply pagination
+        query = query.range(offset, offset + limit - 1)
+        
+        response = await asyncio.to_thread(query.execute)
+        
+        return {
+            "task_id": task_id,
+            "comments": response.data,
+            "count": len(response.data),
+            "offset": offset,
+            "limit": limit
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching comments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/comments/{task_id}/top", tags=["Public Transcription"])
+async def get_top_comments(
+    task_id: str,
+    limit: int = 10,
+    api_key: str = Depends(verify_api_key)
+):
+    """Get top N most-liked comments for a video"""
+    try:
+        response = await asyncio.to_thread(
+            supabase.table('video_comments')
+                    .select('*')
+                    .eq('task_id', task_id)
+                    .is_('parent_comment_id', 'null')  # Top-level only
+                    .order('likes', desc=True)
+                    .limit(limit)
+                    .execute
+        )
+        
+        return {
+            "task_id": task_id,
+            "top_comments": response.data,
+            "count": len(response.data)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching top comments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/comments/{task_id}/analytics", tags=["Public Transcription"])
+async def get_comment_analytics(
+    task_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get analytics data for comments (for research dashboard).
+    Returns aggregate statistics and top comments.
+    """
+    try:
+        # Fetch all comments for this task
+        response = await asyncio.to_thread(
+            supabase.table('video_comments')
+                    .select('*')
+                    .eq('task_id', task_id)
+                    .execute
+        )
+        
+        comments = response.data
+        
+        if not comments or len(comments) == 0:
+            return {
+                "task_id": task_id,
+                "total_comments": 0,
+                "avg_likes": 0,
+                "engagement_rate": 0,
+                "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
+                "top_comments": [],
+                "error": "No comments found. Fetch comments first."
+            }
+        
+        # Calculate aggregate statistics
+        total_comments = len(comments)
+        total_likes = sum(c.get('likes', 0) for c in comments)
+        avg_likes = round(total_likes / total_comments) if total_comments > 0 else 0
+        total_replies = sum(c.get('reply_count', 0) for c in comments)
+        
+        # Calculate engagement rate (likes + replies per comment)
+        engagement_rate = round(((total_likes + total_replies) / total_comments) / 100, 1) if total_comments > 0 else 0
+        
+        # Simple sentiment analysis (placeholder - can be enhanced later)
+        sentiment = calculate_simple_sentiment(comments)
+        
+        # Get top 10 comments
+        top_comments = sorted(comments, key=lambda x: x.get('likes', 0), reverse=True)[:10]
+        
+        # Format top comments for table display
+        formatted_top_comments = [
+            {
+                "author": c.get('author_username', 'unknown'),
+                "comment": c.get('text', ''),
+                "likes": c.get('likes', 0),
+                "replies": c.get('reply_count', 0),
+                "created_at": c.get('created_at_timestamp', '')
+            }
+            for c in top_comments
+        ]
+        
+        return {
+            "task_id": task_id,
+            "total_comments": total_comments,
+            "avg_likes": avg_likes,
+            "total_likes": total_likes,
+            "total_replies": total_replies,
+            "engagement_rate": engagement_rate,
+            "sentiment": sentiment,
+            "top_comments": formatted_top_comments,
+            "fetched_at": comments[0].get('fetched_at') if comments else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching comment analytics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/comments/{task_id}/export/csv", tags=["Public Transcription"])
+async def export_comments_csv(
+    task_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Export comments as CSV file"""
+    try:
+        import csv
+        from io import StringIO
+        
+        # Fetch all comments
+        response = await asyncio.to_thread(
+            supabase.table('video_comments')
+                    .select('*')
+                    .eq('task_id', task_id)
+                    .order('likes', desc=True)
+                    .execute
+        )
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="No comments found")
+        
+        # Create CSV in memory
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=[
+            'author_username', 'author_name', 'text', 'likes', 
+            'reply_count', 'created_at_timestamp', 'video_id'
+        ])
+        
+        writer.writeheader()
+        for comment in response.data:
+            writer.writerow({
+                'author_username': comment.get('author_username', ''),
+                'author_name': comment.get('author_name', ''),
+                'text': comment.get('text', ''),
+                'likes': comment.get('likes', 0),
+                'reply_count': comment.get('reply_count', 0),
+                'created_at_timestamp': comment.get('created_at_timestamp', ''),
+                'video_id': comment.get('video_id', '')
+            })
+        
+        # Return as downloadable file
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=comments_{task_id}.csv"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting comments to CSV: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/public/comments/{task_id}/export/json", tags=["Public Transcription"])
+async def export_comments_json(
+    task_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Export comments as JSON file"""
+    try:
+        # Fetch all comments
+        response = await asyncio.to_thread(
+            supabase.table('video_comments')
+                    .select('*')
+                    .eq('task_id', task_id)
+                    .order('likes', desc=True)
+                    .execute
+        )
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="No comments found")
+        
+        # Return as downloadable JSON file
+        return Response(
+            content=json.dumps(response.data, indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f"attachment; filename=comments_{task_id}.json"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting comments to JSON: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def calculate_simple_sentiment(comments):
+    """
+    Simple sentiment analysis based on keywords.
+    Can be enhanced with NLP libraries later.
+    """
+    positive_keywords = ['love', 'amazing', 'great', 'awesome', 'best', 'perfect', 'helpful', 'thanks', '❤️', '😍', '🔥', '👍', '💯']
+    negative_keywords = ['hate', 'bad', 'worst', 'terrible', 'awful', 'disappointed', 'boring', '👎', '😡', '😢']
+    
+    positive_count = 0
+    negative_count = 0
+    neutral_count = 0
+    
+    for comment in comments:
+        text = comment.get('text', '').lower()
+        
+        has_positive = any(word in text for word in positive_keywords)
+        has_negative = any(word in text for word in negative_keywords)
+        
+        if has_positive and not has_negative:
+            positive_count += 1
+        elif has_negative and not has_positive:
+            negative_count += 1
+        else:
+            neutral_count += 1
+    
+    total = len(comments)
+    if total == 0:
+        return {"positive": 0, "neutral": 0, "negative": 0, "dominant": "neutral"}
+    
+    positive_pct = round((positive_count / total) * 100)
+    neutral_pct = round((neutral_count / total) * 100)
+    negative_pct = round((negative_count / total) * 100)
+    
+    # Determine dominant sentiment
+    if positive_pct > negative_pct and positive_pct > neutral_pct:
+        dominant = "positive"
+    elif negative_pct > positive_pct and negative_pct > neutral_pct:
+        dominant = "negative"
+    else:
+        dominant = "neutral"
+    
+    return {
+        "positive": positive_pct,
+        "neutral": neutral_pct,
+        "negative": negative_pct,
+        "dominant": dominant
+    }
+
 
 if __name__ == "__main__":
     # Get port from environment or use default
