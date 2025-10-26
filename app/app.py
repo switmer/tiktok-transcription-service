@@ -2191,7 +2191,7 @@ async def public_get_task(task_id: str):
         # Fetch task from Supabase
         response = await asyncio.to_thread(
             supabase.table('public_transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url")
+                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel")
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute
@@ -2218,7 +2218,15 @@ async def public_get_task(task_id: str):
             thumbnail=task_data.get('thumbnail_url'),
             thumbnail_url=task_data.get('thumbnail_url'),
             thumbnail_local_path=task_data.get('thumbnail_local_path'),
-            video_url=task_data.get('video_url') or task_data.get('url')
+            video_url=task_data.get('video_url') or task_data.get('url'),
+            like_count=task_data.get('like_count'),
+            comment_count=task_data.get('comment_count'),
+            repost_count=task_data.get('repost_count'),
+            view_count=task_data.get('view_count'),
+            duration=task_data.get('duration'),
+            platform=task_data.get('platform'),
+            creator=task_data.get('uploader'),
+            channel=task_data.get('channel')
         )
             
     except HTTPException:
