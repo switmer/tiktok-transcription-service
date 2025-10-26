@@ -3800,7 +3800,7 @@ async def fetch_video_comments(
         # Check if transcription exists
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                    .select('task_id, video_id, user_phone, comments_fetched')
+                    .select('task_id, video_id, user_phone, comments_fetched, comment_count')
                     .eq('task_id', payload.task_id)
                     .limit(1)
                     .execute()
@@ -3858,11 +3858,14 @@ async def fetch_video_comments(
         
         # Estimate total comments and credits needed
         import math
-        if payload.get_all and has_more:
-            # Rough estimate: if we got 20 and there are more, estimate 10x
-            estimated_total = len(preview_comments) * 10
-        elif payload.get_all:
-            estimated_total = len(preview_comments)
+        if payload.get_all:
+            # Estimate using both preview and stored metadata, pick the larger
+            est_preview = (len(preview_comments) * 10) if has_more else len(preview_comments)
+            try:
+                est_meta = int(task.get('comment_count') or 0)
+            except Exception:
+                est_meta = 0
+            estimated_total = max(est_preview, est_meta) if max(est_preview, est_meta) > 0 else est_preview
         else:
             estimated_total = payload.count
         
