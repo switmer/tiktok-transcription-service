@@ -3894,7 +3894,7 @@ async def fetch_video_comments(
         if payload.get_all:
             try:
                 progress_response = await asyncio.to_thread(
-                    lambda: supabase.table('comments_fetch_progress').insert({
+                    lambda: supabase.table('comments_fetch_progress').upsert({
                         'task_id': payload.task_id,
                         'video_id': video_id,
                         'status': 'in_progress',
@@ -3903,7 +3903,7 @@ async def fetch_video_comments(
                         'comments_fetched': 0,
                         'provider': preview_result.get('provider'),
                         'started_at': datetime.now().isoformat()
-                    }).execute()
+                    }, on_conflict='task_id').execute()
                 )
                 progress_id = progress_response.data[0]['id']
                 logger.info(f"Created progress tracking record: {progress_id}")
@@ -4020,8 +4020,7 @@ async def get_video_comments(
     task_id: str,
     limit: int = 50,
     offset: int = 0,
-    sort_by: str = "likes",  # "likes", "recent", or "replies"
-    api_key: str = Depends(verify_api_key)
+    sort_by: str = "likes"  # "likes", "recent", or "replies"
 ):
     """
     Get stored comments for a transcribed video.
