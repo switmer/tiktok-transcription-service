@@ -2240,7 +2240,7 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
     """Get transcript for a task without API key"""
     try:
         # Fetch task from database
-        result = supabase.table("public_transcriptions").select("*").eq("task_id", task_id).single().execute()
+        result = supabase.table("public_transcriptions").select("*").eq("task_id", task_id).maybe_single().execute()
         if not result.data:
             raise HTTPException(status_code=404, detail="Task not found")
         
