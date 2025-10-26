@@ -3772,12 +3772,16 @@ async def rich_link_preview(task_id: str, request: Request):
 # COMMENT EXTRACTION API (PRO FEATURE)
 # ====================================================================================
 
+class FetchCommentsRequest(BaseModel):
+    task_id: str
+    count: int = 30
+    include_replies: bool = False
+    get_all: bool = True
+
+
 @app.post("/api/pro/comments/fetch", tags=["Pro Features - Comments"])
 async def fetch_video_comments(
-    task_id: str,
-    count: int = 30,
-    include_replies: bool = False,
-    get_all: bool = False,
+    payload: FetchCommentsRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
@@ -3795,11 +3799,11 @@ async def fetch_video_comments(
     try:
         # Check if transcription exists
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
                     .select('task_id, video_id, user_phone, comments_fetched')
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute
+                    .eq('task_id', payload.task_id)
+                    .limit(1)
+                    .execute()
         )
         
         if not response.data:
@@ -3817,10 +3821,10 @@ async def fetch_video_comments(
             )
         
         # Check if comments already fetched
-        if already_fetched and not get_all:
+        if already_fetched and not payload.get_all:
             return {
                 "success": True,
-                "task_id": task_id,
+                "task_id": payload.task_id,
                 "message": "Comments already fetched for this video",
                 "comments_fetched": 0,
                 "credits_charged": 0,
@@ -3854,24 +3858,24 @@ async def fetch_video_comments(
         
         # Estimate total comments and credits needed
         import math
-        if get_all and has_more:
+        if payload.get_all and has_more:
             # Rough estimate: if we got 20 and there are more, estimate 10x
             estimated_total = len(preview_comments) * 10
-        elif get_all:
+        elif payload.get_all:
             estimated_total = len(preview_comments)
         else:
-            estimated_total = count
+            estimated_total = payload.count
         
         credits_needed = math.ceil(estimated_total / 100)
         
         # Check user credits if phone number provided
         if user_phone:
             credits_check = await asyncio.to_thread(
-                supabase.table('sms_users')
+                lambda: supabase.table('sms_users')
                         .select('credits_remaining')
                         .eq('phone_number', user_phone)
-                        .maybe_single()
-                        .execute
+                        .limit(1)
+                        .execute()
             )
             
             if credits_check.data:
@@ -3884,11 +3888,11 @@ async def fetch_video_comments(
         
         # Create progress tracking record
         progress_id = None
-        if get_all:
+        if payload.get_all:
             try:
                 progress_response = await asyncio.to_thread(
-                    supabase.table('comments_fetch_progress').insert({
-                        'task_id': task_id,
+                    lambda: supabase.table('comments_fetch_progress').insert({
+                        'task_id': payload.task_id,
                         'video_id': video_id,
                         'status': 'in_progress',
                         'current_page': 0,
@@ -3896,7 +3900,7 @@ async def fetch_video_comments(
                         'comments_fetched': 0,
                         'provider': preview_result.get('provider'),
                         'started_at': datetime.now().isoformat()
-                    }).execute
+                    }).execute()
                 )
                 progress_id = progress_response.data[0]['id']
                 logger.info(f"Created progress tracking record: {progress_id}")
@@ -3904,18 +3908,18 @@ async def fetch_video_comments(
                 logger.warning(f"Failed to create progress record: {e}")
         
         # Fetch comments (all or single page)
-        logger.info(f"Fetching comments for video {video_id} (task {task_id}) - get_all={get_all}")
-        result = adapter.fetch_comments(video_id, count=count, get_all=get_all)
+        logger.info(f"Fetching comments for video {video_id} (task {payload.task_id}) - get_all={payload.get_all}")
+        result = adapter.fetch_comments(video_id, count=payload.count, get_all=payload.get_all)
         
         if result.get('error'):
             # Update progress as failed
             if progress_id:
                 await asyncio.to_thread(
-                    supabase.table('comments_fetch_progress').update({
+                    lambda: supabase.table('comments_fetch_progress').update({
                         'status': 'failed',
                         'error_message': result['error'],
                         'completed_at': datetime.now().isoformat()
-                    }).eq('id', progress_id).execute
+                    }).eq('id', progress_id).execute()
                 )
             
             raise HTTPException(
@@ -3931,8 +3935,8 @@ async def fetch_video_comments(
         for comment in comments:
             try:
                 await asyncio.to_thread(
-                    supabase.table('video_comments').insert({
-                        'task_id': task_id,
+                    lambda: supabase.table('video_comments').insert({
+                        'task_id': payload.task_id,
                         'comment_id': comment.comment_id,
                         'video_id': video_id,
                         'text': comment.text,
@@ -3945,7 +3949,7 @@ async def fetch_video_comments(
                         'parent_comment_id': comment.parent_comment_id,
                         'provider': result.get('provider'),
                         'raw_data': comment.raw_data
-                    }).execute
+                    }).execute()
                 )
                 stored_count += 1
             except Exception as e:
@@ -3958,31 +3962,31 @@ async def fetch_video_comments(
         # Update progress as completed
         if progress_id:
             await asyncio.to_thread(
-                supabase.table('comments_fetch_progress').update({
+                lambda: supabase.table('comments_fetch_progress').update({
                     'status': 'completed',
                     'current_page': pages_fetched,
                     'comments_fetched': stored_count,
                     'completed_at': datetime.now().isoformat()
-                }).eq('id', progress_id).execute
+                }).eq('id', progress_id).execute()
             )
         
         # Update transcription record
         await asyncio.to_thread(
-            supabase.table('transcriptions').update({
+            lambda: supabase.table('transcriptions').update({
                 'comments_fetched': True,
                 'comments_count': stored_count,
                 'comments_fetched_at': datetime.now().isoformat()
-            }).eq('task_id', task_id).execute
+            }).eq('task_id', payload.task_id).execute()
         )
         
         # Deduct credits if user has account
         if user_phone and actual_credits > 0:
             try:
                 await asyncio.to_thread(
-                    supabase.rpc('decrement_credits', {
+                    lambda: supabase.rpc('decrement_credits', {
                         'user_phone': user_phone,
                         'amount': actual_credits
-                    }).execute
+                    }).execute()
                 )
                 logger.info(f"Deducted {actual_credits} credits from {user_phone} for {stored_count} comments")
             except Exception as e:
@@ -3990,7 +3994,7 @@ async def fetch_video_comments(
         
         return {
             "success": True,
-            "task_id": task_id,
+            "task_id": payload.task_id,
             "comments_fetched": stored_count,
             "pages_fetched": pages_fetched,
             "credits_charged": actual_credits,
@@ -3998,7 +4002,7 @@ async def fetch_video_comments(
             "has_more": result.get('has_more', False),
             "cursor": result.get('cursor'),
             "estimated_total": estimated_total,
-            "get_all": get_all
+            "get_all": payload.get_all
         }
         
     except HTTPException:
