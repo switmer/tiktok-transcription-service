@@ -1852,7 +1852,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 
             # Use Edge Function to bypass PostGREST ON CONFLICT issue
             import requests
-            import json
             
             def update_transcription_via_edge_function(task_id, update_data):
                 """Update transcription using Edge Function to avoid PostGREST bugs"""
