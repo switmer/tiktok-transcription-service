@@ -1602,19 +1602,20 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             'duration': data.get('duration'),
                             'upload_date': None,  # Not available in RapidAPI
                             'timestamp': data.get('create_time'),
-                            'channel': author.get('nickname'),
-                            'channel_id': author.get('unique_id'),
-                            'uploader': author.get('nickname'),
+                            'channel': author.get('unique_id') or author.get('nickname'),
+                            'channel_id': author.get('id'),
+                            'uploader': author.get('unique_id') or author.get('nickname'),
                             'uploader_url': f"https://tiktok.com/@{author.get('unique_id')}" if author.get('unique_id') else None,
-                            'like_count': data.get('digg_count', 0),
-                            'comment_count': data.get('comment_count', 0),
-                            'repost_count': data.get('share_count', 0),
+                            'like_count': data.get('digg_count', 0),  # ✅ Extract from raw_metadata
+                            'comment_count': data.get('comment_count', 0),  # ✅ Extract from raw_metadata
+                            'repost_count': data.get('share_count', 0),  # ✅ Extract from raw_metadata
+                            'view_count': data.get('play_count', 0),  # ✅ Extract from raw_metadata
                             'resolution': None,  # Not directly available
                             'width': None,
                             'height': None,
                             'aspect_ratio': None,
                             'filesize': data.get('hd_size'),
-                            'format_id': 'rapidapi_hd',
+                            'format_id': data.get('aweme_id'),  # Use aweme_id if available
                             'vcodec': 'h264',  # Assume h264 for TikTok
                             'acodec': 'aac',   # Assume aac for TikTok
                             'language': 'english',  # Default for now
@@ -1813,6 +1814,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 
             # Add all rich metadata fields
             update_data.update(rich_metadata)
+            
+            # Store the original TikTok URL (from raw_metadata if available)
+            if metadata_files and 'url' in metadata:
+                update_data['url'] = metadata['url']
+                logger.info(f"Storing original URL: {metadata['url']}")
             
             # Add file paths for local assets
             audio_files = glob.glob(os.path.join(output_dir, "*.mp3"))
@@ -2191,7 +2197,7 @@ async def public_get_task(task_id: str):
         # Fetch task from Supabase
         response = await asyncio.to_thread(
             supabase.table('public_transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel")
+                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute
@@ -2208,26 +2214,54 @@ async def public_get_task(task_id: str):
             
         # Map Supabase data to TranscriptionResponse
         task_data = response.data
-        # video_url is the CDN link, url is the original TikTok URL
+        
+        # Extract data from raw_metadata if available
+        raw_meta = task_data.get('raw_metadata') if task_data.get('raw_metadata') else {}
+        raw_data = raw_meta.get('data', {}) if isinstance(raw_meta, dict) else {}
+        
+        # Extract original TikTok URL
+        original_tiktok_url = (
+            raw_meta.get('url') or  # From top-level raw_metadata
+            task_data.get('url') or  # From stored url column
+            None
+        )
+        
+        # Construct URL from video_id if still not available
+        if not original_tiktok_url:
+            video_id = task_data.get('video_id') or raw_data.get('id')
+            if video_id:
+                uploader = task_data.get('uploader') or raw_data.get('author', {}).get('unique_id')
+                if task_data.get('platform') == 'tiktok':
+                    original_tiktok_url = f"https://www.tiktok.com/@{uploader}/video/{video_id}" if uploader else f"https://www.tiktok.com/video/{video_id}"
+                elif task_data.get('platform') == 'youtube':
+                    original_tiktok_url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        # Extract values with priority: raw_metadata > task_data
+        def get_with_fallback(key, raw_key=None):
+            if raw_key and raw_data.get(raw_key):
+                return raw_data.get(raw_key)
+            return task_data.get(key)
+        
         return TranscriptionResponse(
             task_id=task_data['task_id'],
             status=task_data['status'],
-            video_id=task_data.get('video_id'),
-            title=task_data.get('title'),
+            video_id=task_data.get('video_id') or raw_data.get('id'),
+            title=task_data.get('title') or raw_data.get('title'),
             created_at=task_data['created_at'],
             error=task_data.get('error'),
             thumbnail=task_data.get('thumbnail_url'),
-            thumbnail_url=task_data.get('thumbnail_url'),
+            thumbnail_url=task_data.get('thumbnail_url') or raw_meta.get('thumbnail_url') or raw_data.get('cover'),
             thumbnail_local_path=task_data.get('thumbnail_local_path'),
-            video_url=task_data.get('url'),  # Use original URL, not CDN link
-            like_count=task_data.get('like_count'),
-            comment_count=task_data.get('comment_count'),
-            repost_count=task_data.get('repost_count'),
-            view_count=task_data.get('view_count'),
-            duration=task_data.get('duration'),
-            platform=task_data.get('platform'),
-            creator=task_data.get('uploader'),
-            channel=task_data.get('channel')
+            video_url=original_tiktok_url,
+            like_count=get_with_fallback('like_count', 'digg_count'),
+            comment_count=get_with_fallback('comment_count', 'comment_count'),
+            repost_count=get_with_fallback('repost_count', 'share_count'),
+            view_count=get_with_fallback('view_count', 'play_count'),
+            duration=get_with_fallback('duration', 'duration'),
+            platform=task_data.get('platform') or 'tiktok',
+            creator=task_data.get('uploader') or raw_data.get('author', {}).get('unique_id'),
+            channel=task_data.get('channel') or raw_data.get('author', {}).get('unique_id'),
+            uploader_url=task_data.get('uploader_url') or (f"https://www.tiktok.com/@{raw_data.get('author', {}).get('unique_id')}" if raw_data.get('author', {}).get('unique_id') else None)
         )
             
     except HTTPException:
