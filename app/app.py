@@ -4272,11 +4272,11 @@ async def preview_comments(
     try:
         # Get task info
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
                 .select('video_id, video_url, comments_fetched')
                 .eq('task_id', task_id)
-                .single
-                .execute
+                .single()
+                .execute()
         )
         
         if not response.data:
@@ -4293,12 +4293,12 @@ async def preview_comments(
         if task.get('comments_fetched'):
             # Return existing comments as preview
             existing_response = await asyncio.to_thread(
-                lambda: supabase.table('video_comments')
+                supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
                     .limit(20)
-                    .execute()
+                    .execute
             )
             
             preview_comments = existing_response.data or []
@@ -4402,11 +4402,11 @@ async def get_fetch_status(
     try:
         # Get progress record
         response = await asyncio.to_thread(
-            supabase.table('comments_fetch_progress')
+            lambda: supabase.table('comments_fetch_progress')
                 .select('*')
                 .eq('task_id', task_id)
                 .maybe_single()
-                .execute
+                .execute()
         )
         
         if not response.data:
