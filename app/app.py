@@ -1038,7 +1038,6 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, vi
                 logger.info(f"Generated quote: {quote_tldr_result['quote']}")
             
             if quote_tldr_result.get("tldr"):
-                import json
                 update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])  # Store as JSON
                 logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
             
@@ -1514,7 +1513,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             if quote_tldr_result.get('quote'):
                                 update_data['quote'] = quote_tldr_result['quote']
                             if quote_tldr_result.get('tldr'):
-                                import json
                                 update_data['tldr'] = json.dumps(quote_tldr_result['tldr'])
                             supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
                             # SMS notify
@@ -1790,7 +1788,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.info(f"Generated quote: {quote_tldr_result['quote']}")
             
             if quote_tldr_result.get("tldr"):
-                import json
                 update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])  # Store as JSON
                 logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
             
