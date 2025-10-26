@@ -2208,6 +2208,7 @@ async def public_get_task(task_id: str):
             
         # Map Supabase data to TranscriptionResponse
         task_data = response.data
+        # video_url is the CDN link, url is the original TikTok URL
         return TranscriptionResponse(
             task_id=task_data['task_id'],
             status=task_data['status'],
@@ -2218,7 +2219,7 @@ async def public_get_task(task_id: str):
             thumbnail=task_data.get('thumbnail_url'),
             thumbnail_url=task_data.get('thumbnail_url'),
             thumbnail_local_path=task_data.get('thumbnail_local_path'),
-            video_url=task_data.get('video_url') or task_data.get('url'),
+            video_url=task_data.get('url'),  # Use original URL, not CDN link
             like_count=task_data.get('like_count'),
             comment_count=task_data.get('comment_count'),
             repost_count=task_data.get('repost_count'),
@@ -3818,7 +3819,8 @@ async def fetch_video_comments(
         if not response.data:
             raise HTTPException(status_code=404, detail="Transcription not found")
         
-        task = response.data
+        # Handle response.data being a list or dict
+        task = response.data[0] if isinstance(response.data, list) else response.data
         video_id = task.get('video_id')
         user_phone = task.get('user_phone')
         already_fetched = task.get('comments_fetched', False)
