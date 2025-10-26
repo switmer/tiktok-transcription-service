@@ -1444,7 +1444,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     update_data["quote"] = quote_tldr_result["quote"]
                     logger.info(f"Generated quote: {quote_tldr_result['quote']}")
                 if quote_tldr_result.get("tldr"):
-                    import json
                     update_data["tldr"] = json.dumps(quote_tldr_result["tldr"])
                     logger.info(f"Generated TLDR: {quote_tldr_result['tldr']}")
                 
