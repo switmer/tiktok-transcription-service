@@ -1815,11 +1815,6 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             # Add all rich metadata fields
             update_data.update(rich_metadata)
             
-            # Store the original TikTok URL (from raw_metadata if available)
-            if metadata_files and 'url' in metadata:
-                update_data['url'] = metadata['url']
-                logger.info(f"Storing original URL: {metadata['url']}")
-            
             # Add file paths for local assets
             audio_files = glob.glob(os.path.join(output_dir, "*.mp3"))
             if audio_files:
@@ -1833,6 +1828,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     with open(metadata_files[0], 'r') as f:
                         raw_metadata_content = json.load(f)
                         update_data['raw_metadata'] = raw_metadata_content
+                        
+                        # Store the original TikTok URL (from raw_metadata if available)
+                        if 'url' in raw_metadata_content:
+                            update_data['url'] = raw_metadata_content['url']
+                            logger.info(f"Storing original URL: {raw_metadata_content['url']}")
+                        
                         logger.info(f"Added raw_metadata with {len(raw_metadata_content)} keys")
                 except Exception as e:
                     logger.warning(f"Failed to read raw metadata: {e}")
