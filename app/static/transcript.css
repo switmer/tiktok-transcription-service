@@ -1,0 +1,302 @@
+/* ScribeTok Transcript Page Styles - Complete React App Match */
+:root {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    --muted: 210 40% 10%;
+    --muted-foreground: 0 0% 67%;
+    --popover: 0 0% 3%;
+    --popover-foreground: 0 0% 100%;
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 100%;
+    --primary: 348 100% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
+    --accent: 348 100% 59%;
+    --accent-foreground: 0 0% 100%;
+    --success: 142 76% 36%;
+    --warning: 38 92% 50%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --ring: 348 100% 59%;
+    --focus-ring: 348 100% 59% / 0.3;
+    --radius: 0.75rem;
+}
+
+* {
+    border-color: hsl(var(--border));
+}
+
+html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+
+body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+    touch-action: manipulation;
+    text-size-adjust: 100%;
+}
+
+/* Container centering */
+.container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    max-width: 1024px; /* lg breakpoint */
+}
+
+@media (min-width: 640px) {
+    .container {
+        max-width: 640px; /* sm */
+    }
+}
+
+@media (min-width: 768px) {
+    .container {
+        max-width: 768px; /* md */
+    }
+}
+
+@media (min-width: 1024px) {
+    .container {
+        max-width: 1024px; /* lg */
+    }
+}
+
+@media (min-width: 1280px) {
+    .container {
+        max-width: 1280px; /* xl */
+    }
+}
+
+/* Improve mobile form experience */
+input, textarea, select, button {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+}
+
+@media (min-width: 768px) {
+    input, textarea, select, button {
+        font-size: 0.875rem;
+    }
+}
+
+/* Improve tap target sizes */
+button, a {
+    cursor: pointer;
+    min-height: 44px; /* Minimum Apple recommended touch target size */
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+}
+
+h1 {
+    font-size: 1.5rem;
+    line-height: 1.1;
+}
+
+@media (min-width: 768px) {
+    h1 { font-size: 1.875rem; }
+}
+
+@media (min-width: 1024px) {
+    h1 { font-size: 2.25rem; }
+}
+
+h2 {
+    font-size: 1.25rem;
+    line-height: 1.2;
+}
+
+@media (min-width: 768px) {
+    h2 { font-size: 1.5rem; }
+}
+
+@media (min-width: 1024px) {
+    h2 { font-size: 1.875rem; }
+}
+
+h3 {
+    font-size: 1.125rem;
+    line-height: 1.3;
+}
+
+@media (min-width: 768px) {
+    h3 { font-size: 1.25rem; }
+}
+
+@media (min-width: 1024px) {
+    h3 { font-size: 1.5rem; }
+}
+
+p {
+    line-height: 1.625;
+}
+
+:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px hsl(var(--ring)), 0 0 0 4px hsl(var(--background));
+    transition: outline 200ms ease, box-shadow 200ms ease;
+}
+
+/* Animations */
+.animate-fade-in {
+    animation: fadeIn 0.3s ease forwards;
+}
+
+.animate-slide-up {
+    animation: slideUp 0.3s ease forwards;
+}
+
+.animate-slide-down {
+    animation: slideDown 0.3s ease forwards;
+}
+
+.animate-slide-right {
+    animation: slideRight 0.3s ease forwards;
+}
+
+.animate-scale {
+    animation: scale 0.2s ease forwards;
+}
+
+.transition-all-200 {
+    transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Utility classes */
+.safe-top {
+    padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.touch-callout-none {
+    -webkit-touch-callout: none;
+}
+
+.ios-blur {
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+.ios-shadow {
+    box-shadow: 0 1px 2px rgba(255, 255, 255, 0.05), 0 2px 8px rgba(255, 255, 255, 0.02);
+}
+
+.ios-shadow-md {
+    box-shadow: 0 2px 4px rgba(255, 255, 255, 0.05), 0 4px 16px rgba(255, 255, 255, 0.04);
+}
+
+.ios-shadow-lg {
+    box-shadow: 0 4px 6px rgba(255, 255, 255, 0.05), 0 10px 20px rgba(255, 255, 255, 0.03);
+}
+
+.tiktok-gradient {
+    background: linear-gradient(90deg, #FF0050 0%, #FF00A0 100%);
+}
+
+.tiktok-button {
+    background-color: hsl(var(--primary));
+    color: white;
+    border-radius: 9999px;
+    font-weight: 500;
+    transition: all 200ms;
+}
+
+.tiktok-button:hover {
+    filter: brightness(90%);
+    transform: scale(0.98);
+}
+
+.tiktok-button:active {
+    transform: scale(0.95);
+}
+
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Keyframe animations */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(10px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideDown {
+    from { transform: translateY(-10px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideRight {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+}
+
+@keyframes scale {
+    from { transform: scale(0.95); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes bounce {
+    0%, 80%, 100% { 
+        transform: scale(0);
+    } 
+    40% { 
+        transform: scale(1.0);
+    }
+}
+
+.animate-bounce {
+    animation: bounce 1.4s infinite ease-in-out both;
+}
+
+/* Scrollbar styling */
+@media (hover: hover) {
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: hsl(var(--secondary));
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: hsl(var(--muted-foreground) / 0.3);
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: hsl(var(--muted-foreground) / 0.5);
+    }
+}
+
+/* Hide scrollbars on mobile devices */
+@media (hover: none) {
+    ::-webkit-scrollbar {
+        display: none;
+    }
+    * {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+}
