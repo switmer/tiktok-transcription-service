@@ -3923,7 +3923,11 @@ async def fetch_video_comments(
             )
             
             if credits_check.data:
-                credits = credits_check.data.get('credits_remaining', 0)
+                # Handle both list and dict response formats
+                if isinstance(credits_check.data, list):
+                    credits = credits_check.data[0].get('credits_remaining', 0) if credits_check.data else 0
+                else:
+                    credits = credits_check.data.get('credits_remaining', 0)
                 if credits < credits_needed:
                     raise HTTPException(
                         status_code=402,
@@ -4317,10 +4321,10 @@ async def preview_comments(
     - credits_needed: Estimated credits needed for full fetch
     """
     try:
-        # Get task info
+        # Get task info with comment_count from video metadata
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                .select('video_id, video_url, comments_fetched')
+                .select('video_id, video_url, comments_fetched, comment_count')
                 .eq('task_id', task_id)
                 .single()
                 .execute()
@@ -4332,6 +4336,7 @@ async def preview_comments(
         task = response.data
         video_id = task.get('video_id')
         video_url = task.get('video_url')
+        stored_comment_count = task.get('comment_count')
         
         if not video_id:
             raise HTTPException(status_code=400, detail="Video ID not available for this task")
@@ -4389,9 +4394,15 @@ async def preview_comments(
         preview_comments = result['comments']
         has_more = result.get('has_more', False)
         
-        # Estimate total comments (rough calculation)
-        # If we got 20 comments and there are more, estimate 10x that
-        estimated_total = len(preview_comments) * 10 if has_more else len(preview_comments)
+        # Estimate total comments
+        # Priority: stored video metadata > preview-based estimate
+        if stored_comment_count and stored_comment_count > 0:
+            estimated_total = stored_comment_count
+            logger.info(f"Using stored comment_count from video metadata: {estimated_total}")
+        else:
+            # If no stored count, estimate based on preview
+            estimated_total = len(preview_comments) * 10 if has_more else len(preview_comments)
+            logger.info(f"Using preview-based estimate: {estimated_total}")
         
         # Calculate credits needed (1 credit per 100 comments)
         import math
