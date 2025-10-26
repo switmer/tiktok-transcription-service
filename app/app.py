@@ -4293,12 +4293,12 @@ async def preview_comments(
         if task.get('comments_fetched'):
             # Return existing comments as preview
             existing_response = await asyncio.to_thread(
-                supabase.table('video_comments')
+                lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
                     .limit(20)
-                    .execute
+                    .execute()
             )
             
             preview_comments = existing_response.data or []
@@ -4352,19 +4352,20 @@ async def preview_comments(
         
         # Convert comments to dict format for JSON response
         preview_data = []
+        provider_name = result.get('provider')
         for comment in preview_comments:
             preview_data.append({
-                "comment_id": comment.comment_id,
-                "text": comment.text,
-                "author_name": comment.author_name,
-                "author_username": comment.author_username,
-                "author_avatar": comment.author_avatar,
-                "likes": comment.likes,
-                "reply_count": comment.reply_count,
-                "created_at": comment.created_at,
-                "parent_comment_id": comment.parent_comment_id,
-                "video_id": comment.video_id,
-                "provider": comment.provider
+                "comment_id": getattr(comment, 'comment_id', None),
+                "text": getattr(comment, 'text', None),
+                "author_name": getattr(comment, 'author_name', None),
+                "author_username": getattr(comment, 'author_username', None),
+                "author_avatar": getattr(comment, 'author_avatar', None),
+                "likes": getattr(comment, 'likes', None),
+                "reply_count": getattr(comment, 'reply_count', None),
+                "created_at": getattr(comment, 'created_at', None),
+                "parent_comment_id": getattr(comment, 'parent_comment_id', None),
+                "video_id": getattr(comment, 'video_id', None),
+                "provider": provider_name
             })
         
         return {
@@ -4400,12 +4401,12 @@ async def get_fetch_status(
     - eta: Estimated time to completion
     """
     try:
-        # Get progress record
+        # Get progress record (avoid maybe_single which can 406 on multiple rows)
         response = await asyncio.to_thread(
             lambda: supabase.table('comments_fetch_progress')
                 .select('*')
                 .eq('task_id', task_id)
-                .maybe_single()
+                .limit(1)
                 .execute()
         )
         
@@ -4420,7 +4421,7 @@ async def get_fetch_status(
                 "message": "No fetch in progress"
             }
         
-        progress = response.data
+        progress = response.data[0] if isinstance(response.data, list) and response.data else response.data
         status = progress.get('status', 'unknown')
         current_page = progress.get('current_page', 0)
         comments_fetched = progress.get('comments_fetched', 0)
