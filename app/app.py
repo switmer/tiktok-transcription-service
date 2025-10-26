@@ -3855,7 +3855,7 @@ async def fetch_video_comments(
         adapter = TikTokCommentsAdapter([rapidapi_key])
         
         # Get preview for credit estimation
-        logger.info(f"Getting preview for credit estimation (task {task_id})")
+        logger.info(f"Getting preview for credit estimation (task {payload.task_id})")
         preview_result = adapter.fetch_comments(video_id, count=20, get_all=False)
         
         if preview_result.get('error'):
