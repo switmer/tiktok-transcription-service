@@ -4257,8 +4257,7 @@ async def export_comments_json(
 
 @app.get("/api/public/comments/preview/{task_id}", tags=["Public Transcription"])
 async def preview_comments(
-    task_id: str,
-    api_key: str = Depends(verify_api_key)
+    task_id: str
 ):
     """
     Get a preview of comments (first 20) to show user before charging.
@@ -4387,8 +4386,7 @@ async def preview_comments(
 
 @app.get("/api/public/comments/fetch-status/{task_id}", tags=["Public Transcription"])
 async def get_fetch_status(
-    task_id: str,
-    api_key: str = Depends(verify_api_key)
+    task_id: str
 ):
     """
     Check progress of ongoing comment fetch.
