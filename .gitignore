@@ -1,0 +1,89 @@
+# Ignore everything
+*
+
+# But not these files
+!.gitignore
+!requirements.txt
+!runtime.txt
+!render.yaml
+!Procfile
+!app.py
+!__init__.py
+!start_with_python312.sh
+
+# And not the app directory
+!app/
+!app/**
+
+# Python files to ignore 
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/*.egg-info/
+**/*.egg
+
+# Environment files
+**/.env
+**/.venv
+**/env/
+**/venv/
+**/ENV/
+**/*.pyc
+
+# Project specific
+app/downloads/
+app/static/
+**/*.tmp
+**/*.log
+
+# IDE and OS files
+**/.DS_Store
+**/.idea/
+**/.vscode/
+
+# And keep these files
+!.gitignore
+!requirements.txt
+!runtime.txt
+!render.yaml
+!start_with_python312.sh
+
+# And keep these directories
+!/app
+!/local_scripts
+
+# --- Rules for Files WITHIN Allowed Directories --- #
+
+# Python files to ignore 
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
+**/*.egg
+
+# Environment files
+**/.env
+
+# Downloads and temporary files
+app/downloads/
+app/static/*
+!app/static/favicon.ico
+!app/static/favicon.png
+!app/static/transcript.css
+!app/static/.gitkeep
+**/*.tmp
+temp_input.json
+
+# macOS
+**/.DS_Store
+
+# Test files
+test_*.py
+
+# Virtual Environments (anywhere, including subdirectories)
+**/env/
+**/venv/
+**/venv-py312/
+local_scripts/myenv/ 

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="{{ og_url }}">
+    <meta property="og:title" content="{{ og_title }}">
+    <meta property="og:description" content="{{ og_description }}">
+    <meta property="og:image" content="{{ og_image_square }}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="1200">
+    <meta property="og:site_name" content="ScribeTok">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="{{ og_url }}">
+    <meta property="twitter:title" content="{{ og_title }}">
+    <meta property="twitter:description" content="{{ og_description }}">
+    <meta property="twitter:image" content="{{ og_image_square }}">
+    
+    <!-- Theme color for Discord/mobile browsers -->
+    <meta name="theme-color" content="#FF0A7B">
+    
+    <!-- Additional metadata -->
+    <meta name="description" content="{{ og_description }}">
+    <title>{{ og_title }}</title>
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        background: 'hsl(var(--background) / <alpha-value>)',
+                        foreground: 'hsl(var(--foreground) / <alpha-value>)',
+                        card: 'hsl(var(--card) / <alpha-value>)',
+                        'card-foreground': 'hsl(var(--card-foreground) / <alpha-value>)',
+                        primary: 'hsl(var(--primary) / <alpha-value>)',
+                        'primary-foreground': 'hsl(var(--primary-foreground) / <alpha-value>)',
+                        secondary: 'hsl(var(--secondary) / <alpha-value>)',
+                        'secondary-foreground': 'hsl(var(--secondary-foreground) / <alpha-value>)',
+                        muted: 'hsl(var(--muted) / <alpha-value>)',
+                        'muted-foreground': 'hsl(var(--muted-foreground) / <alpha-value>)',
+                        border: 'hsl(var(--border) / <alpha-value>)',
+                        accent: 'hsl(var(--accent) / <alpha-value>)',
+                        'accent-foreground': 'hsl(var(--accent-foreground) / <alpha-value>)',
+                        input: 'hsl(var(--input) / <alpha-value>)',
+                        ring: 'hsl(var(--ring) / <alpha-value>)',
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Redirect to actual frontend after meta tags are crawled -->
+    <script>
+        setTimeout(function() {
+            window.location.href = 'https://scribetok.com/v/{{ task_id }}';
+        }, 1500);
+    </script>
+    
+    <!-- Link to external CSS file -->
+    <link rel="stylesheet" href="/static/transcript.css">
+</head>
+<body class="bg-background text-foreground min-h-screen flex items-center justify-center">
+    <div class="container max-w-lg mx-auto px-6 py-12 text-center">
+        <!-- Loading Icon -->
+        <div class="mb-8 flex justify-center">
+            <div class="relative">
+                <img src="{{ og_image }}" alt="{{ title }}" class="w-24 h-24 rounded-xl object-cover border border-border/50 animate-pulse">
+                <div class="absolute inset-0 rounded-xl bg-gradient-to-t from-background/50 to-transparent"></div>
+            </div>
+        </div>
+        
+        <!-- ScribeTok Logo -->
+        <div class="mb-6">
+            <img src="/static/favicon.png" alt="ScribeTok" class="w-12 h-12 mx-auto">
+        </div>
+        
+        <!-- Loading Content -->
+        <div class="space-y-4">
+            <h1 class="text-xl font-semibold line-clamp-2">{{ title }}</h1>
+            
+            <!-- Quote + TLDR Preview (if available) -->
+            {% if quote or tldr %}
+            <div class="bg-gradient-to-br from-primary/10 to-accent/10 border border-primary/20 rounded-xl px-5 py-4 text-left space-y-4 shadow-sm">
+                {% if quote %}
+                <div class="relative">
+                    <div class="text-primary font-semibold mb-2 flex items-center gap-2">
+                        <span class="text-lg">💡</span>
+                        <span>Memorable Quote</span>
+                    </div>
+                    <div class="text-foreground text-base font-medium leading-relaxed">
+                        <span class="text-primary text-xl">"</span>{{ quote }}<span class="text-primary text-xl">"</span>
+                    </div>
+                </div>
+                {% endif %}
+                
+                {% if tldr %}
+                <div class="border-t border-border/30 pt-3">
+                    <div class="text-primary font-semibold mb-2 flex items-center gap-2">
+                        <span class="text-lg">📝</span>
+                        <span>Key Insights</span>
+                    </div>
+                    <div class="text-muted-foreground text-sm space-y-2 leading-relaxed">
+                        {% for point in tldr[:2] %}
+                        <div class="flex items-start gap-2">
+                            <span class="text-primary mt-1">•</span>
+                            <span>{{ point }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="text-muted-foreground text-sm">{{ og_description }}</p>
+            {% endif %}
+            
+            <!-- Loading Spinner -->
+            <div class="flex items-center justify-center gap-3 py-6">
+                <div class="flex space-x-1">
+                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
+                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                </div>
+                <span class="text-sm text-muted-foreground">Loading full content...</span>
+            </div>
+            
+            
+            <!-- Redirect Notice -->
+            <div class="text-xs text-muted-foreground bg-secondary/30 rounded-lg px-4 py-3">
+                ⏳ Taking you to the full transcript page...
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Transcript text for copy/download functions
+        const transcriptText = `{{ transcript_text|replace('`', '\\`') }}`;
+        
+        function copyTranscript() {
+            navigator.clipboard.writeText(transcriptText).then(() => {
+                const button = event.target.closest('button');
+                const originalHTML = button.innerHTML;
+                button.innerHTML = button.innerHTML.replace('Copy', 'Copied!');
+                setTimeout(() => { 
+                    button.innerHTML = originalHTML;
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+            });
+        }
+        
+        function downloadTranscript() {
+            const blob = new Blob([transcriptText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'transcript-{{ task.video_id or task_id }}.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        
+        function shareTranscript() {
+            if (navigator.share) {
+                navigator.share({
+                    title: '{{ task.title|default("Video Transcript")|replace("'", "\\'") }}',
+                    text: transcriptText.substring(0, 100) + '...',
+                    url: window.location.href
+                }).catch(err => {
+                    console.error('Share failed: ', err);
+                    // Fallback to copy
+                    copyTranscript();
+                });
+            } else {
+                // Fallback to copy for browsers that don't support native sharing
+                copyTranscript();
+            }
+        }
+        
+        
+        function toggleTechnicalDetails() {
+            const content = document.getElementById('tech-details-content');
+            const placeholder = document.getElementById('tech-details-placeholder');
+            const toggle = document.getElementById('tech-details-toggle');
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                placeholder.style.display = 'none';
+                toggle.textContent = 'Hide';
+            } else {
+                content.style.display = 'none';
+                placeholder.style.display = 'block';
+                toggle.textContent = 'Show';
+            }
+        }
+        
+        // Add event listeners to all buttons that need these functions
+        document.addEventListener('DOMContentLoaded', function() {
+            // Copy buttons
+            const copyButtons = document.querySelectorAll('button[onclick="copyTranscript()"]');
+            copyButtons.forEach(btn => {
+                btn.addEventListener('click', copyTranscript);
+            });
+            
+            // Download buttons
+            const downloadButtons = document.querySelectorAll('button[onclick="downloadTranscript()"]');
+            downloadButtons.forEach(btn => {
+                btn.addEventListener('click', downloadTranscript);
+            });
+            
+            // Share buttons
+            const shareButtons = document.querySelectorAll('button[onclick="shareTranscript()"]');
+            shareButtons.forEach(btn => {
+                btn.addEventListener('click', shareTranscript);
+            });
+            
+            // Share public link buttons
+            const shareLinkButtons = document.querySelectorAll('button[onclick="sharePublicLink()"]');
+            shareLinkButtons.forEach(btn => {
+                btn.addEventListener('click', sharePublicLink);
+            });
+        });
+    </script>
+</body>
+</html>
