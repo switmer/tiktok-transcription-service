@@ -4293,12 +4293,12 @@ async def preview_comments(
         if task.get('comments_fetched'):
             # Return existing comments as preview
             existing_response = await asyncio.to_thread(
-                supabase.table('video_comments')
+                lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
                     .limit(20)
-                    .execute
+                    .execute()
             )
             
             preview_comments = existing_response.data or []
