@@ -754,6 +754,46 @@ ${transcript}
       return sendTwilioResponse('❌ Error creating user account. Try again later.');
     }
 
+    // Dedupe: if this phone already sent this exact URL before, don't charge twice.
+    // Note: This is an exact-string match. TikTok shortlinks can vary; a stronger
+    // dedupe could normalize by video_id once we resolve it.
+    const normalizedFrom = normalizePhoneNumber(From);
+    try {
+      const { data: existingTasks, error: existingError } = await supabase
+        .from('transcriptions')
+        .select('task_id,status,title,created_at')
+        .eq('user_phone', normalizedFrom)
+        .eq('url', url)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (existingError) {
+        console.warn('Dedupe lookup failed; proceeding with normal flow:', existingError);
+      } else if (existingTasks && existingTasks.length > 0) {
+        const existing = existingTasks[0];
+        const existingTitle = existing.title || 'that video';
+
+        if (existing.status === 'completed') {
+          return sendTwilioResponse(
+            `✅ Already transcribed ${existingTitle}.\n\n` +
+              `🔗 https://share.scribetok.com/v/${existing.task_id}\n` +
+              `💳 Credits remaining: ${smsUser.credits_remaining ?? 0}`
+          );
+        }
+
+        // If it's already in-flight, don't create a new task or charge again.
+        if (existing.status === 'pending' || existing.status === 'processing') {
+          return sendTwilioResponse(
+            `⏳ That link is already being processed.\n\n` +
+              `I’ll text you when it’s ready.\n` +
+              `💳 Credits remaining: ${smsUser.credits_remaining ?? 0}`
+          );
+        }
+      }
+    } catch (dedupeErr) {
+      console.warn('Dedupe check error; proceeding with normal flow:', dedupeErr);
+    }
+
     // Check if user has credits remaining
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0) {
