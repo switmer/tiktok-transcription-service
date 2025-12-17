@@ -773,11 +773,13 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
       // NOTE: Production schema uses `total_videos_transcribed` (not `total_transcriptions`).
       // Attempting to update non-existent columns causes PostgREST 400s.
       const nextTotalVideos = Number(smsUser.total_videos_transcribed ?? 0) + 1;
+      const nextMonthly = Number(smsUser.monthly_transcriptions ?? 0) + 1;
       const nextCredits = Number(creditsRemaining) - 1;
 
       const { error: deductError } = await supabase.from('sms_users').update({
         credits_remaining: nextCredits,
-        total_videos_transcribed: nextTotalVideos
+        total_videos_transcribed: nextTotalVideos,
+        monthly_transcriptions: nextMonthly
       }).eq('id', smsUser.id);
 
       if (deductError) {
@@ -786,7 +788,8 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
           smsUserId: smsUser.id,
           creditsRemaining,
           nextCredits,
-          nextTotalVideos
+          nextTotalVideos,
+          nextMonthly
         });
       }
     }

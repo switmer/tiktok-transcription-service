@@ -253,8 +253,7 @@ async def get_similar_transcriptions(
                 logger.info("Using created_at for ordering")
                     
             response = await asyncio.to_thread(
-                query.limit(limit)
-                     .execute()
+                lambda: query.limit(limit).execute()
             )
             
             # Process the response to match the model
@@ -368,9 +367,9 @@ async def get_categories():
         
         # Try a simplified query that just gets any categories
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select('category')
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select('category')
+                            .execute()
         )
         
         # Log the response for debugging
@@ -448,7 +447,7 @@ async def search_content(
         try:
             # Use the production FTS function
             response = await asyncio.to_thread(
-                supabase.rpc('search_content', {
+                lambda: supabase.rpc('search_content', {
                     'search_query': q.strip(),
                     'limit_count': limit,
                     'offset_count': offset
