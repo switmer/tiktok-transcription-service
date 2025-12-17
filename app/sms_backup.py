@@ -84,7 +84,7 @@ class SMSHandler:
                         .eq('status', 'completed')
                         .order('created_at', desc=True)
                         .limit(limit)
-                        .execute
+                        .execute()
             )
             
             return response.data if response.data else []
@@ -161,7 +161,7 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
                         .eq('status', 'completed')
                         .order('created_at', desc=True)
                         .limit(5)
-                        .execute
+                        .execute()
             )
             
             transcripts = response.data if response.data else []

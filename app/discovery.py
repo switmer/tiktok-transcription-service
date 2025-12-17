@@ -254,7 +254,7 @@ async def get_similar_transcriptions(
                     
             response = await asyncio.to_thread(
                 query.limit(limit)
-                     .execute
+                     .execute()
             )
             
             # Process the response to match the model
@@ -370,7 +370,7 @@ async def get_categories():
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
                     .select('category')
-                    .execute
+                    .execute()
         )
         
         # Log the response for debugging
@@ -452,7 +452,7 @@ async def search_content(
                     'search_query': q.strip(),
                     'limit_count': limit,
                     'offset_count': offset
-                }).execute
+                }).execute()
             )
 
             if not response.data:
@@ -524,7 +524,7 @@ async def search_viral_content(
                     'search_query': q.strip(),
                     'min_likes': min_likes,
                     'limit_count': limit
-                }).execute
+                }).execute()
             )
 
             if not response.data:

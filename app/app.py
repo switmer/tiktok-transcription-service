@@ -550,7 +550,7 @@ async def transcribe(
                     .select("*")
                     .eq('task_id', str(task_id)) # Ensure task_id is a string
                     .single()
-                    .execute
+                    .execute()
         )
 
         if not response.data:
@@ -661,7 +661,7 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
                     .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
                     .order('created_at', desc=True) # Order by creation time, newest first
                     .limit(50) # Limit to the last 50 tasks
-                    .execute
+                    .execute()
         )
         
         # Check for errors during the query
@@ -742,7 +742,7 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
                     .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
                     .eq('task_id', task_id)
                     .maybe_single()
-                    .execute
+                    .execute()
         )
         if hasattr(response, 'error') and response.error:
              logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
@@ -770,7 +770,7 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
             supabase.table('transcriptions')
                     .delete()
                     .eq('task_id', task_id)
-                    .execute
+                    .execute()
         )
         
         # Check for errors during delete
@@ -1387,7 +1387,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     .select("url, user_phone") # Fetch URL and user_phone for SMS notifications
                     .eq('task_id', task_id)
                     .single() # Expect exactly one result
-                    .execute
+                    .execute()
         )
         
         if not task_response.data or 'url' not in task_response.data:
@@ -1966,7 +1966,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
                 .select('credits_remaining')
                 .eq('phone_number', normalized_phone)
                 .single()
-                .execute
+                .execute()
             )
             credits_remaining = response.data.get('credits_remaining', 0) if response.data else 0
         except Exception as e:
@@ -2063,7 +2063,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
                     'direction': 'outbound',
                     'message_sid': sms.sid,
                     'delivery_status': sms.status or 'queued'
-                }).execute
+                }).execute()
             )
             logger.info(f"Logged completion SMS to user_messages: {sms.sid}")
         except Exception as log_error:
@@ -2121,7 +2121,7 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
             supabase.table('transcriptions')
                     .update(update_data)
                     .eq('task_id', task_id)
-                    .execute
+                    .execute()
         )
         
         # Check for errors
@@ -2167,7 +2167,7 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
                     .insert(task_data)
-                    .execute
+                    .execute()
         )
         
         # Check for errors
@@ -2196,7 +2196,7 @@ async def public_get_task(task_id: str):
                     .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
                     .eq('task_id', task_id)
                     .maybe_single()
-                    .execute
+                    .execute()
         )
 
         # Check for errors during the query
@@ -2414,7 +2414,7 @@ async def public_list_tasks():
                     .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
                     .order('created_at', desc=True) # Order by creation time, newest first
                     .limit(50) # Limit to the last 50 tasks
-                    .execute
+                    .execute()
         )
 
         # Check for errors during the query
@@ -2458,7 +2458,7 @@ async def public_get_thumbnail(task_id: str):
                     .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url") # Select thumbnail fields
                     .eq('task_id', task_id)
                     .maybe_single()
-                    .execute
+                    .execute()
         )
 
         if hasattr(response, 'error') and response.error:
@@ -2575,7 +2575,7 @@ async def public_get_square_thumbnail(task_id: str):
                     .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url, square_thumbnail_url")
                     .eq('task_id', task_id)
                     .maybe_single()
-                    .execute
+                    .execute()
         )
 
         if hasattr(response, 'error') and response.error:
@@ -2743,7 +2743,7 @@ async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
             supabase.table('transcriptions')
             .select("task_id, url, tags")
             .eq('status', 'pending')
-            .execute
+            .execute()
         )
         
         reprocessed_count = 0
@@ -2791,7 +2791,7 @@ async def _cleanup_stuck_tasks_logic():
             .select("task_id")
             .eq('status', 'pending')
             .lt('created_at', cutoff_time)
-            .execute
+            .execute()
         )
         
         cleaned_count = 0
@@ -2963,7 +2963,7 @@ async def handle_inbound_sms(
                         'command': command,
                         'response_sent': False
                     })
-                    .execute
+                    .execute()
         )
         
         # Process the SMS and get TwiML response
@@ -3120,7 +3120,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                     .select("task_id, status, title, transcript, error")
                     .eq('task_id', task_id)
                     .single()
-                    .execute
+                    .execute()
         )
         
         if response.data:
@@ -3233,7 +3233,7 @@ async def _track_referral(ref_code: str, task_id: str, visitor_ip: str) -> bool:
                 'visitor_ip': visitor_ip,
                 'event_type': 'view',
                 'created_at': datetime.now(timezone.utc).isoformat()
-            }).execute
+            }).execute()
         )
         
         # Award credit to referrer (simplified - could be more complex)
@@ -3254,7 +3254,7 @@ async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
             supabase.table('referral_events')
                     .select('id')
                     .eq('task_id', task_id)
-                    .execute
+                    .execute()
         )
         
         view_count = len(response.data) if response.data else 1
@@ -3266,7 +3266,7 @@ async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
                     .select('id')
                     .eq('task_id', task_id)
                     .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
-                    .execute
+                    .execute()
         )
         
         recent_views = len(recent_response.data) if recent_response.data else 0
@@ -3385,14 +3385,14 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
         jobs_response = await asyncio.to_thread(
             supabase.table('transcript_jobs')
                     .select("status, created_at, from_phone")
-                    .execute
+                    .execute()
         )
         
         # Get user messages stats
         messages_response = await asyncio.to_thread(
             supabase.table('user_messages')
                     .select("command, created_at, from_phone")
-                    .execute
+                    .execute()
         )
         
         jobs_data = jobs_response.data if jobs_response.data else []
@@ -3494,6 +3494,125 @@ async def refresh_tiktok_adapters():
         logger.error(f"Error refreshing adapters: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/payments/create-checkout-session", tags=["Payment & Billing"])
+async def create_checkout_session(
+    price_id: str = Query(..., description="Stripe Price ID for the credit package"),
+    request: Request = None
+):
+    """Create a Stripe Checkout session for credit purchases"""
+    try:
+        import stripe
+        import json
+        
+        # Initialize Stripe
+        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        if not stripe.api_key:
+            raise HTTPException(status_code=500, detail="Stripe not configured")
+        
+        # Get user ID from auth headers or query params
+        auth_header = request.headers.get("authorization") if request else None
+        user_id = None
+        
+        # Try to extract user_id from auth token or request body
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
+            # Decode JWT to get user ID (simplified - you may want to use proper JWT library)
+            try:
+                import base64
+                decoded = base64.b64decode(token.split('.')[1] + '==')
+                payload = json.loads(decoded)
+                user_id = payload.get('sub') or payload.get('user_id')
+            except:
+                pass
+        
+        # Get frontend URL for redirects
+        frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
+        
+        # Map price IDs to credit amounts (UPDATE THESE WITH YOUR ACTUAL STRIPE PRICE IDs)
+        CREDIT_PACKAGES = {
+            "price_123": {"credits": 10, "name": "Starter Pack"},
+            "price_456": {"credits": 50, "name": "Pro Pack"},
+            "price_789": {"credits": 200, "name": "Business Pack"}
+        }
+        
+        package_info = CREDIT_PACKAGES.get(price_id)
+        if not package_info:
+            raise HTTPException(status_code=400, detail="Invalid price ID")
+        
+        # Create metadata for webhook
+        metadata = {
+            'credits': str(package_info['credits']),
+            'package_name': package_info['name'],
+        }
+        
+        # Add user_id to metadata if available
+        if user_id:
+            metadata['user_id'] = user_id
+        
+        # Create checkout session
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price': price_id,
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url=f'{frontend_url}/app/settings?success=true&session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url=f'{frontend_url}/app/settings?canceled=true',
+            metadata=metadata,
+            client_reference_id=user_id if user_id else "anonymous"
+        )
+        
+        return {"sessionId": checkout_session.id, "url": checkout_session.url}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating checkout session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {str(e)}")
+
+@app.get("/api/users/credits", tags=["Payment & Billing"])
+async def get_user_credits(
+    request: Request,
+    api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """Get the current user's credit balance"""
+    try:
+        # Get user email from auth
+        user_email = None
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                import json
+                import base64
+                token = auth_header.replace("Bearer ", "")
+                decoded = base64.b64decode(token.split('.')[1] + '==')
+                payload = json.loads(decoded)
+                user_email = payload.get('email')
+            except:
+                pass
+        
+        if not user_email:
+            # Try alternative: get email from user object directly
+            # Return 0 for unauthenticated users
+            return {"credits": 0}
+        
+        # Get user credits from sms_users table (using email)
+        result = supabase.table("sms_users").select("credits_remaining").eq("email", user_email).execute()
+        
+        if result.data and len(result.data) > 0:
+            credits = result.data[0].get("credits_remaining", 0)
+            return {"credits": credits}
+        else:
+            # User doesn't exist, return 0 credits
+            return {"credits": 0}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting user credits: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user credits: {str(e)}")
+
 @app.post("/api/webhook/stripe", tags=["Payment & Billing"])
 async def handle_stripe_webhook(request: Request):
     """Handle Stripe webhooks for credit purchases"""
@@ -3579,7 +3698,7 @@ async def rich_link_preview(task_id: str, request: Request):
                     .select("*")
                     .eq('task_id', task_id)
                     .maybe_single()
-                    .execute
+                    .execute()
         )
         
         if not response.data:
@@ -4125,7 +4244,7 @@ async def get_top_comments(
                     .is_('parent_comment_id', 'null')  # Top-level only
                     .order('likes', desc=True)
                     .limit(limit)
-                    .execute
+                    .execute()
         )
         
         return {
@@ -4154,7 +4273,7 @@ async def get_comment_analytics(
             supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
-                    .execute
+                    .execute()
         )
         
         comments = response.data
@@ -4230,7 +4349,7 @@ async def export_comments_csv(
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
-                    .execute
+                    .execute()
         )
         
         if not response.data:
@@ -4284,7 +4403,7 @@ async def export_comments_json(
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
-                    .execute
+                    .execute()
         )
         
         if not response.data:
