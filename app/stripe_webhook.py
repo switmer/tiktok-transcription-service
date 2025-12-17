@@ -80,6 +80,7 @@ async def handle_stripe_webhook(request: Request) -> Dict[str, Any]:
 async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process a successful payment session and credit the user's account.
+    Handles both SMS users (phone-based) and web users (email-based).
     
     Args:
         session: Stripe checkout session object
@@ -101,21 +102,10 @@ async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
                     phone_number = field.get("text", {}).get("value")
                     break
         
-        # Get phone number from metadata if still not found
-        if not phone_number:
-            metadata = session.get("metadata", {})
-            phone_number = metadata.get("phone_number") or metadata.get("phone")
-        
-        if not phone_number:
-            logger.error(f"No phone number found for session {session_id}")
-            return {
-                "success": False,
-                "error": "No phone number found in payment data",
-                "session_id": session_id
-            }
-        
-        # Clean and validate phone number
-        phone_number = clean_phone_number(phone_number)
+        # Get metadata for user identification
+        metadata = session.get("metadata", {})
+        user_id = metadata.get("user_id")  # For web users
+        phone_number = phone_number or metadata.get("phone_number") or metadata.get("phone")
         
         # Get the purchased product information
         line_items = stripe.checkout.Session.list_line_items(session_id)
@@ -131,50 +121,83 @@ async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
         total_credits = 0
         purchased_products = []
         
-        for item in line_items.data:
-            price_id = item["price"]["id"]
-            product_id = item["price"]["product"]
-            quantity = item["quantity"]
-            
-            # Check if this is a known credit package
-            if product_id in CREDIT_PACKAGES:
-                package_info = CREDIT_PACKAGES[product_id]
-                credits_to_add = package_info["credits"] * quantity
-                total_credits += credits_to_add
+        # Parse credit amount from metadata (web users) or product catalog (SMS users)
+        credits_from_metadata = metadata.get("credits")
+        if credits_from_metadata:
+            total_credits = int(credits_from_metadata)
+            package_name = metadata.get("package_name", "Credit Package")
+            purchased_products.append({
+                "product_name": package_name,
+                "quantity": 1,
+                "credits": total_credits
+            })
+        else:
+            # Fallback: Check product catalog (for SMS users)
+            for item in line_items.data:
+                price_id = item["price"]["id"]
+                product_id = item["price"]["product"]
+                quantity = item["quantity"]
                 
-                purchased_products.append({
-                    "product_id": product_id,
-                    "product_name": package_info["product_name"],
-                    "quantity": quantity,
-                    "credits": credits_to_add
-                })
-                
-                logger.info(f"Found credit package: {package_info['product_name']} x{quantity} = {credits_to_add} credits")
+                # Check if this is a known credit package
+                if product_id in CREDIT_PACKAGES:
+                    package_info = CREDIT_PACKAGES[product_id]
+                    credits_to_add = package_info["credits"] * quantity
+                    total_credits += credits_to_add
+                    
+                    purchased_products.append({
+                        "product_id": product_id,
+                        "product_name": package_info["product_name"],
+                        "quantity": quantity,
+                        "credits": credits_to_add
+                    })
+                    
+                    logger.info(f"Found credit package: {package_info['product_name']} x{quantity} = {credits_to_add} credits")
         
         if total_credits == 0:
-            logger.warning(f"No credit packages found in session {session_id}")
+            logger.warning(f"No credits found in session {session_id}")
             return {
                 "success": False,
-                "error": "No credit packages found in purchase",
+                "error": "No credits found in purchase",
                 "session_id": session_id
             }
         
-        # Credit the user's account
-        credit_result = await add_credits_to_user(
-            phone_number=phone_number,
-            credits=total_credits,
-            session_id=session_id,
-            customer_email=customer_email,
-            purchased_products=purchased_products
-        )
-        
-        if credit_result["success"]:
-            # Send confirmation SMS
-            await send_purchase_confirmation_sms(
-                phone_number=phone_number,
-                credits_added=total_credits,
-                total_credits=credit_result["total_credits"]
+        # Determine if this is a web user or SMS user purchase
+        if user_id:
+            # Web user purchase - credit to Supabase user account
+            logger.info(f"Processing web user purchase for user_id: {user_id}")
+            credit_result = await add_credits_to_web_user(
+                user_id=user_id,
+                credits=total_credits,
+                session_id=session_id,
+                customer_email=customer_email,
+                purchased_products=purchased_products
             )
+        elif phone_number:
+            # SMS user purchase - credit to SMS user account
+            logger.info(f"Processing SMS user purchase for phone: {phone_number}")
+            phone_number = clean_phone_number(phone_number)
+            credit_result = await add_credits_to_user(
+                phone_number=phone_number,
+                credits=total_credits,
+                session_id=session_id,
+                customer_email=customer_email,
+                purchased_products=purchased_products
+            )
+            
+            # Send confirmation SMS for SMS users
+            if credit_result["success"]:
+                await send_purchase_confirmation_sms(
+                    phone_number=phone_number,
+                    credits_added=total_credits,
+                    total_credits=credit_result["total_credits"]
+                )
+        else:
+            logger.error(f"No user identifier found for session {session_id}")
+            return {
+                "success": False,
+                "error": "No user identifier (user_id or phone_number) found in payment data",
+                "session_id": session_id
+            }
         
         return credit_result
         
@@ -310,6 +333,113 @@ async def send_purchase_confirmation_sms(phone_number: str, credits_added: int, 
     except Exception as e:
         logger.error(f"Failed to send confirmation SMS to {phone_number}: {e}")
         # Don't fail the whole process if SMS fails
+
+async def add_credits_to_web_user(
+    user_id: str,
+    credits: int,
+    session_id: str,
+    customer_email: Optional[str] = None,
+    purchased_products: Optional[list] = None
+) -> Dict[str, Any]:
+    """
+    Add credits to a web user's account using sms_users table.
+    Looks up user by email and credits their account.
+    
+    Args:
+        user_id: User's Supabase user ID (not used directly, for logging)
+        credits: Number of credits to add
+        session_id: Stripe session ID for reference
+        customer_email: Customer email (required for lookup)
+        purchased_products: List of purchased products (optional)
+        
+    Returns:
+        Dictionary with operation results
+    """
+    try:
+        if not customer_email:
+            logger.error(f"No email provided for user {user_id}")
+            return {
+                "success": False,
+                "error": "No email provided for user",
+                "user_id": user_id
+            }
+        
+        # Get current user credits from sms_users table (using email)
+        user_result = supabase_client.table("sms_users").select("*").eq("email", customer_email).execute()
+        
+        if not user_result.data:
+            # User doesn't exist - create new sms_user entry
+            new_user = {
+                "phone_number": f"+1{hash(customer_email) % 10000000000}",  # Generate unique phone
+                "email": customer_email,
+                "credits_remaining": credits,
+                "phone_verified": False
+            }
+            
+            user_insert_result = supabase_client.table("sms_users").insert(new_user).execute()
+            
+            if user_insert_result.data:
+                logger.info(f"Created new web user {customer_email} with {credits} credits")
+                total_credits = credits
+            else:
+                logger.error(f"Failed to create web user {customer_email}")
+                return {
+                    "success": False,
+                    "error": "Failed to create user profile",
+                    "user_id": user_id
+                }
+        else:
+            # Update existing user's credits
+            current_credits = user_result.data[0].get("credits_remaining", 0)
+            new_total = current_credits + credits
+            
+            update_result = supabase_client.table("sms_users").update({
+                "credits_remaining": new_total
+            }).eq("email", customer_email).execute()
+            
+            if update_result.data:
+                logger.info(f"Updated web user {customer_email}: {current_credits} + {credits} = {new_total} credits")
+                total_credits = new_total
+            else:
+                logger.error(f"Failed to update credits for web user {customer_email}")
+                return {
+                    "success": False,
+                    "error": "Failed to update user credits",
+                    "user_id": user_id
+                }
+        
+        # Log the credit purchase transaction (if transactions table exists)
+        transaction_data = {
+            "phone_number": user_result.data[0].get("phone_number") if user_result.data else None,
+            "session_id": session_id,
+            "credits_purchased": credits,
+            "purchase_timestamp": datetime.now(timezone.utc).isoformat(),
+            "customer_email": customer_email,
+            "products": json.dumps(purchased_products) if purchased_products else None
+        }
+        
+        # Insert into credit_purchases table
+        try:
+            supabase_client.table("credit_purchases").insert(transaction_data).execute()
+            logger.info(f"Logged credit purchase transaction for {customer_email}")
+        except Exception as e:
+            logger.warning(f"Failed to log transaction (non-critical): {e}")
+        
+        return {
+            "success": True,
+            "user_email": customer_email,
+            "credits_added": credits,
+            "total_credits": total_credits,
+            "session_id": session_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Error adding credits to web user {user_id}: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Database error: {str(e)}",
+            "user_id": user_id
+        }
 
 def clean_phone_number(phone: str) -> str:
     """

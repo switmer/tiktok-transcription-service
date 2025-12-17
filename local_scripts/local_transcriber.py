@@ -53,7 +53,15 @@ def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
 
     chunks = []
     base_name = os.path.splitext(file_path)[0]
-    output_format = file_extension[1:] # e.g., 'wav' or 'mp3'
+    # Map file extensions to ffmpeg format names
+    format_map = {
+        '.m4a': 'mp4',
+        '.wav': 'wav',
+        '.mp3': 'mp3',
+        '.ogg': 'ogg',
+        '.flac': 'flac'
+    }
+    output_format = format_map.get(file_extension, file_extension[1:])  # Use mapping or default to extension without dot
 
     # Check if the original file is already small enough
     original_size_bytes = os.path.getsize(file_path)

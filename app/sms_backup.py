@@ -3,8 +3,39 @@ import re
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-try:\n    from twilio.rest import Client\n    TWILIO_AVAILABLE = True\nexcept ImportError:\n    # Mock class for when Twilio is not available\n    class Client:\n        def __init__(self, *args, **kwargs):\n            pass\n        @property\n        def messages(self):\n            return type('MockMessages', (), {\n                'create': lambda **kwargs: type('MockMessage', (), {'sid': 'mock_sid'})()\n            })()\n    TWILIO_AVAILABLE = False\n    print(\"Warning: Twilio not available, using mock classes\")
-try:\n    from twilio.twiml.messaging_response import MessagingResponse\nexcept ImportError:\n    # Mock class for when Twilio is not available\n    class MessagingResponse:\n        def __init__(self):\n            self._message = None\n        def message(self, text):\n            self._message = text\n        def __str__(self):\n            return f'<Response><Message>{self._message}</Message></Response>'
+try:
+    from twilio.rest import Client
+    TWILIO_AVAILABLE = True
+except ImportError:
+    # Mock class for when Twilio is not available
+    class Client:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @property
+        def messages(self):
+            return type(
+                "MockMessages",
+                (),
+                {"create": lambda **kwargs: type("MockMessage", (), {"sid": "mock_sid"})()},
+            )()
+
+    TWILIO_AVAILABLE = False
+    logging.warning("Twilio not available, using mock classes")
+
+try:
+    from twilio.twiml.messaging_response import MessagingResponse
+except ImportError:
+    # Mock class for when Twilio is not available
+    class MessagingResponse:  # type: ignore
+        def __init__(self):
+            self._message = None
+
+        def message(self, text):
+            self._message = text
+
+        def __str__(self):
+            return f"<Response><Message>{self._message}</Message></Response>"
 from fastapi import HTTPException
 import asyncio
 
