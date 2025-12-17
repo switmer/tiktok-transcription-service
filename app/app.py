@@ -674,11 +674,11 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
 
     try:
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
-                    .order('created_at', desc=True) # Order by creation time, newest first
-                    .limit(50) # Limit to the last 50 tasks
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                            .order('created_at', desc=True)  # newest first
+                            .limit(50)
+                            .execute()
         )
         
         # Check for errors during the query
@@ -709,9 +709,9 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail="Server error listing tasks")
 
 @app.get(
-    "/api/public/tasks/{task_id}",
+    "/api/tasks/{task_id}",
     response_model=TranscriptionResponse,
-    tags=["Core Transcription"],
+    tags=["Private Task Management"],
     responses={
         200: {
             "description": "Successful Response",
@@ -755,11 +755,11 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail="Database connection not available")
     try:
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
+                            .eq('task_id', task_id)
+                            .maybe_single()
+                            .execute()
         )
         if hasattr(response, 'error') and response.error:
              logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
@@ -784,10 +784,10 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
     # Step 1: Attempt to delete the record from Supabase first
     try:
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .delete()
-                    .eq('task_id', task_id)
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .delete()
+                            .eq('task_id', task_id)
+                            .execute()
         )
         
         # Check for errors during delete
