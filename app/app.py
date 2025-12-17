@@ -315,6 +315,23 @@ class TaskListResponse(BaseModel):
         example=0
     )
 
+
+class SearchHit(BaseModel):
+    """Search hit result for public transcription search."""
+    task_id: str = Field(..., description="Transcription task id (UUID)")
+    title: Optional[str] = Field(None, description="Video title")
+    updated_at: Optional[str] = Field(None, description="Last updated timestamp")
+    rank: Optional[float] = Field(None, description="Relevance rank (higher is better)")
+    source: Optional[str] = Field(None, description="Which field matched: title|transcript")
+
+
+class SearchResponse(BaseModel):
+    """Response model for search endpoint."""
+    query: str = Field(..., description="Original query")
+    results: List[SearchHit] = Field(default_factory=list)
+    limit: int = Field(..., example=50)
+    offset: int = Field(..., example=0)
+
 class HealthCheckResponse(BaseModel):
     """Health check response model"""
     status: str = Field(...,
@@ -2469,6 +2486,64 @@ async def public_list_tasks():
     except Exception as e:
         logger.error(f"Exception listing public tasks from Supabase: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Server error listing tasks")
+
+
+@app.get("/api/public/search", response_model=SearchResponse, tags=["Public Transcription"])
+async def public_search_transcriptions(
+    q: str,
+    limit: int = 50,
+    offset: int = 0,
+    only_public: bool = True,
+    only_completed: bool = True,
+):
+    """Public search over transcriptions using indexed Postgres RPC."""
+    if supabase is None:
+        logger.error("Cannot search: Supabase client not initialized.")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+
+    query = (q or "").strip()
+    if len(query) < 2:
+        return SearchResponse(query=query, results=[], limit=max(0, limit), offset=max(0, offset))
+
+    limit = min(max(1, limit), 100)
+    offset = max(0, offset)
+
+    try:
+        response = await asyncio.to_thread(
+            lambda: supabase.rpc(
+                "search_transcriptions",
+                {
+                    "query": query,
+                    "only_public": only_public,
+                    "only_completed": only_completed,
+                    "limit_results": limit,
+                    "offset_results": offset,
+                },
+            ).execute()
+        )
+
+        if hasattr(response, "error") and response.error:
+            logger.error(f"Search RPC error: {response.error}")
+            raise HTTPException(status_code=500, detail="Search failed")
+
+        results: List[SearchHit] = []
+        for row in (response.data or []):
+            results.append(
+                SearchHit(
+                    task_id=str(row.get("task_id")),
+                    title=row.get("title"),
+                    updated_at=row.get("updated_at"),
+                    rank=row.get("rank"),
+                    source=row.get("source"),
+                )
+            )
+
+        return SearchResponse(query=query, results=results, limit=limit, offset=offset)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Search exception: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Server error searching transcriptions")
 
 @app.get("/api/public/thumbnail/{task_id}", tags=["Public Transcription"])
 async def public_get_thumbnail(task_id: str):
