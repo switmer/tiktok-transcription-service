@@ -658,18 +658,37 @@ Reply /help for more commands!`);
   // Full transcript command
   if (Body.trim().toLowerCase() === '/full') {
     try {
-      const { data: transcripts, error } = await supabase.from('transcriptions').select('task_id, title, transcript, status').eq('user_phone', normalizePhoneNumber(From)).order('created_at', { ascending: false }).limit(1);
+      // Fetch the most recent *completed* transcript for this phone.
+      // The latest row can be pending/processing (no transcript yet), which made /full feel broken.
+      const normalized = normalizePhoneNumber(From);
+      const { data: transcripts, error } = await supabase
+        .from('transcriptions')
+        .select('task_id, title, transcript, status, created_at')
+        .eq('user_phone', normalized)
+        .eq('status', 'completed')
+        .not('transcript', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1);
       
       if (error || !transcripts || transcripts.length === 0) {
-        await sendSMS(From, '📄 No transcripts found. Send a video link first!');
+        // If they have an in-flight job, let them know rather than claiming nothing exists.
+        const { data: inFlight } = await supabase
+          .from('transcriptions')
+          .select('task_id,status,created_at')
+          .eq('user_phone', normalized)
+          .in('status', ['pending', 'processing'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (inFlight && inFlight.length > 0) {
+          await sendSMS(From, `📄 Your latest transcript is still processing.\n\n🔗 https://share.scribetok.com/v/${inFlight[0].task_id}`);
+          return sendTwilioResponse('');
+        }
+
+        await sendSMS(From, '📄 No completed transcripts found yet. Send a video link first!');
         return sendTwilioResponse('');
       }
 
       const latest = transcripts[0];
-      if (latest.status !== 'completed' || !latest.transcript) {
-        await sendSMS(From, '📄 Latest transcript not ready yet. Try again in a moment!');
-        return sendTwilioResponse('');
-      }
 
       const title = latest.title || 'Video';
       const transcript = latest.transcript;

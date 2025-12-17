@@ -102,17 +102,43 @@ class SMSHandler:
             return []
         
         try:
-            # Query transcript_jobs with linked transcriptions
-            response = await asyncio.to_thread(
-                supabase.table('transcript_jobs')
-                        .select("id, video_url, status, created_at, transcriptions!transcript_jobs_transcript_id_fkey(title, transcript)")
-                        .eq('from_phone', phone_number)
-                        .eq('status', 'completed')
-                        .order('created_at', desc=True)
-                        .limit(limit)
-                        .execute()
+            # Primary path (SMS-first): transcriptions table keyed by user_phone.
+            # This is the source of truth for SMS-created tasks and avoids relying on transcript_jobs.
+            transcriptions_response = await asyncio.to_thread(
+                lambda: supabase.table('transcriptions')
+                                .select("task_id, title, transcript, quote, tldr, status, created_at, url, platform")
+                                .eq('user_phone', phone_number)
+                                .eq('status', 'completed')
+                                .order('created_at', desc=True)
+                                .limit(limit)
+                                .execute()
             )
-            
+
+            if transcriptions_response.data:
+                # Return a shape compatible with existing callers that expect `transcriptions` nested
+                return [
+                    {
+                        "id": t.get("task_id"),
+                        "video_url": t.get("url"),
+                        "status": t.get("status", "completed"),
+                        "created_at": t.get("created_at"),
+                        "transcriptions": t,
+                        "public_link": f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{t.get('task_id')}",
+                    }
+                    for t in transcriptions_response.data
+                ]
+
+            # Fallback (legacy): transcript_jobs with linked transcriptions
+            response = await asyncio.to_thread(
+                lambda: supabase.table('transcript_jobs')
+                                .select("id, video_url, status, created_at, transcriptions!transcript_jobs_transcript_id_fkey(task_id, title, transcript, quote, tldr)")
+                                .eq('from_phone', phone_number)
+                                .eq('status', 'completed')
+                                .order('created_at', desc=True)
+                                .limit(limit)
+                                .execute()
+            )
+
             return response.data if response.data else []
         except Exception as e:
             logger.error(f"Error fetching user transcripts: {str(e)}")
