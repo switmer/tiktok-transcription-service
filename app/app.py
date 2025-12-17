@@ -563,11 +563,11 @@ async def transcribe(
 
         # Get the task details - Ensure task_id is passed as a string
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("*")
-                    .eq('task_id', str(task_id)) # Ensure task_id is a string
-                    .single()
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select("*")
+                            .eq('task_id', str(task_id))  # Ensure task_id is a string
+                            .single()
+                            .execute()
         )
 
         if not response.data:
@@ -1400,11 +1400,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
     try:
         # --- Fetch the original URL and user_phone from the database --- 
         task_response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("url, user_phone") # Fetch URL and user_phone for SMS notifications
-                    .eq('task_id', task_id)
-                    .single() # Expect exactly one result
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select("url, user_phone")  # Fetch URL and user_phone for SMS notifications
+                            .eq('task_id', task_id)
+                            .single()  # Expect exactly one result
+                            .execute()
         )
         
         if not task_response.data or 'url' not in task_response.data:
@@ -2177,6 +2177,10 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
             task_data["user_id"] = user_id
         if user_phone:
             task_data["user_phone"] = user_phone
+            # Tag SMS-created tasks so operational endpoints (like reprocess) can find them.
+            # Also helps analytics and debugging in Supabase.
+            task_data["tags"] = ["sms-inbound"]
+            task_data["source"] = "sms"
         
         # Log what we're about to insert
         logger.info(f"Creating task with data: {task_data}")
