@@ -11,7 +11,8 @@ function normalizePhoneNumber(phone) {
   if (digits.length === 11 && digits.startsWith('1')) {
     return `+${digits}`;
   }
-  return phone; // Return as-is if we can't normalize
+  // Strict: reject anything we can't safely normalize (prevents fragmented identities)
+  return null;
 }
 function generateOTPCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -22,19 +23,20 @@ function generateSessionToken() {
 // Rate limiting function
 async function checkRateLimit(phoneNumber, supabase) {
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
+  if (!normalizedPhone) return false; // fail closed for abuse protection
   const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
   try {
     // Check for recent commands from this phone number
     const { data: recentMessages, error } = await supabase.from('user_messages').select('id').eq('from_phone', normalizedPhone).gte('created_at', oneMinuteAgo);
     if (error) {
       console.log('Rate limit check failed:', error);
-      return true; // Allow on error
+      return false; // Fail closed on error
     }
     // Allow max 5 commands per minute
     return (recentMessages?.length || 0) < 5;
   } catch (error) {
     console.log('Rate limit check error:', error);
-    return true; // Allow on error
+    return false; // Fail closed on error
   }
 }
 // Get or create SMS user
@@ -349,14 +351,16 @@ Deno.serve(async (req)=>{
     });
   }
   // Parse Twilio's x-www-form-urlencoded or JSON
-  let From, Body;
+  let From, Body, MessageSid, To;
   const contentType = req.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
-    ({ From, Body } = await req.json().catch(()=>({})));
+    ({ From, Body, MessageSid, To } = await req.json().catch(()=>({})));
   } else {
     const form = await req.formData();
     From = form.get('From');
     Body = form.get('Body');
+    MessageSid = form.get('MessageSid');
+    To = form.get('To');
   }
   // Robust logging for debugging
   console.log('Received Body:', JSON.stringify(Body));
@@ -364,19 +368,40 @@ Deno.serve(async (req)=>{
   if (!From || !Body) {
     return sendTwilioResponse('Missing From or Body.');
   }
+  const normalizedFrom = normalizePhoneNumber(String(From));
+  if (!normalizedFrom) {
+    return sendTwilioResponse('📱 Please send from a valid US phone number.');
+  }
+
   // Initialize Supabase client for all commands
   const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
   
   // Log all incoming messages to user_messages table
   try {
     const command = Body.trim().startsWith('/') ? Body.trim().split(' ')[0].toLowerCase() : null;
-    await supabase.from('user_messages').upsert({
-      id: crypto.randomUUID(), // Generate unique ID
-      from_phone: normalizePhoneNumber(From),
-      message_body: Body,
-      command: command
-    }, { 
-      onConflict: 'id' 
+    const messageSid = MessageSid ? String(MessageSid) : null;
+
+    // If Twilio retries the webhook, MessageSid will be the same. Short-circuit to avoid
+    // duplicate charges and duplicate backend enqueues.
+    if (messageSid) {
+      const { data: existing } = await supabase
+        .from('user_messages')
+        .select('id')
+        .eq('message_sid', messageSid)
+        .limit(1);
+      if (existing && existing.length > 0) {
+        return sendTwilioResponse('✅ Already received — still working on it.');
+      }
+    }
+
+    // Use DB-side helper to log idempotently based on MessageSid.
+    await supabase.rpc('safe_message_log', {
+      from_phone_param: normalizedFrom,
+      to_phone_param: To ? String(To) : null,
+      message_body_param: String(Body),
+      direction_param: 'inbound',
+      message_sid_param: messageSid,
+      command_param: command
     });
   } catch (logError) {
     console.error('Error logging message to user_messages:', logError);
@@ -384,7 +409,10 @@ Deno.serve(async (req)=>{
   }
   
   // Check rate limiting (max 5 commands per minute)
-  const rateLimitOk = await checkRateLimit(From, supabase);
+  const trimmed = String(Body).trim();
+  const isCommand = trimmed.startsWith('/');
+  const isUrl = /(https?:\/\/[^\s]+)/i.test(trimmed);
+  const rateLimitOk = (isCommand || isUrl) ? await checkRateLimit(normalizedFrom, supabase) : true;
   if (!rateLimitOk) {
     console.log(`Rate limit exceeded for ${From}`);
     return sendTwilioResponse('⚠️ Too many commands. Please wait a minute before trying again.');
@@ -768,7 +796,7 @@ ${transcript}
   const url = match[0];
   try {
     // Get or create SMS user and check credits
-    const smsUser = await getOrCreateSMSUser(From, supabase);
+    const smsUser = await getOrCreateSMSUser(normalizedFrom, supabase);
     if (!smsUser) {
       return sendTwilioResponse('❌ Error creating user account. Try again later.');
     }
@@ -776,7 +804,7 @@ ${transcript}
     // Dedupe: if this phone already sent this exact URL before, don't charge twice.
     // Note: This is an exact-string match. TikTok shortlinks can vary; a stronger
     // dedupe could normalize by video_id once we resolve it.
-    const normalizedFrom = normalizePhoneNumber(From);
+    // normalizedFrom was already computed and validated above
     try {
       const { data: existingTasks, error: existingError } = await supabase
         .from('transcriptions')
@@ -813,7 +841,7 @@ ${transcript}
       console.warn('Dedupe check error; proceeding with normal flow:', dedupeErr);
     }
 
-    // Check if user has credits remaining
+    // Check if user has credits remaining (pre-check for UX; actual deduction happens after enqueue)
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0) {
       return sendTwilioResponse(`💳 You've used all your free transcripts!
@@ -825,35 +853,9 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
 💻 Go unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
     }
 
-    // Deduct one credit for this transcription
-    {
-      // Defensive coercion: PostgREST can return bigints as strings, which would turn `+ 1`
-      // into string concatenation and cause 400 "invalid input syntax for type integer".
-      // NOTE: Production schema uses `total_videos_transcribed` (not `total_transcriptions`).
-      // Attempting to update non-existent columns causes PostgREST 400s.
-      const nextTotalVideos = Number(smsUser.total_videos_transcribed ?? 0) + 1;
-      const nextMonthly = Number(smsUser.monthly_transcriptions ?? 0) + 1;
-      const nextCredits = Number(creditsRemaining) - 1;
-
-      const { error: deductError } = await supabase.from('sms_users').update({
-        credits_remaining: nextCredits,
-        total_videos_transcribed: nextTotalVideos,
-        monthly_transcriptions: nextMonthly
-      }).eq('id', smsUser.id);
-
-      if (deductError) {
-        console.error('Error deducting credit / incrementing counters for SMS user:', {
-          deductError,
-          smsUserId: smsUser.id,
-          creditsRemaining,
-          nextCredits,
-          nextTotalVideos,
-          nextMonthly
-        });
-      }
-    }
-
-    const newCreditsRemaining = creditsRemaining - 1;
+    // We only deduct credits AFTER the backend successfully queues the job.
+    // This avoids charging if the downstream call fails.
+    let newCreditsRemaining = creditsRemaining;
     if (isYouTubeUrl(url)) {
       const videoId = extractYouTubeVideoId(url);
       try {
@@ -922,51 +924,70 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
         return sendTwilioResponse('❌ Failed to transcribe YouTube video. Try again later.');
       }
     }
-    // Don't create a database record here - let the main API handle it
-    // The main API will create the proper task record with background processing
-    // Just send simple Twilio acknowledgment - let backend handle SMS notifications
-    const initialResponse = sendTwilioResponse('👍 Got it! Processing your video...');
-    // Call Render service to start processing (async, don't wait)
-    setTimeout(async ()=>{
-      try {
-        const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-        const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/public/transcribe`;
-        console.log('Calling Render API:', renderApiUrl);
-        const transcribeResponse = await fetch(renderApiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Supabase-Edge-Function',
-            'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-          },
-          body: JSON.stringify({
-            url: url,
-            user_phone: normalizePhoneNumber(From) // Pass phone number for SMS notification
-          })
-        });
-        const responseText = await transcribeResponse.text();
-        console.log('Render API response:', transcribeResponse.status, responseText);
-        if (!transcribeResponse.ok) {
-          console.error('Render API failed:', transcribeResponse.status, responseText);
-        } else {
-          // Try to extract task_id and start polling (non-blocking, no double-send)
-          try {
-            const parsed = JSON.parse(responseText);
-            const taskId = parsed?.task_id;
-            if (taskId) {
-              pollForCompletion(taskId, From);
-            }
-          } catch (e) {
-            console.warn('Could not parse transcribe response JSON:', e);
-          }
-        }
-      } catch (apiError) {
-        console.error('Failed to call Render API:', apiError);
+    // Call Render service to start processing (synchronously, with timeout).
+    // Runtimes may freeze after response; setTimeout fire-and-forget is risky.
+    try {
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/public/transcribe`;
+      console.log('Calling Render API:', renderApiUrl);
+
+      const apiKey = Deno.env.get('RENDER_API_KEY') || '';
+      if (!apiKey) {
+        console.error('Missing RENDER_API_KEY; refusing to enqueue transcription');
+        return sendTwilioResponse('⚠️ Service misconfigured. Please try again later.');
       }
-    }, 0);
-    // Backend will handle SMS notification when transcription completes
-    console.log(`Transcription queued for phone ${From}`);
-    return initialResponse;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      const transcribeResponse = await fetch(renderApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify({
+          url,
+          user_phone: normalizedFrom,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+
+      const responseText = await transcribeResponse.text();
+      console.log('Render API response:', transcribeResponse.status, responseText);
+
+      if (!transcribeResponse.ok) {
+        return sendTwilioResponse('⚠️ Couldn’t start processing. Try again in a minute.');
+      }
+
+      // Charge one credit now that the job is successfully queued.
+      try {
+        const { data: creditResult, error: creditError } = await supabase.rpc('atomic_credit_transaction', {
+          user_phone_param: normalizedFrom,
+          credit_change: -1,
+          transaction_type: 'transcription',
+          description: 'SMS transcription',
+          metadata: { url, message_sid: MessageSid ? String(MessageSid) : null },
+        });
+        if (creditError) {
+          console.error('Credit deduction RPC failed:', creditError);
+        } else if (creditResult?.success === false) {
+          console.warn('Insufficient credits at deduction time:', creditResult);
+          // We already queued the job; do not block delivery, but tell user their balance is low.
+        } else if (typeof creditResult?.new_balance === 'number') {
+          newCreditsRemaining = creditResult.new_balance;
+        }
+      } catch (e) {
+        console.error('Credit deduction exception:', e);
+      }
+
+      console.log(`Transcription queued for phone ${normalizedFrom}`);
+      return sendTwilioResponse(`👍 Got it! Processing your video...\n💳 ${newCreditsRemaining} left`);
+    } catch (apiError) {
+      console.error('Failed to call Render API:', apiError);
+      return sendTwilioResponse('⚠️ Couldn’t start processing. Try again in a minute.');
+    }
   } catch (err) {
     console.error('Unexpected error:', err);
     return sendTwilioResponse('🚨 An unexpected error occurred. Please try again.');
