@@ -2078,7 +2078,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
                 return phone
                 
             await asyncio.to_thread(
-                supabase.table('user_messages').insert({
+                lambda: supabase.table('user_messages').insert({
                     'from_phone': os.getenv('TWILIO_PHONE_NUMBER', '+17744727423'),
                     'to_phone': normalize_phone(phone_number),
                     'message_body': message,
@@ -3758,18 +3758,18 @@ async def handle_supabase_webhook(
             
             # Update the transcript job with the transcription task ID
             await asyncio.to_thread(
-                supabase.table('transcript_jobs')
-                        .update({'transcript_id': task_id})
-                        .eq('id', job_id)
-                        .execute()
+                lambda: supabase.table('transcript_jobs')
+                               .update({'transcript_id': task_id})
+                               .eq('id', job_id)
+                               .execute()
             )
             
             # Store user phone number for notifications
             await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .update({'user_phone': from_phone})
-                        .eq('task_id', task_id)
-                        .execute()
+                lambda: supabase.table('transcriptions')
+                               .update({'user_phone': from_phone})
+                               .eq('task_id', task_id)
+                               .execute()
             )
             
             # Queue background processing
@@ -3804,11 +3804,11 @@ async def rich_link_preview(task_id: str, request: Request):
     try:
         # Fetch task data from the public view (no phone numbers exposed)
         response = await asyncio.to_thread(
-            supabase.table('public_transcriptions')
-                    .select("*")
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute()
+            lambda: supabase.table('public_transcriptions')
+                           .select("*")
+                           .eq('task_id', task_id)
+                           .maybe_single()
+                           .execute()
         )
         
         if not response.data:
