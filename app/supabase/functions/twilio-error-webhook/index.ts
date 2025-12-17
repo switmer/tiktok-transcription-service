@@ -161,7 +161,7 @@ async function markPhoneAsInvalid(supabase: any, phoneNumber: string) {
       last_error: 'Invalid phone number',
       updated_at: new Date().toISOString()
     })
-    .eq('phone', phoneNumber)
+    .eq('phone_number', phoneNumber)
     
   if (error) {
     console.error('Failed to mark phone as invalid:', error)
@@ -181,7 +181,7 @@ async function handleUnsubscribe(supabase: any, phoneNumber: string) {
       last_error: 'Unsubscribed or permission denied',
       updated_at: new Date().toISOString()
     })
-    .eq('phone', phoneNumber)
+    .eq('phone_number', phoneNumber)
     
   if (error) {
     console.error('Failed to handle unsubscribe:', error)

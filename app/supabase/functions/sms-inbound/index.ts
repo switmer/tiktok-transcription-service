@@ -770,14 +770,14 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
     {
       // Defensive coercion: PostgREST can return bigints as strings, which would turn `+ 1`
       // into string concatenation and cause 400 "invalid input syntax for type integer".
-      const nextTotal = Number(smsUser.total_transcriptions ?? 0) + 1;
-      const nextMonthly = Number(smsUser.monthly_transcriptions ?? 0) + 1;
+      // NOTE: Production schema uses `total_videos_transcribed` (not `total_transcriptions`).
+      // Attempting to update non-existent columns causes PostgREST 400s.
+      const nextTotalVideos = Number(smsUser.total_videos_transcribed ?? 0) + 1;
       const nextCredits = Number(creditsRemaining) - 1;
 
       const { error: deductError } = await supabase.from('sms_users').update({
         credits_remaining: nextCredits,
-        total_transcriptions: nextTotal,
-        monthly_transcriptions: nextMonthly
+        total_videos_transcribed: nextTotalVideos
       }).eq('id', smsUser.id);
 
       if (deductError) {
@@ -786,8 +786,7 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
           smsUserId: smsUser.id,
           creditsRemaining,
           nextCredits,
-          nextTotal,
-          nextMonthly
+          nextTotalVideos
         });
       }
     }
