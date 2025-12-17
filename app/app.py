@@ -1968,6 +1968,10 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
             return
             
         from twilio.rest import Client
+        stripe_payment_link = os.getenv(
+            "STRIPE_PAYMENT_LINK",
+            "https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01",
+        )
         
         # Get user's current credits from SMS users table
         normalized_phone = phone_number.replace('+1', '').replace('+', '') if phone_number.startswith('+1') else phone_number.replace('+', '')
@@ -1976,14 +1980,14 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         elif len(normalized_phone) == 11 and normalized_phone.startswith('1'):
             normalized_phone = f"+{normalized_phone}"
         
-        credits_remaining = 0
+        credits_remaining = None
         try:
             response = await asyncio.to_thread(
-                supabase.table('sms_users')
-                .select('credits_remaining')
-                .eq('phone_number', normalized_phone)
-                .single()
-                .execute()
+                lambda: supabase.table('sms_users')
+                               .select('credits_remaining')
+                               .eq('phone_number', normalized_phone)
+                               .single()
+                               .execute()
             )
             credits_remaining = response.data.get('credits_remaining', 0) if response.data else 0
         except Exception as e:
@@ -2005,7 +2009,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 
 💬 /full for more • /tldr to regenerate
 🔗 share.scribetok.com/v/{task_id}
-💳 {credits_remaining} left"""
+💳 {credits_remaining if credits_remaining is not None else "credits unavailable"} left"""
         else:
             # Fallback to old format if quote+TLDR generation failed
             words = transcript.split(' ')[:50] 
@@ -2016,15 +2020,16 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 {preview}
 
 📖 Full transcript: https://share.scribetok.com/v/{task_id}
-💳 Credits remaining: {credits_remaining}"""
+💳 Credits remaining: {credits_remaining if credits_remaining is not None else "credits unavailable"}"""
 
         # Add short upsell messages 
-        if credits_remaining == 0:
-            message += "\n\n💳 All free credits used! 5 more for $1.99:\nstripe.com/4gMcN42NS • /referral for free"
-        elif credits_remaining == 1:
-            message += "\n\n⚠️ Last free credit! 5 for $1.99: stripe.com/4gMcN42NS"
-        elif credits_remaining == 2:
-            message += "\n\n💡 2 credits left! More: stripe.com/4gMcN42NS"
+        if credits_remaining is not None:
+            if credits_remaining == 0:
+                message += f"\n\n💳 All free credits used! 5 more for $1.99:\n{stripe_payment_link} • /referral for free"
+            elif credits_remaining == 1:
+                message += f"\n\n⚠️ Last free credit! 5 for $1.99: {stripe_payment_link}"
+            elif credits_remaining == 2:
+                message += f"\n\n💡 2 credits left! More: {stripe_payment_link}"
 
         # Allow longer messages for richer content (up to ~12-14 segments)
         if len(message) > 900:
