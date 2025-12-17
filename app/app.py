@@ -2118,10 +2118,10 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
                   update_data["error"] = None 
 
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .update(update_data)
-                    .eq('task_id', task_id)
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .update(update_data)
+                            .eq('task_id', task_id)
+                            .execute()
         )
         
         # Check for errors
@@ -2165,9 +2165,9 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         logger.info(f"Creating task with data: {task_data}")
         
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .insert(task_data)
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .insert(task_data)
+                            .execute()
         )
         
         # Check for errors
@@ -2190,13 +2190,18 @@ async def public_get_task(task_id: str):
         raise HTTPException(status_code=500, detail="Database connection not available")
         
     try:
-        # Fetch task from Supabase
+        # Fetch task from Supabase.
+        #
+        # NOTE: This endpoint is used for status polling (e.g. Edge Functions) and must work
+        # for tasks in any status (pending/processing/completed). The `public_transcriptions`
+        # view is filtered to completed+public, so querying it here can cause 404s or schema
+        # mismatches. We query `transcriptions` directly and only select safe, non-PII fields.
         response = await asyncio.to_thread(
-            supabase.table('public_transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute()
+            lambda: supabase.table('transcriptions')
+                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
+                            .eq('task_id', task_id)
+                            .maybe_single()
+                            .execute()
         )
 
         # Check for errors during the query
@@ -2271,7 +2276,10 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
     """Get transcript for a task without API key"""
     try:
         # Fetch task from database
-        result = supabase.table("public_transcriptions").select("*").eq("task_id", task_id).maybe_single().execute()
+        #
+        # NOTE: We query `transcriptions` directly because `public_transcriptions` may not
+        # exist in some deployments and is also filtered to completed+public.
+        result = supabase.table("transcriptions").select("*").eq("task_id", task_id).maybe_single().execute()
         if not result.data:
             raise HTTPException(status_code=404, detail="Task not found")
         
@@ -2408,14 +2416,32 @@ async def public_list_tasks():
         raise HTTPException(status_code=500, detail="Database connection not available")
 
     try:
-        # Fetch the last 50 tasks from Supabase, similar to the authenticated endpoint
-        response = await asyncio.to_thread(
-            supabase.table('public_transcriptions')
-                    .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
-                    .order('created_at', desc=True) # Order by creation time, newest first
-                    .limit(50) # Limit to the last 50 tasks
-                    .execute()
-        )
+        # Fetch the last 50 public, completed tasks.
+        #
+        # Prefer the `public_transcriptions` view when present (it excludes PII like user_phone),
+        # but fall back to querying `transcriptions` directly if the view isn't available yet
+        # (e.g. migrations not applied in production).
+        try:
+            response = await asyncio.to_thread(
+                lambda: supabase.table('public_transcriptions')
+                                .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                                .order('created_at', desc=True)  # newest first
+                                .limit(50)
+                                .execute()
+            )
+        except Exception as view_exc:
+            logger.warning(
+                f"Falling back to transcriptions table for public tasks list (view missing/unavailable): {view_exc}"
+            )
+            response = await asyncio.to_thread(
+                lambda: supabase.table('transcriptions')
+                                .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                                .eq('status', 'completed')
+                                .eq('visibility', 'public')
+                                .order('created_at', desc=True)  # newest first
+                                .limit(50)
+                                .execute()
+            )
 
         # Check for errors during the query
         if hasattr(response, 'error') and response.error:
