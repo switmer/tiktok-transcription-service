@@ -62,9 +62,14 @@ async function getOrCreateSMSUser(phoneNumber, supabase) {
     return null;
   }
   // Update last active
-  await supabase.from('sms_users').update({
-    last_active: new Date().toISOString()
-  }).eq('id', smsUser.id);
+  {
+    const { error: updateError } = await supabase.from('sms_users').update({
+      last_active: new Date().toISOString()
+    }).eq('id', smsUser.id);
+    if (updateError) {
+      console.error('Error updating last_active for SMS user:', updateError);
+    }
+  }
   return smsUser;
 }
 // OTP functions
@@ -97,13 +102,18 @@ async function verifyOTP(phoneNumber, code, supabase) {
   // Generate session token
   const sessionToken = generateSessionToken();
   const sessionExpires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
-  await supabase.from('sms_users').update({
+  {
+    const { error: updateError } = await supabase.from('sms_users').update({
     phone_verified: true,
     session_token: sessionToken,
     session_expires: sessionExpires.toISOString(),
     verification_code: null,
     verification_expires: null
   }).eq('id', user.id);
+    if (updateError) {
+      console.error('Error updating SMS user after OTP verification:', updateError);
+    }
+  }
   return {
     success: true,
     sessionToken,
@@ -537,9 +547,12 @@ ${verifiedStatus}
         const phoneDigits = From.replace(/\D/g, '');
         referralCode = `REF${phoneDigits.slice(-6)}`;
         
-        await supabase.from('sms_users').update({
+        const { error: referralUpdateError } = await supabase.from('sms_users').update({
           referral_code: referralCode
         }).eq('id', user.id);
+        if (referralUpdateError) {
+          console.error('Error updating referral_code for SMS user:', referralUpdateError);
+        }
       }
 
       const referralsCount = user.referrals_count || 0;
@@ -754,11 +767,30 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
     }
 
     // Deduct one credit for this transcription
-    await supabase.from('sms_users').update({
-      credits_remaining: creditsRemaining - 1,
-      total_transcriptions: (smsUser.total_transcriptions || 0) + 1,
-      monthly_transcriptions: (smsUser.monthly_transcriptions || 0) + 1
-    }).eq('id', smsUser.id);
+    {
+      // Defensive coercion: PostgREST can return bigints as strings, which would turn `+ 1`
+      // into string concatenation and cause 400 "invalid input syntax for type integer".
+      const nextTotal = Number(smsUser.total_transcriptions ?? 0) + 1;
+      const nextMonthly = Number(smsUser.monthly_transcriptions ?? 0) + 1;
+      const nextCredits = Number(creditsRemaining) - 1;
+
+      const { error: deductError } = await supabase.from('sms_users').update({
+        credits_remaining: nextCredits,
+        total_transcriptions: nextTotal,
+        monthly_transcriptions: nextMonthly
+      }).eq('id', smsUser.id);
+
+      if (deductError) {
+        console.error('Error deducting credit / incrementing counters for SMS user:', {
+          deductError,
+          smsUserId: smsUser.id,
+          creditsRemaining,
+          nextCredits,
+          nextTotal,
+          nextMonthly
+        });
+      }
+    }
 
     const newCreditsRemaining = creditsRemaining - 1;
     if (isYouTubeUrl(url)) {
