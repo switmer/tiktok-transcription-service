@@ -3359,16 +3359,25 @@ async def sms_chat(request: SmsChatRequest):
         raise HTTPException(status_code=400, detail="Message is required")
 
     try:
-        # Find active thread for this phone number
-        thread_response = supabase.table('conversation_threads') \
-            .select('id, task_id, summary, message_count') \
-            .eq('user_phone', phone) \
-            .eq('status', 'active') \
-            .order('last_active', desc=True) \
-            .limit(1) \
-            .execute()
+        thread = None
+        thread_id = None
+        conversation_summary = ""
+        message_history = []
+        task_id = None
 
-        thread = thread_response.data[0] if thread_response.data else None
+        # Find active thread for this phone number
+        try:
+            thread_response = supabase.table('conversation_threads') \
+                .select('id, task_id, summary, message_count') \
+                .eq('user_phone', phone) \
+                .eq('status', 'active') \
+                .order('last_active', desc=True) \
+                .limit(1) \
+                .execute()
+            thread = thread_response.data[0] if thread_response.data else None
+        except Exception as e:
+            logger.error(f"Error loading conversation thread: {str(e)}")
+            thread = None
 
         if not thread:
             # Use latest completed transcript as the default context
@@ -3383,19 +3392,38 @@ async def sms_chat(request: SmsChatRequest):
                 raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
 
             task_id = transcript_lookup.data[0]['task_id']
-            thread_insert = supabase.table('conversation_threads').insert({
-                'user_phone': phone,
-                'task_id': task_id,
-                'summary': None,
-                'message_count': 0,
-                'status': 'active',
-                'last_active': datetime.now(timezone.utc).isoformat(),
-                'created_at': datetime.now(timezone.utc).isoformat(),
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }).select('id, task_id, summary, message_count').single().execute()
-            thread = thread_insert.data
+            try:
+                thread_insert = supabase.table('conversation_threads').insert({
+                    'user_phone': phone,
+                    'task_id': task_id,
+                    'summary': None,
+                    'message_count': 0,
+                    'status': 'active',
+                    'last_active': datetime.now(timezone.utc).isoformat(),
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat()
+                }).select('id, task_id, summary, message_count').single().execute()
+                thread = thread_insert.data if thread_insert.data else None
+            except Exception as e:
+                logger.error(f"Error creating conversation thread: {str(e)}")
+                thread = None
 
-        task_id = thread['task_id']
+        if thread:
+            task_id = thread.get('task_id')
+            thread_id = thread.get('id')
+            conversation_summary = thread.get('summary') or ""
+        elif not task_id:
+            transcript_lookup = supabase.table('transcriptions') \
+                .select('task_id') \
+                .eq('user_phone', phone) \
+                .eq('status', 'completed') \
+                .order('created_at', desc=True) \
+                .limit(1) \
+                .execute()
+            if not transcript_lookup.data:
+                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
+            task_id = transcript_lookup.data[0]['task_id']
+            thread_id = task_id
 
         # Fetch transcript context
         task_response = supabase.table('transcriptions').select(
@@ -3419,27 +3447,33 @@ async def sms_chat(request: SmsChatRequest):
         if not transcript_text:
             raise HTTPException(status_code=400, detail="Transcript not ready yet")
 
-        # Persist user message
-        supabase.table('conversation_messages').insert({
-            'thread_id': thread['id'],
-            'role': 'user',
-            'content': message
-        }).execute()
+        if thread_id:
+            try:
+                supabase.table('conversation_messages').insert({
+                    'thread_id': thread_id,
+                    'role': 'user',
+                    'content': message
+                }).execute()
+            except Exception as e:
+                logger.error(f"Error saving user message: {str(e)}")
 
-        # Fetch recent message history (last 10 turns)
-        messages_response = supabase.table('conversation_messages') \
-            .select('role, content, created_at') \
-            .eq('thread_id', thread['id']) \
-            .order('created_at', desc=True) \
-            .limit(20) \
-            .execute()
-        messages = messages_response.data or []
-        messages_sorted = list(reversed(messages))
-        message_history = [
-            {'role': msg.get('role'), 'content': msg.get('content')}
-            for msg in messages_sorted
-            if msg.get('content')
-        ]
+            try:
+                messages_response = supabase.table('conversation_messages') \
+                    .select('role, content, created_at') \
+                    .eq('thread_id', thread_id) \
+                    .order('created_at', desc=True) \
+                    .limit(20) \
+                    .execute()
+                messages = messages_response.data or []
+                messages_sorted = list(reversed(messages))
+                message_history = [
+                    {'role': msg.get('role'), 'content': msg.get('content')}
+                    for msg in messages_sorted
+                    if msg.get('content')
+                ]
+            except Exception as e:
+                logger.error(f"Error loading message history: {str(e)}")
+                message_history = []
 
         tldr_list = None
         if task.get('tldr'):
@@ -3459,38 +3493,44 @@ async def sms_chat(request: SmsChatRequest):
             quote=task.get('quote') or '',
             tldr_list=tldr_list,
             max_chars=request.max_chars or 360,
-            conversation_summary=thread.get('summary') or '',
+            conversation_summary=conversation_summary,
             message_history=message_history
         )
         if not answer:
-            raise HTTPException(status_code=500, detail="Failed to generate answer")
+            answer = sms.SMSHandler._clip_answer("I can't tell from this video.", request.max_chars or 360)
 
-        # Persist assistant message
-        supabase.table('conversation_messages').insert({
-            'thread_id': thread['id'],
-            'role': 'assistant',
-            'content': answer
-        }).execute()
+        if thread_id:
+            try:
+                supabase.table('conversation_messages').insert({
+                    'thread_id': thread_id,
+                    'role': 'assistant',
+                    'content': answer
+                }).execute()
+            except Exception as e:
+                logger.error(f"Error saving assistant message: {str(e)}")
 
-        # Update summary with latest exchange
-        summary_messages = message_history + [{'role': 'assistant', 'content': answer}]
-        new_summary = await sms.SMSHandler.generate_chat_summary(
-            thread.get('summary') or '',
-            summary_messages[-20:],
-            max_chars=600
-        )
+            if thread:
+                summary_messages = message_history + [{'role': 'assistant', 'content': answer}]
+                new_summary = await sms.SMSHandler.generate_chat_summary(
+                    conversation_summary,
+                    summary_messages[-20:],
+                    max_chars=600
+                )
 
-        supabase.table('conversation_threads').update({
-            'summary': new_summary,
-            'message_count': (thread.get('message_count') or 0) + 2,
-            'last_active': datetime.now(timezone.utc).isoformat(),
-            'updated_at': datetime.now(timezone.utc).isoformat()
-        }).eq('id', thread['id']).execute()
+                try:
+                    supabase.table('conversation_threads').update({
+                        'summary': new_summary,
+                        'message_count': (thread.get('message_count') or 0) + 2,
+                        'last_active': datetime.now(timezone.utc).isoformat(),
+                        'updated_at': datetime.now(timezone.utc).isoformat()
+                    }).eq('id', thread_id).execute()
+                except Exception as e:
+                    logger.error(f"Error updating conversation thread: {str(e)}")
 
         return SmsChatResponse(
             answer=answer,
             task_id=task_id,
-            thread_id=thread['id']
+            thread_id=thread_id or task_id
         )
 
     except HTTPException:
