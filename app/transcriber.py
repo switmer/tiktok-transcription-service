@@ -44,6 +44,66 @@ class MyLogger(object):
     def error(self, msg):
         print(f"Error: {msg}")
 
+def _pick_first_value(data: dict, keys: list):
+    for key in keys:
+        value = data.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+def _extract_thumbnail_url(value):
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        if value.get("url"):
+            return value["url"]
+        for candidate in value.values():
+            if isinstance(candidate, dict) and candidate.get("url"):
+                return candidate["url"]
+    return None
+
+def _coerce_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def _extract_youtube_metadata(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return {}
+
+    snippet = data.get("snippet") if isinstance(data.get("snippet"), dict) else {}
+    title = _pick_first_value(data, ["title", "video_title", "name"]) or snippet.get("title")
+    description = _pick_first_value(data, ["description", "caption", "video_description", "summary"]) or snippet.get("description")
+
+    thumbnail_value = _pick_first_value(data, ["thumbnail_url", "thumbnail", "thumbnailUrl"])
+    thumbnail_url = _extract_thumbnail_url(thumbnail_value) or _extract_thumbnail_url(snippet.get("thumbnails"))
+
+    author_value = data.get("author") or data.get("uploader") or data.get("channel")
+    uploader = None
+    channel = None
+    if isinstance(author_value, dict):
+        uploader = _pick_first_value(author_value, ["name", "title", "channel_name", "username", "uploader"])
+        channel = _pick_first_value(author_value, ["channel", "channel_name", "title"])
+    elif isinstance(author_value, str):
+        uploader = author_value
+        channel = author_value
+
+    duration_value = _pick_first_value(data, ["duration", "duration_seconds", "length_seconds", "lengthSeconds"])
+    duration = _coerce_int(duration_value)
+
+    metadata = {
+        "title": title,
+        "description": description,
+        "thumbnail_url": thumbnail_url,
+        "uploader": uploader,
+        "channel": channel,
+        "duration": duration
+    }
+    return {k: v for k, v in metadata.items() if v is not None}
+
 def download_youtube_rapidapi(url: str) -> dict:
     """Transcribe YouTube video instantly using RapidAPI service"""
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")
@@ -75,6 +135,7 @@ def download_youtube_rapidapi(url: str) -> dict:
         if response.status_code == 200:
             data = response.json()
             logger.info(f"YouTube RapidAPI response received")
+            normalized_metadata = _extract_youtube_metadata(data)
             
             # Extract transcript
             transcript = data.get("transcript", "")
@@ -85,9 +146,14 @@ def download_youtube_rapidapi(url: str) -> dict:
                 logger.info(f"YouTube RapidAPI success - video_id: {video_id}")
                 return {
                     "video_id": video_id,
-                    "title": data.get("title", "YouTube Video"),
+                    "title": normalized_metadata.get("title") or data.get("title", "YouTube Video"),
+                    "description": normalized_metadata.get("description"),
                     "transcript": transcript_text,
                     "platform": "youtube",
+                    "thumbnail_url": normalized_metadata.get("thumbnail_url"),
+                    "uploader": normalized_metadata.get("uploader"),
+                    "channel": normalized_metadata.get("channel"),
+                    "duration": normalized_metadata.get("duration"),
                     "download_method": "rapidapi_youtube_fastest",
                     "transcribed_at": datetime.now().isoformat(),
                     "metadata": data
@@ -454,7 +520,7 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str):
         logger.error(f"Error transcribing audio: {str(e)}")
         return None, None
 
-def generate_quote_and_tldr(transcript_text: str) -> dict:
+def generate_quote_and_tldr(transcript_text: str, title: str = "", description: str = "") -> dict:
     """Generate a shareable quote and TLDR summary from transcript text"""
     if client is None:
         logger.error("Cannot generate quote+TLDR: OpenAI client not initialized")
@@ -464,8 +530,12 @@ def generate_quote_and_tldr(transcript_text: str) -> dict:
         # Truncate transcript if too long (GPT-3.5 has token limits)
         max_chars = 3000
         truncated_transcript = transcript_text[:max_chars] + "..." if len(transcript_text) > max_chars else transcript_text
+        safe_title = (title or "").strip()
+        safe_description = (description or "").strip()
         
         prompt = f"""You are ScribeTok's AI that extracts memorable quotes and detailed insights from video content. Your job is to capture the REAL value - the specific advice, unique perspectives, and actionable wisdom that people actually want to save and share.
+
+Use the title/description to resolve names, topics, and context. If anything conflicts, trust the transcript.
 
 QUOTE Guidelines:
 - Find the most quotable line that captures the speaker's unique perspective
@@ -485,6 +555,12 @@ Respond STRICTLY in this JSON format (no other text):
   "quote": "the most memorable, shareable line that captures their unique take",
   "tldr": ["Specific insight #1 with concrete details", "Actionable advice #2 with examples", "Unique perspective #3 that's worth remembering", "Additional valuable point #4 if there's more gold"]
 }}
+
+Title:
+{safe_title}
+
+Description:
+{safe_description}
 
 Transcript:
 \"\"\"

@@ -332,6 +332,16 @@ class SearchResponse(BaseModel):
     limit: int = Field(..., example=50)
     offset: int = Field(..., example=0)
 
+class TranscriptChatRequest(BaseModel):
+    """Request model for transcript chat."""
+    message: str = Field(..., min_length=1, max_length=1000, description="User question about the transcript")
+    max_chars: Optional[int] = Field(360, ge=120, le=600, description="Maximum characters for the answer")
+
+class TranscriptChatResponse(BaseModel):
+    """Response model for transcript chat."""
+    task_id: str = Field(..., description="Transcription task id (UUID)")
+    answer: str = Field(..., description="Short answer based on transcript content")
+
 class HealthCheckResponse(BaseModel):
     """Health check response model"""
     status: str = Field(...,
@@ -392,6 +402,27 @@ class AccountLinkResponse(BaseModel):
         description="Success message",
         example="Account created and 15 transcriptions linked"
     )
+
+class SmsChatRequest(BaseModel):
+    """SMS chat request model"""
+    phone: str = Field(..., description="E.164 phone number")
+    message: str = Field(..., min_length=1, max_length=1000, description="User question")
+    max_chars: Optional[int] = Field(360, ge=120, le=600, description="Maximum characters for the answer")
+
+class SmsChatResponse(BaseModel):
+    """SMS chat response model"""
+    answer: str = Field(..., description="Short answer based on transcript content")
+    task_id: str = Field(..., description="Transcript task id used for context")
+    thread_id: str = Field(..., description="Conversation thread id")
+
+class SmsChatResetResponse(BaseModel):
+    """SMS chat reset response model"""
+    success: bool = Field(..., description="Whether reset succeeded")
+    closed_threads: int = Field(..., description="Number of threads closed")
+
+class SmsChatResetRequest(BaseModel):
+    """SMS chat reset request model"""
+    phone: str = Field(..., description="E.164 phone number")
 
 # --- API Key Validation ---
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False) # Use APIKeyHeader for header extraction
@@ -596,10 +627,16 @@ async def transcribe(
                                         'status': 'completed',
                                         'video_id': youtube_result['video_id'],
                                         'title': youtube_result['title'],
+                                        'description': youtube_result.get('description'),
                                         'transcript': youtube_result['transcript'],
                                         'platform': 'youtube',
                                         'category': 'youtube-transcription',
-                                        'tags': ['sms-inbound', 'youtube'] if request.user_phone else ['youtube']
+                                        'tags': ['sms-inbound', 'youtube'] if request.user_phone else ['youtube'],
+                                        'thumbnail_url': youtube_result.get('thumbnail_url'),
+                                        'duration': youtube_result.get('duration'),
+                                        'uploader': youtube_result.get('uploader'),
+                                        'channel': youtube_result.get('channel'),
+                                        'raw_metadata': youtube_result.get('metadata')
                                     })
                                     .eq('task_id', task_id)
                                     .execute()
@@ -609,6 +646,7 @@ async def transcribe(
                         task_data['status'] = 'completed'
                         task_data['video_id'] = youtube_result['video_id']
                         task_data['title'] = youtube_result['title']
+                        task_data['description'] = youtube_result.get('description')
                         task_data['platform'] = 'youtube'
                         
                         logger.info(f"YouTube instant transcription completed for task {task_id}")
@@ -654,6 +692,7 @@ async def transcribe(
             status=task_data['status'],
             video_id=task_data.get('video_id'),
             title=task_data.get('title'),
+            description=task_data.get('description'),
             created_at=task_data['created_at'],
             error=task_data.get('error'),
             thumbnail=task_data.get('thumbnail_url'),
@@ -675,7 +714,7 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
                             .order('created_at', desc=True)  # newest first
                             .limit(50)
                             .execute()
@@ -695,6 +734,7 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
                     status=task_data['status'],
                     video_id=task_data.get('video_id'),
                     title=task_data.get('title'),
+                    description=task_data.get('description'),
                     created_at=task_data['created_at'],
                     error=task_data.get('error'),
                     thumbnail=task_data.get('thumbnail_url'), # Map thumbnail_url
@@ -756,7 +796,7 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
+                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path, video_url, duration, like_count, comment_count, repost_count, view_count, platform, tags, category")
                             .eq('task_id', task_id)
                             .maybe_single()
                             .execute()
@@ -1036,7 +1076,11 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, vi
             logger.info(f"Generating quote and TLDR for task {task_id}")
             quote_tldr_result = {}
             try:
-                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+                                quote_tldr_result = transcriber.generate_quote_and_tldr(
+                                    transcript_text,
+                                    title=ytdlp_title or "",
+                                    description=""
+                                )
             except Exception as e:
                 logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
                 # Continue without quote/TLDR rather than failing the entire enrichment
@@ -1436,8 +1480,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 
                 # Generate quote and TLDR for YouTube too
                 quote_tldr_result = {}
-                try:
-                    quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+            try:
+                fallback_title = tasks.get(task_id, {}).get("title", "")
+                quote_tldr_result = transcriber.generate_quote_and_tldr(
+                    transcript_text,
+                    title=fallback_title or "",
+                    description=""
+                )
                     logger.info(f"Generated quote/TLDR for YouTube video {video_id}")
                 except Exception as e:
                     logger.warning(f"Failed to generate quote/TLDR for YouTube video: {str(e)}")
@@ -1447,14 +1496,21 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     'status': 'completed',
                     'video_id': video_id,
                     'title': title,
+                    'description': youtube_result.get('description'),
                     'transcript': transcript_text,
                     'platform': platform,
                     'category': 'youtube-transcription',
                     'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube'],
                     'error': None,
+                    'thumbnail_url': youtube_result.get('thumbnail_url'),
+                    'duration': youtube_result.get('duration'),
+                    'uploader': youtube_result.get('uploader'),
+                    'channel': youtube_result.get('channel'),
                     'view_count': 1,  # Initialize view count
                     'visibility': 'public'
                 }
+                if youtube_result.get('metadata') is not None:
+                    update_data['raw_metadata'] = youtube_result.get('metadata')
                 
                 # Add quote and TLDR if generated successfully
                 if quote_tldr_result.get("quote"):
@@ -1510,7 +1566,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             # Quote/TLDR
                             quote_tldr_result = {}
                             try:
-                                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+                    quote_tldr_result = transcriber.generate_quote_and_tldr(
+                        transcript_text,
+                        title=title or "",
+                        description=youtube_result.get('description') or ""
+                    )
                             except Exception as e:
                                 logger.error(f"Failed to generate quote/TLDR (yt-dlp path) for task {task_id}: {e}")
                             # Update DB
@@ -1779,7 +1839,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             logger.info(f"Generating quote and TLDR for task {task_id}")
             quote_tldr_result = {}
             try:
-                quote_tldr_result = transcriber.generate_quote_and_tldr(transcript_text)
+                quote_tldr_result = transcriber.generate_quote_and_tldr(
+                    transcript_text,
+                    title=title or "",
+                    description=rich_metadata.get('description') or ""
+                )
             except Exception as e:
                 logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
                 # Continue without quote/TLDR rather than failing the entire enrichment
@@ -2224,7 +2288,7 @@ async def public_get_task(task_id: str):
         # mismatches. We query `transcriptions` directly and only select safe, non-PII fields.
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
+                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
                             .eq('task_id', task_id)
                             .maybe_single()
                             .execute()
@@ -2274,6 +2338,13 @@ async def public_get_task(task_id: str):
             status=task_data['status'],
             video_id=task_data.get('video_id') or raw_data.get('id'),
             title=task_data.get('title') or raw_data.get('title'),
+            description=(
+                task_data.get('description')
+                or raw_meta.get('description')
+                or raw_meta.get('title')
+                or raw_data.get('description')
+                or raw_data.get('title')
+            ),
             created_at=task_data['created_at'],
             error=task_data.get('error'),
             thumbnail=task_data.get('thumbnail_url'),
@@ -2434,6 +2505,70 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
     # Otherwise return the transcript file as-is
     return FileResponse(transcript_files[0])
 
+@app.post(
+    "/api/public/transcript/{task_id}/chat",
+    response_model=TranscriptChatResponse,
+    tags=["Public Transcription"]
+)
+async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
+    """Answer a question about a transcript."""
+    if supabase is None:
+        logger.error("Cannot chat with transcript: Supabase client not initialized.")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="Message is required")
+    try:
+        result = supabase.table("transcriptions").select(
+            "status, transcript, title, description, quote, tldr, error"
+        ).eq("task_id", task_id).maybe_single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        task = result.data
+
+        if task.get("status") == "failed":
+            error_message = task.get("error", "Unknown error")
+            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
+        if task.get("status") != "completed":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Transcription not completed yet. Current status: {task.get('status')}"
+            )
+
+        transcript_text = task.get("transcript") or ""
+        if not transcript_text:
+            raise HTTPException(status_code=400, detail="Transcript not ready yet")
+
+        tldr_list = None
+        if task.get("tldr"):
+            try:
+                if isinstance(task["tldr"], str):
+                    tldr_list = json.loads(task["tldr"])
+                elif isinstance(task["tldr"], list):
+                    tldr_list = task["tldr"]
+            except (json.JSONDecodeError, TypeError):
+                tldr_list = None
+
+        max_chars = payload.max_chars or 360
+        answer = await sms.SMSHandler.generate_answer(
+            question=payload.message,
+            transcript_text=transcript_text,
+            title=task.get("title") or "",
+            description=task.get("description") or "",
+            quote=task.get("quote") or "",
+            tldr_list=tldr_list,
+            max_chars=max_chars
+        )
+        if not answer:
+            raise HTTPException(status_code=500, detail="Failed to generate answer")
+
+        return TranscriptChatResponse(task_id=task_id, answer=answer)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating transcript chat response: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate answer")
+
 @app.get("/api/public/tasks", response_model=TaskListResponse, tags=["Public Transcription"])
 async def public_list_tasks():
     """List the last 50 transcription tasks without API key"""
@@ -2450,7 +2585,7 @@ async def public_list_tasks():
         try:
             response = await asyncio.to_thread(
                 lambda: supabase.table('public_transcriptions')
-                                .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                                .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
                                 .order('created_at', desc=True)  # newest first
                                 .limit(50)
                                 .execute()
@@ -2461,7 +2596,7 @@ async def public_list_tasks():
             )
             response = await asyncio.to_thread(
                 lambda: supabase.table('transcriptions')
-                                .select("task_id, status, video_id, title, created_at, error, thumbnail_url, thumbnail_local_path")
+                                .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
                                 .eq('status', 'completed')
                                 .eq('visibility', 'public')
                                 .order('created_at', desc=True)  # newest first
@@ -2483,6 +2618,7 @@ async def public_list_tasks():
                     status=task_data['status'],
                     video_id=task_data.get('video_id'),
                     title=task_data.get('title'),
+                    description=task_data.get('description'),
                     created_at=task_data['created_at'],
                     error=task_data.get('error'),
                     thumbnail=task_data.get('thumbnail_url'), # Map thumbnail_url
@@ -3208,6 +3344,185 @@ async def generate_sms_summary(request: Request):
     except Exception as e:
         logger.error(f"Error generating SMS summary: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+@app.post("/api/sms/chat", response_model=SmsChatResponse, tags=["SMS Integration"])
+async def sms_chat(request: SmsChatRequest):
+    """Answer a user's question about their latest transcript with chat memory."""
+    if supabase is None:
+        logger.error("Cannot chat: Supabase client not initialized.")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+
+    phone = request.phone.strip()
+    message = request.message.strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    try:
+        # Find active thread for this phone number
+        thread_response = supabase.table('conversation_threads') \
+            .select('id, task_id, summary, message_count') \
+            .eq('user_phone', phone) \
+            .eq('status', 'active') \
+            .order('last_active', desc=True) \
+            .limit(1) \
+            .execute()
+
+        thread = thread_response.data[0] if thread_response.data else None
+
+        if not thread:
+            # Use latest completed transcript as the default context
+            transcript_lookup = supabase.table('transcriptions') \
+                .select('task_id') \
+                .eq('user_phone', phone) \
+                .eq('status', 'completed') \
+                .order('created_at', desc=True) \
+                .limit(1) \
+                .execute()
+            if not transcript_lookup.data:
+                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
+
+            task_id = transcript_lookup.data[0]['task_id']
+            thread_insert = supabase.table('conversation_threads').insert({
+                'user_phone': phone,
+                'task_id': task_id,
+                'summary': None,
+                'message_count': 0,
+                'status': 'active',
+                'last_active': datetime.now(timezone.utc).isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }).select('id, task_id, summary, message_count').single().execute()
+            thread = thread_insert.data
+
+        task_id = thread['task_id']
+
+        # Fetch transcript context
+        task_response = supabase.table('transcriptions').select(
+            'status, transcript, title, description, quote, tldr, error'
+        ).eq('task_id', task_id).maybe_single().execute()
+
+        if not task_response.data:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+
+        task = task_response.data
+        if task.get('status') == 'failed':
+            error_message = task.get('error', 'Unknown error')
+            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
+        if task.get('status') != 'completed':
+            raise HTTPException(
+                status_code=409,
+                detail=f"Transcription not completed yet. Current status: {task.get('status')}"
+            )
+
+        transcript_text = task.get('transcript') or ''
+        if not transcript_text:
+            raise HTTPException(status_code=400, detail="Transcript not ready yet")
+
+        # Persist user message
+        supabase.table('conversation_messages').insert({
+            'thread_id': thread['id'],
+            'role': 'user',
+            'content': message
+        }).execute()
+
+        # Fetch recent message history (last 10 turns)
+        messages_response = supabase.table('conversation_messages') \
+            .select('role, content, created_at') \
+            .eq('thread_id', thread['id']) \
+            .order('created_at', desc=True) \
+            .limit(20) \
+            .execute()
+        messages = messages_response.data or []
+        messages_sorted = list(reversed(messages))
+        message_history = [
+            {'role': msg.get('role'), 'content': msg.get('content')}
+            for msg in messages_sorted
+            if msg.get('content')
+        ]
+
+        tldr_list = None
+        if task.get('tldr'):
+            try:
+                if isinstance(task['tldr'], str):
+                    tldr_list = json.loads(task['tldr'])
+                elif isinstance(task['tldr'], list):
+                    tldr_list = task['tldr']
+            except (json.JSONDecodeError, TypeError):
+                tldr_list = None
+
+        answer = await sms.SMSHandler.generate_answer(
+            question=message,
+            transcript_text=transcript_text,
+            title=task.get('title') or '',
+            description=task.get('description') or '',
+            quote=task.get('quote') or '',
+            tldr_list=tldr_list,
+            max_chars=request.max_chars or 360,
+            conversation_summary=thread.get('summary') or '',
+            message_history=message_history
+        )
+        if not answer:
+            raise HTTPException(status_code=500, detail="Failed to generate answer")
+
+        # Persist assistant message
+        supabase.table('conversation_messages').insert({
+            'thread_id': thread['id'],
+            'role': 'assistant',
+            'content': answer
+        }).execute()
+
+        # Update summary with latest exchange
+        summary_messages = message_history + [{'role': 'assistant', 'content': answer}]
+        new_summary = await sms.SMSHandler.generate_chat_summary(
+            thread.get('summary') or '',
+            summary_messages[-20:],
+            max_chars=600
+        )
+
+        supabase.table('conversation_threads').update({
+            'summary': new_summary,
+            'message_count': (thread.get('message_count') or 0) + 2,
+            'last_active': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        }).eq('id', thread['id']).execute()
+
+        return SmsChatResponse(
+            answer=answer,
+            task_id=task_id,
+            thread_id=thread['id']
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating SMS chat response: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate answer")
+
+@app.post("/api/sms/chat/reset", response_model=SmsChatResetResponse, tags=["SMS Integration"])
+async def sms_chat_reset(request: SmsChatResetRequest):
+    """Reset the active chat thread for a phone number."""
+    if supabase is None:
+        logger.error("Cannot reset chat: Supabase client not initialized.")
+        raise HTTPException(status_code=500, detail="Database connection not available")
+
+    phone = request.phone.strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+
+    try:
+        response = supabase.table('conversation_threads').update({
+            'status': 'closed',
+            'closed_at': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        }).eq('user_phone', phone).eq('status', 'active').execute()
+
+        closed_threads = len(response.data) if response.data else 0
+        return SmsChatResetResponse(success=True, closed_threads=closed_threads)
+    except Exception as e:
+        logger.error(f"Error resetting SMS chat: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reset chat")
 
 async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str, job_id: str = None):
     """Process transcription and send SMS notification when complete"""

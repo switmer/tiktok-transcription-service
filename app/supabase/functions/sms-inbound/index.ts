@@ -15,7 +15,11 @@ function normalizePhoneNumber(phone) {
   return null;
 }
 function generateOTPCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  // Legacy fallback; primary OTP is issued by DB RPC `request_otp`.
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  const n = (buf[0] % 900000) + 100000;
+  return String(n).padStart(6, '0');
 }
 function generateSessionToken() {
   return crypto.randomUUID().replace(/-/g, '');
@@ -76,50 +80,59 @@ async function getOrCreateSMSUser(phoneNumber, supabase) {
 }
 // OTP functions
 async function sendOTP(phoneNumber, supabase) {
-  const code = generateOTPCode();
-  const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   const user = await getOrCreateSMSUser(phoneNumber, supabase);
-  if (!user) return false;
-  // Store OTP
-  const { error } = await supabase.from('sms_users').update({
-    verification_code: code,
-    verification_expires: expires.toISOString()
-  }).eq('id', user.id);
+  if (!user) return { success: false, error: 'otp_failed' };
+
+  const normalized = normalizePhoneNumber(phoneNumber);
+  if (!normalized) return { success: false, error: 'otp_failed' };
+
+  const { data, error } = await supabase.rpc('request_otp', { p_phone_e164: normalized });
   if (error) {
-    console.error('Error storing OTP:', error);
-    return false;
+    const message = error?.message || '';
+    const code = error?.code || '';
+    if (code === 'P0001' || code === '42501' || /OTP not configured/i.test(message)) {
+      console.error('OTP service unavailable:', error);
+      return { success: false, error: 'otp_unavailable' };
+    }
+    console.error('request_otp RPC failed:', error);
+    return { success: false, error: 'otp_failed' };
   }
-  // Send SMS
-  await sendSMS(phoneNumber, `Your ScribeTok code: ${code}\n\nEnter: /verify ${code}`);
-  return true;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.success || !row?.code) {
+    console.warn('request_otp returned failure:', row);
+    return { success: false, error: 'otp_failed' };
+  }
+
+  await sendSMS(normalized, `Your ScribeTok code: ${row.code}\n\nEnter: /verify ${row.code}`);
+  return { success: true };
 }
 async function verifyOTP(phoneNumber, code, supabase) {
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
-  const { data: user, error } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone).eq('verification_code', code).gt('verification_expires', new Date().toISOString()).single();
-  if (!user || error) {
-    return {
-      success: false
-    };
-  }
-  // Generate session token
-  const sessionToken = generateSessionToken();
-  const sessionExpires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
-  {
-    const { error: updateError } = await supabase.from('sms_users').update({
-    phone_verified: true,
-    session_token: sessionToken,
-    session_expires: sessionExpires.toISOString(),
-    verification_code: null,
-    verification_expires: null
-  }).eq('id', user.id);
-    if (updateError) {
-      console.error('Error updating SMS user after OTP verification:', updateError);
+  if (!normalizedPhone) return { success: false };
+
+  const { data, error } = await supabase.rpc('verify_otp', {
+    p_phone_e164: normalizedPhone,
+    p_code: code
+  });
+  if (error) {
+    const message = error?.message || '';
+    const errorCode = error?.code || '';
+    if (errorCode === 'P0001' || errorCode === '42501' || /OTP not configured/i.test(message)) {
+      console.error('OTP service unavailable:', error);
+      return { success: false, error: 'otp_unavailable' };
     }
+    console.error('verify_otp RPC failed:', error);
+    return { success: false };
   }
+  const ok = Boolean(data?.success);
+  if (!ok) return { success: false };
+
+  // Fetch user id for existing API shape
+  const { data: user } = await supabase.from('sms_users').select('id').eq('phone_number', normalizedPhone).single();
   return {
     success: true,
-    sessionToken,
-    userId: user.id
+    sessionToken: data.session_token,
+    userId: user?.id
   };
 }
 // Background polling that respects 409 Not Ready from backend and avoids double sends
@@ -430,6 +443,7 @@ Deno.serve(async (req)=>{
 /tldr - AI summary of your latest transcript
 /quote - Get the best quote from latest video
 /full - See full transcript of latest video
+/reset - Reset your current chat thread
 /referral - Get your referral link for free credits
 /feedback [message] - Send feedback to improve ScribeTok
 
@@ -443,9 +457,12 @@ Just text any TikTok/YouTube link to save the good stuff!`);
   }
   // Login command - send OTP
   if (Body.trim().toLowerCase() === '/login') {
-    const success = await sendOTP(From, supabase);
-    if (success) {
+    const result = await sendOTP(From, supabase);
+    if (result?.success) {
       return sendTwilioResponse('📱 Check your texts! Enter the 6-digit code like this:\n\n/verify 123456');
+    }
+    if (result?.error === 'otp_unavailable') {
+      return sendTwilioResponse('⚠️ SMS login is temporarily unavailable. Please try again later.');
     } else {
       return sendTwilioResponse('❌ Error sending verification code. Try again later.');
     }
@@ -459,6 +476,9 @@ Just text any TikTok/YouTube link to save the good stuff!`);
     const result = await verifyOTP(From, code, supabase);
     if (result.success) {
       return sendTwilioResponse('✅ Verified! You can now:\n\n💻 Access web: https://scribetok.com/login\n📱 Use /profile to see your stats\n🎥 Text video links for transcripts');
+    }
+    if (result.error === 'otp_unavailable') {
+      return sendTwilioResponse('⚠️ SMS login is temporarily unavailable. Please try again later.');
     } else {
       return sendTwilioResponse('❌ Invalid or expired code. Try /login to get a new one.');
     }
@@ -748,6 +768,34 @@ ${transcript}
     }
   }
 
+  // Reset chat command
+  if (Body.trim().toLowerCase() === '/reset') {
+    try {
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat/reset`;
+      const resetResponse = await fetch(renderApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
+        },
+        body: JSON.stringify({
+          phone: normalizePhoneNumber(From)
+        })
+      });
+
+      if (resetResponse.ok) {
+        return sendTwilioResponse('✅ Chat reset. Ask a new question whenever you\'re ready.');
+      }
+      console.error('Chat reset failed:', resetResponse.status, await resetResponse.text());
+      return sendTwilioResponse('❌ Couldn\'t reset chat right now. Try again later.');
+    } catch (error) {
+      console.error('Chat reset error:', error);
+      return sendTwilioResponse('❌ Couldn\'t reset chat right now. Try again later.');
+    }
+  }
+
   // Quote command - get the best quote from latest video
   if (Body.trim().toLowerCase() === '/quote') {
     try {
@@ -790,7 +838,40 @@ ${transcript}
   const urlRegex = /(https?:\/\/[^\s]+)/i;
   const match = Body.trim().match(urlRegex);
   if (!match) {
-    return sendTwilioResponse('👀 That doesn\'t look like a link. Try again or type /help.');
+    try {
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat`;
+      const chatResponse = await fetch(renderApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
+        },
+        body: JSON.stringify({
+          phone: normalizePhoneNumber(From),
+          message: Body.trim()
+        })
+      });
+
+      if (chatResponse.ok) {
+        const result = await chatResponse.json();
+        return sendTwilioResponse(result.answer || 'I\'m not sure how to answer that.');
+      }
+
+      if (chatResponse.status === 404) {
+        return sendTwilioResponse('📄 No completed transcripts found yet. Send a video link first!');
+      }
+      if (chatResponse.status === 409) {
+        return sendTwilioResponse('⏳ Your latest transcript is still processing. Try again in a moment.');
+      }
+
+      console.error('Chat API failed:', chatResponse.status, await chatResponse.text());
+      return sendTwilioResponse('👀 That doesn\'t look like a link. Try again or type /help.');
+    } catch (error) {
+      console.error('Chat error:', error);
+      return sendTwilioResponse('👀 That doesn\'t look like a link. Try again or type /help.');
+    }
   }
   // Use the first matched URL
   const url = match[0];

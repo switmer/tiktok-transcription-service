@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 # Conditional Twilio import with fallback
@@ -106,7 +106,7 @@ class SMSHandler:
             # This is the source of truth for SMS-created tasks and avoids relying on transcript_jobs.
             transcriptions_response = await asyncio.to_thread(
                 lambda: supabase.table('transcriptions')
-                                .select("task_id, title, transcript, quote, tldr, status, created_at, url, platform")
+                                .select("task_id, title, description, transcript, quote, tldr, status, created_at, url, platform")
                                 .eq('user_phone', phone_number)
                                 .eq('status', 'completed')
                                 .order('created_at', desc=True)
@@ -806,13 +806,19 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         
         # Fallback: Generate fresh if stored data not available
         transcript_text = transcriptions.get('transcript', '')
+        title = transcriptions.get('title', '')
+        description = transcriptions.get('description', '')
         if not transcript_text:
             return "🧠 Transcript not ready yet or no content found. Try again in a moment!"
         
         try:
             logger.info("Stored quote+TLDR not found, generating fresh")
             # Generate TLDR using updated prompt
-            tldr_result = await SMSHandler.generate_summary(transcript_text)
+            tldr_result = await SMSHandler.generate_summary(
+                transcript_text,
+                title=title,
+                description=description
+            )
             
             # Add footer with link to full transcript
             footer = f"\n\n📖 Full transcript? /full" + (f"\n🔗 Share: https://share.scribetok.com/v/{task_id}" if task_id else "")
@@ -824,31 +830,205 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
             return "🧠 Too long, didn't watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!"
     
     @staticmethod
-    async def generate_summary(transcript_text: str) -> str:
+    def _truncate_text(text: str, limit: int) -> str:
+        if not text:
+            return ""
+        return text[:limit] + "..." if len(text) > limit else text
+
+    @staticmethod
+    def _build_summary_context(title: str, description: str, transcript_text: str) -> str:
+        parts = []
+        if title:
+            parts.append(f"TITLE:\n{SMSHandler._truncate_text(title.strip(), 200)}")
+        if description:
+            parts.append(f"DESCRIPTION:\n{SMSHandler._truncate_text(description.strip(), 800)}")
+        if transcript_text:
+            parts.append(f"TRANSCRIPT:\n{SMSHandler._truncate_text(transcript_text.strip(), 1500)}")
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _build_chat_context(
+        title: str,
+        description: str,
+        transcript_text: str,
+        quote: str = "",
+        tldr_list: Optional[list] = None,
+        conversation_summary: str = "",
+        message_history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        parts = []
+        if title:
+            parts.append(f"TITLE:\n{SMSHandler._truncate_text(title.strip(), 200)}")
+        if description:
+            parts.append(f"DESCRIPTION:\n{SMSHandler._truncate_text(description.strip(), 800)}")
+        if quote:
+            parts.append(f"QUOTE:\n{SMSHandler._truncate_text(quote.strip(), 200)}")
+        if tldr_list:
+            tldr_text = "\n".join([f"- {item}" for item in tldr_list if item])
+            if tldr_text:
+                parts.append(f"TLDR:\n{SMSHandler._truncate_text(tldr_text, 600)}")
+        if conversation_summary:
+            parts.append(f"CONVERSATION SUMMARY:\n{SMSHandler._truncate_text(conversation_summary.strip(), 600)}")
+        if message_history:
+            formatted_history = SMSHandler._format_message_history(message_history, 1200)
+            if formatted_history:
+                parts.append(f"RECENT MESSAGES:\n{formatted_history}")
+        if transcript_text:
+            parts.append(f"TRANSCRIPT:\n{SMSHandler._truncate_text(transcript_text.strip(), 1500)}")
+        return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _format_message_history(messages: List[Dict[str, str]], max_chars: int) -> str:
+        if not messages:
+            return ""
+        lines = []
+        for message in messages:
+            role = message.get("role", "user")
+            content = message.get("content", "")
+            if not content:
+                continue
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"{label}: {content.strip()}")
+        history = "\n".join(lines)
+        return SMSHandler._truncate_text(history, max_chars)
+
+    @staticmethod
+    async def generate_summary(transcript_text: str, title: str = "", description: str = "") -> str:
         """Generate summary using Claude API (preferred) with OpenAI fallback"""
         try:
+            context_text = SMSHandler._build_summary_context(title, description, transcript_text)
             # Try Claude first (Anthropic API)
             anthropic_key = os.getenv("ANTHROPIC_API_KEY")
             if anthropic_key:
-                return await SMSHandler._generate_claude_summary(transcript_text, anthropic_key)
+                return await SMSHandler._generate_claude_summary(context_text, anthropic_key)
             
             # Fallback to OpenAI
             openai_key = os.getenv("OPENAI_API_KEY")
             if openai_key:
-                return await SMSHandler._generate_openai_summary(transcript_text, openai_key)
+                return await SMSHandler._generate_openai_summary(context_text, openai_key)
             
             # Final fallback to simple truncation
             logger.warning("No AI API keys found, using simple summary")
-            words = transcript_text.split()[:30]
-            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 30 else ''}"
+            fallback_source = transcript_text or description or title
+            words = fallback_source.split()[:30]
+            return f"Summary: {' '.join(words)}{'...' if len(fallback_source.split()) > 30 else ''}"
             
         except Exception as e:
             logger.error(f"Error generating summary: {str(e)}")
-            words = transcript_text.split()[:30]
-            return f"Summary: {' '.join(words)}{'...' if len(transcript_text.split()) > 30 else ''}"
+            fallback_source = transcript_text or description or title
+            words = fallback_source.split()[:30]
+            return f"Summary: {' '.join(words)}{'...' if len(fallback_source.split()) > 30 else ''}"
+
+    @staticmethod
+    def _clip_answer(answer: str, max_chars: int) -> str:
+        if not answer:
+            return ""
+        compact = " ".join(answer.strip().split())
+        if len(compact) <= max_chars:
+            return compact
+        trimmed = compact[:max_chars].rstrip()
+        if " " in trimmed:
+            trimmed = trimmed.rsplit(" ", 1)[0]
+        return trimmed + "..."
+
+    @staticmethod
+    async def generate_answer(
+        question: str,
+        transcript_text: str,
+        title: str = "",
+        description: str = "",
+        quote: str = "",
+        tldr_list: Optional[list] = None,
+        max_chars: int = 360,
+        conversation_summary: str = "",
+        message_history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """Answer a user question using transcript context."""
+        question = (question or "").strip()
+        if not question:
+            return ""
+        context_text = SMSHandler._build_chat_context(
+            title,
+            description,
+            transcript_text,
+            quote=quote,
+            tldr_list=tldr_list,
+            conversation_summary=conversation_summary,
+            message_history=message_history
+        )
+        try:
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                answer = await SMSHandler._generate_claude_answer(
+                    question,
+                    context_text,
+                    max_chars,
+                    anthropic_key
+                )
+                return SMSHandler._clip_answer(answer, max_chars)
+
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if openai_key:
+                answer = await SMSHandler._generate_openai_answer(
+                    question,
+                    context_text,
+                    max_chars,
+                    openai_key
+                )
+                return SMSHandler._clip_answer(answer, max_chars)
+
+            logger.warning("No AI API keys found, using fallback answer")
+            fallback_source = transcript_text or description or title
+            words = fallback_source.split()[:45]
+            return SMSHandler._clip_answer(" ".join(words), max_chars)
+
+        except Exception as e:
+            logger.error(f"Error generating answer: {str(e)}")
+            fallback_source = transcript_text or description or title
+            words = fallback_source.split()[:45]
+            return SMSHandler._clip_answer(" ".join(words), max_chars)
+
+    @staticmethod
+    async def generate_chat_summary(
+        previous_summary: str,
+        recent_messages: List[Dict[str, str]],
+        max_chars: int = 600
+    ) -> str:
+        """Update the running chat summary using recent messages."""
+        history_text = SMSHandler._format_message_history(recent_messages, 1200)
+        if not history_text:
+            return previous_summary or ""
+        try:
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                summary = await SMSHandler._generate_claude_chat_summary(
+                    previous_summary,
+                    history_text,
+                    max_chars,
+                    anthropic_key
+                )
+                return SMSHandler._truncate_text(summary, max_chars)
+
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if openai_key:
+                summary = await SMSHandler._generate_openai_chat_summary(
+                    previous_summary,
+                    history_text,
+                    max_chars,
+                    openai_key
+                )
+                return SMSHandler._truncate_text(summary, max_chars)
+
+            logger.warning("No AI API keys found, using fallback summary")
+            fallback = (previous_summary + " " + history_text).strip()
+            return SMSHandler._truncate_text(fallback, max_chars)
+        except Exception as e:
+            logger.error(f"Error generating chat summary: {str(e)}")
+            fallback = (previous_summary + " " + history_text).strip()
+            return SMSHandler._truncate_text(fallback, max_chars)
     
     @staticmethod
-    async def _generate_claude_summary(transcript_text: str, api_key: str) -> str:
+    async def _generate_claude_summary(context_text: str, api_key: str) -> str:
         """Generate summary using Claude API"""
         try:
             import httpx
@@ -870,6 +1050,7 @@ Your job is to pull out what's actually worth remembering from this video:
 1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
 2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights
 3. Write like you're texting a friend, not writing a report
+4. Use TITLE/DESCRIPTION for context and names, but trust TRANSCRIPT if anything conflicts
 
 Format your response EXACTLY like this:
 
@@ -880,9 +1061,9 @@ Format your response EXACTLY like this:
 - Key insight #2 (actionable if possible)  
 - Key insight #3 (if there is one)
 
-Transcript:
+Content:
 \"\"\"
-{transcript_text[:1500]}
+{context_text}
 \"\"\""""
 
             data = {
@@ -906,9 +1087,103 @@ Transcript:
         except Exception as e:
             logger.error(f"Claude API error: {str(e)}")
             raise e
+
+    @staticmethod
+    async def _generate_claude_answer(question: str, context_text: str, max_chars: int, api_key: str) -> str:
+        """Generate a short answer using Claude API."""
+        try:
+            import httpx
+
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": api_key,
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+
+            prompt = f"""You answer questions about a video transcript.
+
+Rules:
+- Use the content below as the source of truth.
+- If the answer isn't in the content, say you can't tell from this video.
+- Keep the answer under {max_chars} characters.
+- Use plain text, no emojis.
+
+Question:
+{question}
+
+Content:
+\"\"\"
+{context_text}
+\"\"\"
+
+Answer:"""
+
+            data = {
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+                return result["content"][0]["text"].strip()
+        except Exception as e:
+            logger.error(f"Claude API error (answer): {str(e)}")
+            raise e
+
+    @staticmethod
+    async def _generate_claude_chat_summary(
+        previous_summary: str,
+        history_text: str,
+        max_chars: int,
+        api_key: str
+    ) -> str:
+        """Generate a running chat summary using Claude API."""
+        try:
+            import httpx
+
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": api_key,
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+
+            prompt = f"""You maintain a short running summary of a chat about a video transcript.
+
+Rules:
+- Keep summary under {max_chars} characters.
+- Preserve key user intent, preferences, and unresolved questions.
+- Be concise; no bullets if possible.
+
+Previous summary:
+{previous_summary}
+
+Recent messages:
+{history_text}
+
+Updated summary:"""
+
+            data = {
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+                return result["content"][0]["text"].strip()
+        except Exception as e:
+            logger.error(f"Claude API error (summary): {str(e)}")
+            raise e
     
     @staticmethod
-    async def _generate_openai_summary(transcript_text: str, api_key: str) -> str:
+    async def _generate_openai_summary(context_text: str, api_key: str) -> str:
         """Generate summary using OpenAI API"""
         try:
             from openai import OpenAI
@@ -921,6 +1196,7 @@ Your job is to pull out what's actually worth remembering from this video:
 1. Find the ONE most quotable, shareable line - something that stands alone and makes people think "that's so true" or want to share it
 2. Create a "too long, didn't watch" (TLDR) summary in 2-3 bullet points that captures the key insights
 3. Write like you're texting a friend, not writing a report
+4. Use TITLE/DESCRIPTION for context and names, but trust TRANSCRIPT if anything conflicts
 
 Format your response EXACTLY like this:
 
@@ -931,9 +1207,9 @@ Format your response EXACTLY like this:
 - Key insight #2 (actionable if possible)  
 - Key insight #3 (if there is one)
 
-Transcript:
+Content:
 \"\"\"
-{transcript_text[:1500]}
+{context_text}
 \"\"\"
 
 Remember: Quote + TLDR format only, be conversational and focus on what's actually worth saving."""
@@ -949,6 +1225,83 @@ Remember: Quote + TLDR format only, be conversational and focus on what's actual
             
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
+            raise e
+
+    @staticmethod
+    async def _generate_openai_answer(question: str, context_text: str, max_chars: int, api_key: str) -> str:
+        """Generate a short answer using OpenAI API."""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+
+            prompt = f"""You answer questions about a video transcript.
+
+Rules:
+- Use the content below as the source of truth.
+- If the answer isn't in the content, say you can't tell from this video.
+- Keep the answer under {max_chars} characters.
+- Use plain text, no emojis.
+
+Question:
+{question}
+
+Content:
+\"\"\"
+{context_text}
+\"\"\"
+
+Answer:"""
+
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.5
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            logger.error(f"OpenAI API error (answer): {str(e)}")
+            raise e
+
+    @staticmethod
+    async def _generate_openai_chat_summary(
+        previous_summary: str,
+        history_text: str,
+        max_chars: int,
+        api_key: str
+    ) -> str:
+        """Generate a running chat summary using OpenAI API."""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+
+            prompt = f"""You maintain a short running summary of a chat about a video transcript.
+
+Rules:
+- Keep summary under {max_chars} characters.
+- Preserve key user intent, preferences, and unresolved questions.
+- Be concise; no bullets if possible.
+
+Previous summary:
+{previous_summary}
+
+Recent messages:
+{history_text}
+
+Updated summary:"""
+
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3
+            )
+
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"OpenAI API error (summary): {str(e)}")
             raise e
     
     @staticmethod
