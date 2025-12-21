@@ -45,313 +45,154 @@ class DiscoveryListResponse(BaseModel):
 
 @router.get(
     "/trending",
-    response_model=DiscoveryListResponse,
+    response_model=List[DiscoveryResponse],
     tags=["Content Discovery"],
-    description="Get trending public transcriptions. Returns a list of the most popular recent transcriptions with full metadata for each.",
-    responses={
-        200: {
-            "description": "Successful Response",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "tasks": [
-                            {
-                                "task_id": "550e8400-e29b-41d4-a716-446655440000",
-                                "status": "completed",
-                                "title": "Comedy Skit - Banana Phone",
-                                "video_id": "7526401258786245902",
-                                "duration": 115,
-                                "like_count": 7230,
-                                "comment_count": 183,
-                                "share_count": 27,
-                                "play_count": 94403,
-                                "platform": "tiktok",
-                                "author": {
-                                    "nickname": "BananaGuy",
-                                    "unique_id": "bananaguy89"
-                                },
-                                "thumbnail_url": "https://cdn.tiktok.com/thumb.jpg",
-                                "created_at": "2024-07-21T10:15:00Z"
-                            }
-                        ]
-                    }
-                }
-            }
-        },
-        422: {
-            "description": "Validation Error",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "InvalidCategory": {
-                            "value": {
-                                "detail": [
-                                    {"loc": ["query", "category"], "msg": "Invalid category", "type": "value_error.category"}
-                                ]
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        404: {
-            "description": "No trending transcriptions found",
-            "content": {"application/json": {"example": {"detail": "No trending transcriptions found"}}}
-        },
-        500: {
-            "description": "Server error",
-            "content": {"application/json": {"example": {"detail": "Database error retrieving trending transcriptions"}}}
-        }
-    }
+    description="Get trending public transcriptions with full metadata for frontend rendering.",
 )
 async def get_trending_transcriptions(
     time_window: Optional[str] = "week",  # week, month, all
     category: Optional[str] = None,
     limit: int = 10
 ):
-    """Get trending public transcriptions."""
+    """Get trending public transcriptions with full data for TranscriptionCard."""
     try:
         if supabase is None:
             logger.error("Cannot get trending: Supabase client not initialized")
-            # Return empty list instead of error
-            logger.info("Returning empty list due to missing Supabase client")
             return []
 
         logger.info(f"Fetching trending transcriptions: time_window={time_window}, category={category}, limit={limit}")
-        
+
         try:
-            # Build a simple query first to check schema
-            response = await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .select('*')
-                        .limit(1)
-                        .execute()
-            )
-            
-            logger.info(f"Schema check response: {len(response.data) if response.data else 0} rows")
-            
-            # If we can't get any data, return empty list
-            if not response.data:
-                logger.info("No data found in transcriptions table, returning empty list")
-                return []
-                
-            # Build the base query - removed visibility filter
+            # Build query to get completed transcriptions with all fields
             query = supabase.table('transcriptions') \
                         .select('*') \
+                        .eq('status', 'completed') \
                         .limit(limit)
-                            
-            # Add view_count ordering if the column exists in the sample data
-            sample_row = response.data[0] if response.data else {}
-            if 'view_count' in sample_row:
-                query = query.order('view_count', desc=True)
-                logger.info("Using view_count for ordering")
-            else:
-                query = query.order('created_at', desc=True)
-                logger.info("Using created_at for ordering (view_count not found)")
 
-            # Add category filter if specified and category exists in schema
-            if category and 'category' in sample_row:
+            # Order by like_count (engagement) for trending, fallback to view_count, then created_at
+            query = query.order('like_count', desc=True, nullsfirst=False)
+
+            # Add category filter if specified
+            if category:
                 query = query.eq('category', category)
                 logger.info(f"Added category filter: {category}")
 
-            # Add time window filter if created_at exists in schema
-            if time_window != "all" and 'created_at' in sample_row:
+            # Add time window filter
+            if time_window != "all":
                 days = 7 if time_window == "week" else 30
                 cutoff = datetime.now() - timedelta(days=days)
                 query = query.gte('created_at', cutoff.isoformat())
                 logger.info(f"Added time filter: >= {cutoff.isoformat()}")
 
-            response = await asyncio.to_thread(query.execute)
-            logger.info(f"Query returned {len(response.data) if response.data else 0} rows")
-            
-            # Process the response to match the model
-            result = []
-            for item in response.data:
-                try:
-                    # Check required fields exist and provide defaults if needed
-                    entry = {
-                        "task_id": item.get("task_id", ""),
-                        "title": item.get("title", "Untitled"),
-                        "video_id": item.get("video_id"),
-                        "thumbnail_url": item.get("thumbnail_url"),
-                        "view_count": item.get("view_count", 0),
-                        "category": item.get("category"),
-                        "tags": item.get("tags", []),
-                        "created_at": item.get("created_at", datetime.now().isoformat())
-                    }
-                    result.append(entry)
-                except Exception as e:
-                    logger.warning(f"Skipping item due to error: {str(e)}")
-                    
-            return result
-            
+            response = await asyncio.to_thread(lambda: query.execute())
+            logger.info(f"Trending query returned {len(response.data) if response.data else 0} rows")
+
+            # Return full transcription data for frontend compatibility
+            return response.data if response.data else []
+
         except Exception as e:
-            # If any error occurs with the query, log and return empty list
-            logger.error(f"Error executing query: {str(e)}")
+            logger.error(f"Error executing trending query: {str(e)}")
             return []
-            
+
     except Exception as e:
         logger.error(f"Error getting trending transcriptions: {str(e)}", exc_info=True)
-        # Return empty list instead of throwing an error
         return []
 
-@router.get("/similar/{task_id}")
+@router.get("/similar/{task_id}", response_model=List[DiscoveryResponse])
 async def get_similar_transcriptions(
     task_id: str,
     limit: int = 5
 ):
-    """Get similar transcriptions based on tags and category."""
+    """Get similar transcriptions with full data for TranscriptionCard."""
     try:
         if supabase is None:
             logger.error(f"Cannot get similar transcriptions: Supabase client not initialized")
-            # Return empty list instead of error
             return []
 
-        # Try to get source transcription
+        # Get source transcription to find category/tags
         try:
             source = await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .select('tags, category')
-                        .eq('task_id', task_id)
-                        .single()
-                        .execute()
+                lambda: supabase.table('transcriptions')
+                                .select('tags, category')
+                                .eq('task_id', task_id)
+                                .single()
+                                .execute()
             )
-            
+
             if not source.data:
                 logger.warning(f"Source transcription not found: {task_id}")
                 return []
-                
+
         except Exception as e:
             logger.error(f"Error getting source transcription: {str(e)}")
             return []
 
-        # Build query for similar content - removed visibility filter
         try:
+            # Build query for similar completed content
             query = supabase.table('transcriptions') \
                            .select('*') \
-                           .neq('task_id', task_id)  # Exclude source
+                           .eq('status', 'completed') \
+                           .neq('task_id', task_id) \
+                           .order('like_count', desc=True, nullsfirst=False) \
+                           .limit(limit)
 
-            # Add category and tag filters if available
+            # Add category filter if available
             if source.data.get('category'):
                 query = query.eq('category', source.data['category'])
                 logger.info(f"Added category filter: {source.data['category']}")
-            
-            if source.data.get('tags') and isinstance(source.data['tags'], list) and len(source.data['tags']) > 0:
-                # Try to add tags filter, but don't fail if not supported
-                try:
-                    query = query.contains('tags', source.data['tags'])
-                    logger.info(f"Added tags filter: {source.data['tags']}")
-                except Exception as e:
-                    logger.warning(f"Failed to add tags filter: {str(e)}")
 
-            # Try to order by view_count first, fall back to created_at
-            try:
-                query = query.order('view_count', desc=True)
-                logger.info("Using view_count for ordering")
-            except:
-                query = query.order('created_at', desc=True)
-                logger.info("Using created_at for ordering")
-                    
-            response = await asyncio.to_thread(
-                lambda: query.limit(limit).execute()
-            )
-            
-            # Process the response to match the model
-            result = []
-            for item in response.data:
-                try:
-                    entry = {
-                        "task_id": item.get("task_id", ""),
-                        "title": item.get("title", "Untitled"),
-                        "video_id": item.get("video_id"),
-                        "thumbnail_url": item.get("thumbnail_url"),
-                        "view_count": item.get("view_count", 0),
-                        "category": item.get("category"),
-                        "tags": item.get("tags", []),
-                        "created_at": item.get("created_at", datetime.now().isoformat())
-                    }
-                    result.append(entry)
-                except Exception as e:
-                    logger.warning(f"Skipping item due to error: {str(e)}")
-                    
-            return result
-            
+            response = await asyncio.to_thread(query.execute)
+            logger.info(f"Similar query returned {len(response.data) if response.data else 0} rows")
+
+            # Return full transcription data for frontend compatibility
+            return response.data if response.data else []
+
         except Exception as e:
             logger.error(f"Error querying similar transcriptions: {str(e)}")
             return []
 
     except Exception as e:
         logger.error(f"Error getting similar transcriptions: {str(e)}", exc_info=True)
-        # Return empty list instead of error
         return []
 
-@router.get("/recent")
+@router.get("/recent", response_model=List[DiscoveryResponse])
 async def get_recent_transcriptions(
     category: Optional[str] = None,
     limit: int = 10
 ):
-    """Get recently added public transcriptions."""
+    """Get recently added public transcriptions with full data for TranscriptionCard."""
     try:
         if supabase is None:
             logger.error("Cannot get recent: Supabase client not initialized")
-            # Return empty list instead of error
             return []
 
+        logger.info(f"Fetching recent transcriptions: category={category}, limit={limit}")
+
         try:
-            # Check schema first
-            sample = await asyncio.to_thread(
-                supabase.table('transcriptions')
-                        .select('*')
-                        .limit(1)
-                        .execute()
-            )
-            
-            if not sample.data:
-                logger.info("No data in transcriptions table, returning empty list")
-                return []
-                
-            # Build query now that we know table exists
+            # Build query to get completed transcriptions with all fields
             query = supabase.table('transcriptions') \
                            .select('*') \
+                           .eq('status', 'completed') \
                            .order('created_at', desc=True) \
                            .limit(limit)
 
-            # Add category filter if specified and column exists
-            sample_row = sample.data[0] if sample.data else {}
-            if category and 'category' in sample_row:
+            # Add category filter if specified
+            if category:
                 query = query.eq('category', category)
                 logger.info(f"Added category filter: {category}")
 
-            response = await asyncio.to_thread(query.execute)
+            response = await asyncio.to_thread(lambda: query.execute())
             logger.info(f"Recent query returned {len(response.data) if response.data else 0} rows")
-            
-            # Process the response to match the model
-            result = []
-            for item in response.data:
-                try:
-                    entry = {
-                        "task_id": item.get("task_id", ""),
-                        "title": item.get("title", "Untitled"),
-                        "video_id": item.get("video_id"),
-                        "thumbnail_url": item.get("thumbnail_url"),
-                        "view_count": item.get("view_count", 0),
-                        "category": item.get("category"),
-                        "tags": item.get("tags", []),
-                        "created_at": item.get("created_at", datetime.now().isoformat())
-                    }
-                    result.append(entry)
-                except Exception as e:
-                    logger.warning(f"Skipping item due to error: {str(e)}")
-                    
-            return result
-            
+
+            # Return full transcription data for frontend compatibility
+            return response.data if response.data else []
+
         except Exception as e:
             logger.error(f"Error querying recent transcriptions: {str(e)}")
             return []
 
     except Exception as e:
         logger.error(f"Error getting recent transcriptions: {str(e)}", exc_info=True)
-        # Return empty list instead of error
         return []
 
 @router.get("/categories", response_model=List[str])
