@@ -939,7 +939,7 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         description: str = "",
         quote: str = "",
         tldr_list: Optional[list] = None,
-        max_chars: int = 360,
+        max_chars: int = 280,
         conversation_summary: str = "",
         message_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
@@ -1106,7 +1106,8 @@ Content:
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Keep the answer under {max_chars} characters.
+- Keep it to 1-2 sentences under {max_chars} characters.
+- Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
 Question:
@@ -1239,7 +1240,8 @@ Remember: Quote + TLDR format only, be conversational and focus on what's actual
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Keep the answer under {max_chars} characters.
+- Keep it to 1-2 sentences under {max_chars} characters.
+- Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
 Question:
