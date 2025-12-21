@@ -1565,11 +1565,11 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             # Quote/TLDR
                             quote_tldr_result = {}
                             try:
-                    quote_tldr_result = transcriber.generate_quote_and_tldr(
-                        transcript_text,
-                        title=title or "",
-                        description=youtube_result.get('description') or ""
-                    )
+                                quote_tldr_result = transcriber.generate_quote_and_tldr(
+                                    transcript_text,
+                                    title=ytdlp_title or "",
+                                    description=""
+                                )
                             except Exception as e:
                                 logger.error(f"Failed to generate quote/TLDR (yt-dlp path) for task {task_id}: {e}")
                             # Update DB
