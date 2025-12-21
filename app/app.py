@@ -1480,13 +1480,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 
                 # Generate quote and TLDR for YouTube too
                 quote_tldr_result = {}
-            try:
-                fallback_title = tasks.get(task_id, {}).get("title", "")
-                quote_tldr_result = transcriber.generate_quote_and_tldr(
-                    transcript_text,
-                    title=fallback_title or "",
-                    description=""
-                )
+                try:
+                    quote_tldr_result = transcriber.generate_quote_and_tldr(
+                        transcript_text,
+                        title=title or "",
+                        description=youtube_result.get('description') or ""
+                    )
                     logger.info(f"Generated quote/TLDR for YouTube video {video_id}")
                 except Exception as e:
                     logger.warning(f"Failed to generate quote/TLDR for YouTube video: {str(e)}")
