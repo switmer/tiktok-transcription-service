@@ -440,6 +440,7 @@ Deno.serve(async (req)=>{
 /verify 123456 - Verify with code
 /profile - View your stats & credits
 /vault - View transcripts
+/chat [question] - Ask about your latest transcript
 /tldr - AI summary of your latest transcript
 /quote - Get the best quote from latest video
 /full - See full transcript of latest video
@@ -481,6 +482,46 @@ Just text any TikTok/YouTube link to save the good stuff!`);
       return sendTwilioResponse('⚠️ SMS login is temporarily unavailable. Please try again later.');
     } else {
       return sendTwilioResponse('❌ Invalid or expired code. Try /login to get a new one.');
+    }
+  }
+  // Chat command - ask a question about the latest transcript
+  if (Body.trim().toLowerCase().startsWith('/chat')) {
+    const question = Body.trim().substring(5).trim();
+    if (!question) {
+      return sendTwilioResponse('💬 Ask a question like:\n\n/chat What is the main point?');
+    }
+    try {
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat`;
+      const chatResponse = await fetch(renderApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
+        },
+        body: JSON.stringify({
+          phone: normalizePhoneNumber(From),
+          message: question
+        })
+      });
+
+      if (chatResponse.ok) {
+        const result = await chatResponse.json();
+        return sendTwilioResponse(result.answer || 'I\'m not sure how to answer that.');
+      }
+      if (chatResponse.status === 404) {
+        return sendTwilioResponse('📄 No completed transcripts found yet. Send a video link first!');
+      }
+      if (chatResponse.status === 409) {
+        return sendTwilioResponse('⏳ Your latest transcript is still processing. Try again in a moment.');
+      }
+
+      console.error('Chat API failed:', chatResponse.status, await chatResponse.text());
+      return sendTwilioResponse('❌ Couldn\'t answer that right now. Try again later.');
+    } catch (error) {
+      console.error('Chat command error:', error);
+      return sendTwilioResponse('❌ Couldn\'t answer that right now. Try again later.');
     }
   }
   // Profile command
