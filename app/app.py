@@ -25,11 +25,7 @@ import tempfile
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Request, Query, Form
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
-from pydantic import field_validator
 from typing import Optional, Dict, Any, List, Tuple, Literal
 import uvicorn
 import httpx
@@ -42,7 +38,11 @@ import sys
 import numpy as np
 from functools import wraps
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-from supabase.client import create_client, Client
+try:
+    from supabase.client import create_client, Client
+except Exception:
+    create_client = None
+    Client = Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # Fix imports for deployment
@@ -54,6 +54,8 @@ try:
     from . import sms
     from .tiktok_service import tiktok_service
     from . import health_check
+    from .storage_utils import upload_thumbnail_to_supabase
+    from .core.paths import BASE_DIR, DOWNLOADS_DIR, static_dir, templates
 except ImportError:
     # Fall back to absolute imports (when running directly)
     import sys
@@ -67,6 +69,7 @@ except ImportError:
     from database import supabase
     from tiktok_service import tiktok_service
     from storage_utils import upload_thumbnail_to_supabase
+    from core.paths import BASE_DIR, DOWNLOADS_DIR, static_dir, templates
 
 # Import tiktok downloader directly
 try:
@@ -177,27 +180,8 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# ---------------------------------------------------------------------------
-# Templates & Static setup (paths relative to this file)
-# ---------------------------------------------------------------------------
-
-import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Jinja2 templates directory (e.g. app/templates)
-templates_dir = os.path.join(BASE_DIR, "templates")
-templates = Jinja2Templates(directory=templates_dir)
-
-# Static assets directory (e.g. app/static)
-static_dir = os.path.join(BASE_DIR, "static")
-# Ensure the directory exists (allows local dev & avoids Render crash)
-os.makedirs(static_dir, exist_ok=True)
 # Mount at /static so CSS/JS/images are served
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# Create a directory for downloads if it doesn't exist
-DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 # Initialize Supabase client
 supabase_url = os.getenv("SUPABASE_URL")
@@ -206,6 +190,9 @@ supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
 if not supabase_url or not supabase_key:
     logger.warning("Supabase URL or Service Key not found in environment variables. Database operations will fail.")
     supabase: Client | None = None
+elif create_client is None:
+    logger.error("Supabase client library unavailable; database operations disabled.")
+    supabase = None
 else:
     try:
         supabase: Client = create_client(supabase_url, supabase_key)
@@ -217,294 +204,25 @@ else:
 # Include discovery routes
 app.include_router(discovery.router)
 
-class TranscriptionRequest(BaseModel):
-    """Request model for video transcription"""
-    url: str = Field(..., 
-        description="TikTok or YouTube video URL to transcribe",
-        example="https://www.tiktok.com/@user/video/7526401258786245902"
-    )
-    callback_url: Optional[str] = Field(None,
-        description="Webhook URL to receive completion notification",
-        example="https://yourapp.com/webhook"
-    )
-    format: Optional[str] = Field("bestaudio/best",
-        description="Video/audio format preference for download"
-    )
-    output_template: Optional[str] = Field(None,
-        description="Custom output filename template"
-    )
-    user_phone: Optional[str] = Field(None,
-        description="Phone number for SMS notifications (for SMS-initiated requests)"
-    )
-    extract_audio: bool = Field(True,
-        description="Extract audio from video for transcription"
-    )
-    convert_to_mp3: bool = Field(False,
-        description="Convert audio to MP3 format"
-    )
-    save_thumbnail: bool = Field(True,
-        description="Save video thumbnail image"
-    )
-    extract_metadata: bool = Field(True,
-        description="Extract rich metadata (views, likes, creator info, etc.)"
-    )
-    perform_sentiment_analysis: bool = Field(False,
-        description="Analyze transcript sentiment (experimental)"
-    )
-    create_srt: bool = Field(False,
-        description="Generate SRT subtitle file"
-    )
-    proxy: Optional[str] = Field(None,
-        description="Proxy server URL for download",
-        example="http://proxy.example.com:8080"
-    )
-    api_key: Optional[str] = Field(None,
-        description="API key for authentication (can also use header)"
-    )
-    user_phone: Optional[str] = Field(None,
-        description="Phone number for SMS notifications and user tracking",
-        example="+1234567890"
-    )
+from .core.auth import validate_api_key, verify_api_key
+from .models.schemas import (
+    TranscriptionRequest,
+    TranscriptionResponse,
+    TaskListResponse,
+    SearchHit,
+    SearchResponse,
+    TranscriptChatRequest,
+    TranscriptChatResponse,
+    HealthCheckResponse,
+    SMSResponse,
+    AccountLinkResponse,
+    SmsChatRequest,
+    SmsChatResponse,
+    SmsChatResetResponse,
+    SmsChatResetRequest,
+    FetchCommentsRequest,
+)
 
-class TranscriptionResponse(BaseModel):
-    """Complete transcription task response with rich metadata"""
-    # Core Task Information
-    task_id: str = Field(..., example="550e8400-e29b-41d4-a716-446655440000")
-    status: str = Field(..., example="completed", pattern="^(pending|processing|completed|failed)$")
-    created_at: str = Field(..., example="2025-07-20T12:00:00Z")
-    error: Optional[str] = Field(None, example=None)
-    # Video Information
-    video_id: Optional[str] = Field(None, example="7526401258786245902")
-    title: Optional[str] = Field(None, example="Amazing TikTok Video")
-    description: Optional[str] = Field(None, example="Check out this amazing tech tutorial! #technology #viral")
-    duration: Optional[int] = Field(None, example=122)
-    platform: Optional[str] = Field(None, example="tiktok")
-    # Creator Information  
-    creator: Optional[str] = Field(None, example="Tech Guru")
-    uploader_url: Optional[str] = Field(None, example="https://tiktok.com/@techguru")
-    # Engagement Metrics
-    like_count: Optional[int] = Field(None, example=1500)
-    comment_count: Optional[int] = Field(None, example=89)
-    repost_count: Optional[int] = Field(None, example=234)
-    view_count: Optional[int] = Field(None, example=15)
-    # Media Assets
-    thumbnail_url: Optional[str] = Field(None, example="https://example.com/thumb.jpg")
-    video_url: Optional[str] = Field(None, example="https://cdn.tiktok.com/...")
-    thumbnail_local_path: Optional[str] = Field(None, example="d5911018-8ba2-4ca6-bebf-95e9994f3a2d/thumbnail.jpg")
-    # Deprecated (kept for compatibility)
-    thumbnail: Optional[str] = Field(None, description="Deprecated: Use thumbnail_url instead")
-    # Tags and Category
-    tags: Optional[list] = Field(None, example=["tech", "viral"])
-    category: Optional[str] = Field(None, example="technology")
-
-class TaskListResponse(BaseModel):
-    """Response model for task list endpoints"""
-    tasks: List[TranscriptionResponse] = Field(..., 
-        description="Array of transcription tasks"
-    )
-    total: Optional[int] = Field(None,
-        description="Total number of tasks",
-        example=156
-    )
-    limit: Optional[int] = Field(None,
-        description="Maximum results per page",
-        example=50
-    )
-    offset: Optional[int] = Field(None,
-        description="Number of results skipped",
-        example=0
-    )
-
-
-class SearchHit(BaseModel):
-    """Search hit result for public transcription search."""
-    task_id: str = Field(..., description="Transcription task id (UUID)")
-    title: Optional[str] = Field(None, description="Video title")
-    updated_at: Optional[str] = Field(None, description="Last updated timestamp")
-    rank: Optional[float] = Field(None, description="Relevance rank (higher is better)")
-    source: Optional[str] = Field(None, description="Which field matched: title|transcript")
-
-
-class SearchResponse(BaseModel):
-    """Response model for search endpoint."""
-    query: str = Field(..., description="Original query")
-    results: List[SearchHit] = Field(default_factory=list)
-    limit: int = Field(..., example=50)
-    offset: int = Field(..., example=0)
-
-class TranscriptChatRequest(BaseModel):
-    """Request model for transcript chat."""
-    message: str = Field(..., min_length=1, max_length=1000, description="User question about the transcript")
-    max_chars: Optional[int] = Field(360, ge=120, le=600, description="Maximum characters for the answer")
-
-class TranscriptChatResponse(BaseModel):
-    """Response model for transcript chat."""
-    task_id: str = Field(..., description="Transcription task id (UUID)")
-    answer: str = Field(..., description="Short answer based on transcript content")
-
-class HealthCheckResponse(BaseModel):
-    """Health check response model"""
-    status: str = Field(...,
-        description="Service status",
-        example="ok"
-    )
-    version: str = Field(...,
-        description="API version",
-        example="1.0.0"
-    )
-    timestamp: float = Field(...,
-        description="Server timestamp",
-        example=1753026086.24777
-    )
-    services: Dict[str, str] = Field(...,
-        description="Connected service statuses",
-        example={
-            "openai": "connected",
-            "supabase": "connected", 
-            "rapidapi": "connected"
-        }
-    )
-
-class SMSResponse(BaseModel):
-    """SMS operation response model"""
-    success: bool = Field(...,
-        description="Whether SMS operation succeeded",
-        example=True
-    )
-    message_sid: Optional[str] = Field(None,
-        description="Twilio message SID",
-        example="SM1234567890abcdef"
-    )
-    status: Optional[str] = Field(None,
-        description="Message delivery status",
-        example="queued"
-    )
-
-class AccountLinkResponse(BaseModel):
-    """Account linking response model"""
-    success: bool = Field(...,
-        description="Whether account linking succeeded",
-        example=True
-    )
-    auth_user_id: str = Field(...,
-        description="Supabase auth user ID",
-        example="550e8400-e29b-41d4-a716-446655440000"
-    )
-    linked_transcriptions: int = Field(...,
-        description="Number of transcriptions linked to account",
-        example=15
-    )
-    phone: str = Field(...,
-        description="Phone number",
-        example="+1234567890"
-    )
-    message: str = Field(...,
-        description="Success message",
-        example="Account created and 15 transcriptions linked"
-    )
-
-class SmsChatRequest(BaseModel):
-    """SMS chat request model"""
-    phone: str = Field(..., description="E.164 phone number")
-    message: str = Field(..., min_length=1, max_length=1000, description="User question")
-    max_chars: Optional[int] = Field(280, ge=120, le=600, description="Maximum characters for the answer")
-
-class SmsChatResponse(BaseModel):
-    """SMS chat response model"""
-    answer: str = Field(..., description="Short answer based on transcript content")
-    task_id: str = Field(..., description="Transcript task id used for context")
-    thread_id: str = Field(..., description="Conversation thread id")
-
-class SmsChatResetResponse(BaseModel):
-    """SMS chat reset response model"""
-    success: bool = Field(..., description="Whether reset succeeded")
-    closed_threads: int = Field(..., description="Number of threads closed")
-
-class SmsChatResetRequest(BaseModel):
-    """SMS chat reset request model"""
-    phone: str = Field(..., description="E.164 phone number")
-
-# --- API Key Validation ---
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False) # Use APIKeyHeader for header extraction
-
-async def validate_api_key(api_key: str = Depends(api_key_header)) -> str:
-    """Validate the API key against the Supabase api_keys table and return user_id."""
-    logger.info(f"Validating API key: {api_key[:4]}... (first 4 chars only for security)")
-    
-    if not api_key:
-        logger.warning("API key validation failed: Header X-API-Key is missing.")
-        raise HTTPException(status_code=403, detail="Missing API Key Header")
-        
-    if supabase is None:
-        logger.error("Cannot validate API key: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Error during API key validation")
-
-    try:
-        # Log the detailed query we're about to execute
-        logger.info(f"Executing Supabase query against api_keys table with api_key={api_key[:4]}... and is_active=True")
-        
-        # Build the query step by step - select just 'id' since user_id doesn't exist
-        query = supabase.table('api_keys')
-        logger.info(f"Step 1: Created query on table 'api_keys'")
-        
-        query = query.select('id')  # Changed from user_id to id
-        logger.info(f"Step 2: Added select('id')")
-        
-        query = query.eq('api_key', api_key)
-        logger.info(f"Step 3: Added eq('api_key', [masked])")
-        
-        query = query.eq('is_active', True)
-        logger.info(f"Step 4: Added eq('is_active', True)")
-        
-        query = query.limit(1)
-        logger.info(f"Step 5: Added limit(1)")
-        
-        logger.info(f"Step 6: About to execute query")
-        response = await asyncio.to_thread(query.execute)
-        
-        # Log response details but mask sensitive data
-        result_count = len(response.data) if response.data else 0
-        logger.info(f"Query response received: found {result_count} results")
-        if result_count > 0:
-            logger.info(f"Response data keys: {list(response.data[0].keys()) if response.data and response.data[0] else 'None'}")
-            
-        # Check if the key exists and is active
-        if response.data and len(response.data) > 0:
-            # Use API key's ID as user_id since that's what we have
-            if 'id' in response.data[0]:
-                api_key_id = response.data[0]['id'] # Extract id
-                logger.info(f"API key validated successfully, using key id as user_id: {api_key_id}")
-                return str(api_key_id) # Return the id as string to use as user_id
-            else:
-                logger.warning(f"API key validated but id missing in response data. Available keys: {list(response.data[0].keys())}")
-                # Provide a default user_id as fallback
-                return "default_user"
-        else:
-            logger.warning("API key validation failed: Invalid or inactive key provided.")
-            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
-    except Exception as e:
-        logger.error(f"Error during API key validation: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error during API key validation")
-
-# API key dependency
-def verify_api_key(x_api_key: str = Header(None)):
-    """Dependency for API key validation using environment variable fallback"""
-    # Handle potential None value from Header
-    if x_api_key is None:
-         logger.warning("API key validation failed: X-API-Key header missing.")
-         raise HTTPException(status_code=401, detail="X-API-Key header required")
-    
-    # Simple validation against environment variable API_KEYS
-    api_keys_env = os.getenv("API_KEYS", "").strip()
-    if api_keys_env:
-        valid_keys = [key.strip() for key in api_keys_env.split(",") if key.strip()]
-        if x_api_key not in valid_keys:
-            logger.warning("API key validation failed: Invalid API key provided.")
-            raise HTTPException(status_code=403, detail="Invalid API Key")
-    else:
-        logger.warning("No API_KEYS environment variable set, allowing all keys for development")
-    
-    return x_api_key
 
 @app.get("/", include_in_schema=False)
 async def root(ref: Optional[str] = None):
@@ -578,131 +296,7 @@ async def health_live():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Service not alive: {str(e)}")
 
-@app.post("/api/public/transcribe", response_model=TranscriptionResponse, tags=["Public Transcription"])
-async def transcribe(
-    request: TranscriptionRequest,
-    background_tasks: BackgroundTasks,
-    user_id: Optional[str] = None  # Made optional to support both authenticated and public requests
-) -> TranscriptionResponse:
-    """Start a new transcription task or return existing one."""
-    try:
-        # Initialize task (this will check for existing transcriptions)
-        # For SMS users, only use user_phone (not user_id since SMS users aren't in auth.users)
-        logger.info(f"Transcribe request: url={request.url}, user_phone={request.user_phone}")
-        task = await init_task(request.url, user_id, request.user_phone)
-        task_id = task['task_id'] # Extract task_id from the returned dict
-
-        # Get the task details - Ensure task_id is passed as a string
-        response = await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                            .select("*")
-                            .eq('task_id', str(task_id))  # Ensure task_id is a string
-                            .single()
-                            .execute()
-        )
-
-        if not response.data:
-            # This might indicate an issue with init_task not committing before this runs
-            # Or a race condition. Adding a small delay or re-checking might be needed
-            # For now, raise a 500 as the task should exist.
-            logger.error(f"Failed to retrieve task details immediately after creation for task_id: {task_id}")
-            raise HTTPException(status_code=500, detail="Failed to retrieve task details")
-
-        task_data = response.data
-
-        # If status is not completed, start processing
-        if task_data['status'] != 'completed':
-            # For YouTube URLs, try instant transcription first
-            if is_youtube_url(request.url):
-                logger.info(f"Attempting instant YouTube transcription for task {task_id}")
-                
-                try:
-                    youtube_result = transcriber.download_youtube_rapidapi(request.url)
-                    
-                    if youtube_result:
-                        # Update task with completed status and transcript
-                        await asyncio.to_thread(
-                            supabase.table('transcriptions')
-                                    .update({
-                                        'status': 'completed',
-                                        'video_id': youtube_result['video_id'],
-                                        'title': youtube_result['title'],
-                                        'description': youtube_result.get('description'),
-                                        'transcript': youtube_result['transcript'],
-                                        'platform': 'youtube',
-                                        'category': 'youtube-transcription',
-                                        'tags': ['sms-inbound', 'youtube'] if request.user_phone else ['youtube'],
-                                        'thumbnail_url': youtube_result.get('thumbnail_url'),
-                                        'duration': youtube_result.get('duration'),
-                                        'uploader': youtube_result.get('uploader'),
-                                        'channel': youtube_result.get('channel'),
-                                        'raw_metadata': youtube_result.get('metadata')
-                                    })
-                                    .eq('task_id', task_id)
-                                    .execute()
-                        )
-                        
-                        # Update task_data for response
-                        task_data['status'] = 'completed'
-                        task_data['video_id'] = youtube_result['video_id']
-                        task_data['title'] = youtube_result['title']
-                        task_data['description'] = youtube_result.get('description')
-                        task_data['platform'] = 'youtube'
-                        
-                        logger.info(f"YouTube instant transcription completed for task {task_id}")
-                    else:
-                        logger.warning(f"YouTube instant transcription failed for {task_id}, falling back to background processing")
-                        # Queue the background processing as fallback
-                        background_tasks.add_task(
-                            process_transcription_task,
-                            task_id,
-                            request.url,
-                            request.callback_url,
-                            request.proxy
-                        )
-                        logger.info(f"Task {task_id} queued for background processing (YouTube fallback)")
-                        
-                except Exception as e:
-                    logger.error(f"YouTube instant transcription error for {task_id}: {str(e)}")
-                    # Queue the background processing as fallback
-                    background_tasks.add_task(
-                        process_transcription_task,
-                        task_id,
-                        request.url,
-                        request.callback_url,
-                        request.proxy
-                    )
-                    logger.info(f"Task {task_id} queued for background processing (YouTube error fallback)")
-            else:
-                # Non-YouTube URLs: use background processing
-                background_tasks.add_task(
-                    process_transcription_task,
-                    task_id,
-                    request.url,
-                    request.callback_url,
-                    request.proxy
-                )
-                logger.info(f"Task {task_id} queued for background processing URL: {request.url}")
-        else:
-            logger.info(f"Returning existing transcription for URL: {request.url}")
-        
-        # Return the task response
-        return TranscriptionResponse(
-            task_id=task_id,
-            status=task_data['status'],
-            video_id=task_data.get('video_id'),
-            title=task_data.get('title'),
-            description=task_data.get('description'),
-            created_at=task_data['created_at'],
-            error=task_data.get('error'),
-            thumbnail=task_data.get('thumbnail_url'),
-            thumbnail_url=task_data.get('thumbnail_url'),
-            thumbnail_local_path=task_data.get('thumbnail_local_path')
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in transcribe endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to start transcription")
+# Public transcription endpoints moved to app/api/public.py
 
 @app.get("/api/tasks", response_model=TaskListResponse, tags=["Private Task Management"])
 async def list_tasks(api_key: str = Depends(verify_api_key)):
@@ -1459,6 +1053,16 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         original_video_url = task_response.data['url']
         user_phone = task_response.data.get('user_phone')  # Get user phone for SMS notifications
         logger.info(f"Processing task {task_id} with original URL from DB: {original_video_url}, SMS phone: {user_phone or 'none'}")
+
+        url_lower = (original_video_url or "").lower()
+        if "instagram.com" in url_lower:
+            platform_hint = "instagram"
+        elif "facebook.com" in url_lower or "fb.watch" in url_lower:
+            platform_hint = "facebook"
+        elif "youtube.com" in url_lower or "youtu.be" in url_lower:
+            platform_hint = "youtube"
+        else:
+            platform_hint = "tiktok"
         # -------------------------------------------------
         
         # Check if this is a YouTube URL for instant transcription
@@ -1630,6 +1234,14 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         if not audio_file or not video_id:
             logger.error(f"Download failed for task {task_id} using URL: {original_video_url}")
             await update_task_status(task_id, "failed", "Failed to download video")
+            if user_phone:
+                try:
+                    await sms.send_sms(
+                        user_phone,
+                        "❌ Sorry, we couldn't process that link. It may require login or be rate-limited. Try again later or text /help."
+                    )
+                except Exception as sms_error:
+                    logger.error(f"Failed to send SMS failure notice for task {task_id}: {sms_error}")
             return
             
         # Update task with initial download results
@@ -1716,7 +1328,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             'vcodec': metadata.get('vcodec'),
                             'acodec': metadata.get('acodec'),
                             'language': metadata.get('language') or 'english',
-                            'platform': 'tiktok' if 'tiktok' in (metadata.get('webpage_url', '') or original_video_url) else 'youtube'
+                            'platform': platform_hint
                         }
                     
                     # Clean up None values and convert to appropriate types
@@ -1857,7 +1469,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'user_phone': user_phone,  # Include user_phone for SMS notification check
                 'view_count': 1,  # Initialize view count for new videos
                 'visibility': 'public',  # Default visibility
-                'platform': 'tiktok',  # Default platform for this path
+                'platform': platform_hint,  # Default platform for this path
                 'language': 'english'  # Default language
             }
             
@@ -2070,7 +1682,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 📝 TLDR:
 {tldr_bullets}
 
-💬 /full for more • /tldr to regenerate
+💬 /full for more • /chat to ask
 🔗 share.scribetok.com/v/{task_id}
 💳 {credits_remaining if credits_remaining is not None else "credits unavailable"} left"""
         else:
@@ -2107,7 +1719,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 📝 TLDR:
 {fallback_bullets}
 
-💬 /full for more • /tldr to regenerate
+💬 /full for more • /chat to ask
 🔗 share.scribetok.com/v/{task_id}
 💳 {credits_remaining} left"""
             else:
@@ -2271,659 +1883,7 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         logger.error(f"Error initializing task: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Database error during task initialization")
 
-@app.get("/api/public/tasks/{task_id}", tags=["Public Transcription"])
-async def public_get_task(task_id: str):
-    """Get task status without requiring API key."""
-    if supabase is None:
-        logger.error(f"Cannot get task {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-        
-    try:
-        # Fetch task from Supabase.
-        #
-        # NOTE: This endpoint is used for status polling (e.g. Edge Functions) and must work
-        # for tasks in any status (pending/processing/completed). The `public_transcriptions`
-        # view is filtered to completed+public, so querying it here can cause 404s or schema
-        # mismatches. We query `transcriptions` directly and only select safe, non-PII fields.
-        response = await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
-                            .eq('task_id', task_id)
-                            .maybe_single()
-                            .execute()
-        )
-
-        # Check for errors during the query
-        if hasattr(response, 'error') and response.error:
-             logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error retrieving task")
-
-        # Check if task exists
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-            
-        # Map Supabase data to TranscriptionResponse
-        task_data = response.data
-        
-        # Extract data from raw_metadata if available
-        raw_meta = task_data.get('raw_metadata') if task_data.get('raw_metadata') else {}
-        raw_data = raw_meta.get('data', {}) if isinstance(raw_meta, dict) else {}
-        
-        # Extract original TikTok URL
-        original_tiktok_url = (
-            raw_meta.get('url') or  # From top-level raw_metadata
-            task_data.get('url') or  # From stored url column
-            None
-        )
-        
-        # Construct URL from video_id if still not available
-        if not original_tiktok_url:
-            video_id = task_data.get('video_id') or raw_data.get('id')
-            if video_id:
-                uploader = task_data.get('uploader') or raw_data.get('author', {}).get('unique_id')
-                if task_data.get('platform') == 'tiktok':
-                    original_tiktok_url = f"https://www.tiktok.com/@{uploader}/video/{video_id}" if uploader else f"https://www.tiktok.com/video/{video_id}"
-                elif task_data.get('platform') == 'youtube':
-                    original_tiktok_url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        # Extract values with priority: raw_metadata > task_data
-        def get_with_fallback(key, raw_key=None):
-            if raw_key and raw_data.get(raw_key):
-                return raw_data.get(raw_key)
-            return task_data.get(key)
-        
-        return TranscriptionResponse(
-            task_id=task_data['task_id'],
-            status=task_data['status'],
-            video_id=task_data.get('video_id') or raw_data.get('id'),
-            title=task_data.get('title') or raw_data.get('title'),
-            description=(
-                task_data.get('description')
-                or raw_meta.get('description')
-                or raw_meta.get('title')
-                or raw_data.get('description')
-                or raw_data.get('title')
-            ),
-            created_at=task_data['created_at'],
-            error=task_data.get('error'),
-            thumbnail=task_data.get('thumbnail_url'),
-            thumbnail_url=task_data.get('thumbnail_url') or raw_meta.get('thumbnail_url') or raw_data.get('cover'),
-            thumbnail_local_path=task_data.get('thumbnail_local_path'),
-            video_url=original_tiktok_url,
-            like_count=get_with_fallback('like_count', 'digg_count'),
-            comment_count=get_with_fallback('comment_count', 'comment_count'),
-            repost_count=get_with_fallback('repost_count', 'share_count'),
-            view_count=get_with_fallback('view_count', 'play_count'),
-            duration=get_with_fallback('duration', 'duration'),
-            platform=task_data.get('platform') or 'tiktok',
-            creator=task_data.get('uploader') or raw_data.get('author', {}).get('unique_id'),
-            channel=task_data.get('channel') or raw_data.get('author', {}).get('unique_id'),
-            uploader_url=task_data.get('uploader_url') or (f"https://www.tiktok.com/@{raw_data.get('author', {}).get('unique_id')}" if raw_data.get('author', {}).get('unique_id') else None)
-        )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error retrieving task")
-
-@app.get("/api/public/transcript/{task_id}", tags=["Public Transcription"])
-async def public_get_transcript(task_id: str, format: Optional[str] = None):
-    """Get transcript for a task without API key"""
-    try:
-        # Fetch task from database
-        #
-        # NOTE: We query `transcriptions` directly because `public_transcriptions` may not
-        # exist in some deployments and is also filtered to completed+public.
-        result = supabase.table("transcriptions").select("*").eq("task_id", task_id).maybe_single().execute()
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-        
-        task = result.data
-        
-        # Parse JSONB fields from database
-        if task.get('tldr'):
-            try:
-                # Parse tldr if it's a JSON string from database
-                if isinstance(task['tldr'], str):
-                    task['tldr'] = json.loads(task['tldr'])
-                elif not isinstance(task['tldr'], list):
-                    task['tldr'] = []
-            except (json.JSONDecodeError, TypeError):
-                logger.warning(f"Failed to parse tldr for task {task_id}: {task.get('tldr')}")
-                task['tldr'] = []
-        
-        if task["status"] == "failed":
-            error_message = task.get("error", "Unknown error")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription failed: {error_message}"
-            )
-            
-        if task["status"] != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription not completed yet. Current status: {task['status']}"
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching task {task_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving task")
-        
-    # First check if transcript is stored in database
-    if task.get("transcript"):
-        transcript_text = task["transcript"]
-        
-        # Clean the transcript if it contains raw TranscriptionVerbose data
-        if transcript_text.startswith('TranscriptionVerbose('):
-            import re
-            import ast
-            
-            # Try to extract and format the segments with timestamps
-            try:
-                # Extract segments data
-                segments_match = re.search(r'segments=\[(.*?)\], usage=', transcript_text, re.DOTALL)
-                if segments_match:
-                    # Format transcript with timestamps
-                    formatted_transcript = ""
-                    current_minute = -1
-                    
-                    # Parse individual segments from the raw data
-                    segment_pattern = r'TranscriptionSegment\([^)]*start=([0-9.]+)[^)]*text=\'([^\']*)\''
-                    segments = re.findall(segment_pattern, transcript_text)
-                    
-                    for start_time_str, text in segments:
-                        start_time = float(start_time_str)
-                        minute = int(start_time // 60)
-                        second = int(start_time % 60)
-                        
-                        # Add timestamp header for new minutes
-                        if minute != current_minute:
-                            if formatted_transcript:  # Add newline if not first
-                                formatted_transcript += "\n\n"
-                            formatted_transcript += f"{minute}:{second:02d} - {minute}:{second+5:02d}\n"
-                            current_minute = minute
-                        
-                        formatted_transcript += text.strip()
-                    
-                    if formatted_transcript:
-                        transcript_text = formatted_transcript
-                    else:
-                        # Fallback to plain text if parsing fails
-                        text_match = re.search(r'text="([^"]+)"', transcript_text)
-                        if text_match:
-                            transcript_text = text_match.group(1)
-                else:
-                    # Fallback to plain text extraction
-                    text_match = re.search(r'text="([^"]+)"', transcript_text)
-                    if text_match:
-                        transcript_text = text_match.group(1)
-                        
-            except Exception as e:
-                logger.warning(f"Error parsing transcript segments, using plain text: {e}")
-                # Fallback to simple text extraction
-                text_match = re.search(r'text="([^"]+)"', transcript_text)
-                if text_match:
-                    transcript_text = text_match.group(1)
-            
-            # Update the database with clean text for future requests
-            try:
-                supabase.table('transcriptions').update({
-                    'transcript': transcript_text
-                }).eq('task_id', task_id).execute()
-            except Exception as e:
-                logger.warning(f"Could not update clean transcript in database: {e}")
-        
-        if format and format.lower() == 'json':
-            return {"transcript": transcript_text, "task_id": task_id}
-        return transcript_text
-        
-    # Look for transcript file as fallback
-    output_dir = os.path.join(DOWNLOADS_DIR, task_id)
-    
-    # Use glob to find transcript files
-    transcript_files = glob.glob(os.path.join(output_dir, "*_transcript.txt"))
-    
-    if not transcript_files:
-        # Try another common pattern if the first one fails
-        transcript_files = glob.glob(os.path.join(output_dir, "*.txt"))
-    
-    if not transcript_files:
-        raise HTTPException(status_code=404, detail="Transcript file not found")
-    
-    # If format=json is specified, return the transcript as JSON
-    if format and format.lower() == 'json':
-        try:
-            with open(transcript_files[0], 'r') as f:
-                transcript_text = f.read()
-            return {"transcript": transcript_text, "task_id": task_id}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error reading transcript: {str(e)}")
-        
-    # Otherwise return the transcript file as-is
-    return FileResponse(transcript_files[0])
-
-@app.post(
-    "/api/public/transcript/{task_id}/chat",
-    response_model=TranscriptChatResponse,
-    tags=["Public Transcription"]
-)
-async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
-    """Answer a question about a transcript."""
-    if supabase is None:
-        logger.error("Cannot chat with transcript: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-    if not payload.message or not payload.message.strip():
-        raise HTTPException(status_code=400, detail="Message is required")
-    try:
-        result = supabase.table("transcriptions").select(
-            "status, transcript, title, description, quote, tldr, error"
-        ).eq("task_id", task_id).maybe_single().execute()
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-        task = result.data
-
-        if task.get("status") == "failed":
-            error_message = task.get("error", "Unknown error")
-            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
-        if task.get("status") != "completed":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Transcription not completed yet. Current status: {task.get('status')}"
-            )
-
-        transcript_text = task.get("transcript") or ""
-        if not transcript_text:
-            raise HTTPException(status_code=400, detail="Transcript not ready yet")
-
-        tldr_list = None
-        if task.get("tldr"):
-            try:
-                if isinstance(task["tldr"], str):
-                    tldr_list = json.loads(task["tldr"])
-                elif isinstance(task["tldr"], list):
-                    tldr_list = task["tldr"]
-            except (json.JSONDecodeError, TypeError):
-                tldr_list = None
-
-        max_chars = payload.max_chars or 360
-        answer = await sms.SMSHandler.generate_answer(
-            question=payload.message,
-            transcript_text=transcript_text,
-            title=task.get("title") or "",
-            description=task.get("description") or "",
-            quote=task.get("quote") or "",
-            tldr_list=tldr_list,
-            max_chars=max_chars
-        )
-        if not answer:
-            raise HTTPException(status_code=500, detail="Failed to generate answer")
-
-        return TranscriptChatResponse(task_id=task_id, answer=answer)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating transcript chat response: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate answer")
-
-@app.get("/api/public/tasks", response_model=TaskListResponse, tags=["Public Transcription"])
-async def public_list_tasks():
-    """List the last 50 transcription tasks without API key"""
-    if supabase is None:
-        logger.error(f"Cannot list public tasks: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    try:
-        # Fetch the last 50 public, completed tasks.
-        #
-        # Prefer the `public_transcriptions` view when present (it excludes PII like user_phone),
-        # but fall back to querying `transcriptions` directly if the view isn't available yet
-        # (e.g. migrations not applied in production).
-        try:
-            response = await asyncio.to_thread(
-                lambda: supabase.table('public_transcriptions')
-                                .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
-                                .order('created_at', desc=True)  # newest first
-                                .limit(50)
-                                .execute()
-            )
-        except Exception as view_exc:
-            logger.warning(
-                f"Falling back to transcriptions table for public tasks list (view missing/unavailable): {view_exc}"
-            )
-            response = await asyncio.to_thread(
-                lambda: supabase.table('transcriptions')
-                                .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
-                                .eq('status', 'completed')
-                                .eq('visibility', 'public')
-                                .order('created_at', desc=True)  # newest first
-                                .limit(50)
-                                .execute()
-            )
-
-        # Check for errors during the query
-        if hasattr(response, 'error') and response.error:
-             logger.error(f"Failed to list public tasks from Supabase: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error listing tasks")
-
-        # Map the results to the response model
-        tasks_list = []
-        if response.data:
-            for task_data in response.data:
-                 tasks_list.append(TranscriptionResponse(
-                    task_id=task_data['task_id'],
-                    status=task_data['status'],
-                    video_id=task_data.get('video_id'),
-                    title=task_data.get('title'),
-                    description=task_data.get('description'),
-                    created_at=task_data['created_at'],
-                    error=task_data.get('error'),
-                    thumbnail=task_data.get('thumbnail_url'), # Map thumbnail_url
-                    thumbnail_url=task_data.get('thumbnail_url'),
-                    thumbnail_local_path=task_data.get('thumbnail_local_path')
-                ))
-
-        return TaskListResponse(tasks=tasks_list)
-
-    except Exception as e:
-        logger.error(f"Exception listing public tasks from Supabase: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error listing tasks")
-
-
-@app.get("/api/public/search", response_model=SearchResponse, tags=["Public Transcription"])
-async def public_search_transcriptions(
-    q: str,
-    limit: int = 50,
-    offset: int = 0,
-    only_public: bool = True,
-    only_completed: bool = True,
-):
-    """Public search over transcriptions using indexed Postgres RPC."""
-    if supabase is None:
-        logger.error("Cannot search: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    query = (q or "").strip()
-    if len(query) < 2:
-        return SearchResponse(query=query, results=[], limit=max(0, limit), offset=max(0, offset))
-
-    limit = min(max(1, limit), 100)
-    offset = max(0, offset)
-
-    try:
-        response = await asyncio.to_thread(
-            lambda: supabase.rpc(
-                "search_transcriptions",
-                {
-                    "query": query,
-                    "only_public": only_public,
-                    "only_completed": only_completed,
-                    "limit_results": limit,
-                    "offset_results": offset,
-                },
-            ).execute()
-        )
-
-        if hasattr(response, "error") and response.error:
-            logger.error(f"Search RPC error: {response.error}")
-            raise HTTPException(status_code=500, detail="Search failed")
-
-        results: List[SearchHit] = []
-        for row in (response.data or []):
-            results.append(
-                SearchHit(
-                    task_id=str(row.get("task_id")),
-                    title=row.get("title"),
-                    updated_at=row.get("updated_at"),
-                    rank=row.get("rank"),
-                    source=row.get("source"),
-                )
-            )
-
-        return SearchResponse(query=query, results=results, limit=limit, offset=offset)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Search exception: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error searching transcriptions")
-
-@app.get("/api/public/thumbnail/{task_id}", tags=["Public Transcription"])
-async def public_get_thumbnail(task_id: str):
-    """Get the thumbnail image for a task without API key"""
-    if supabase is None:
-        logger.error(f"Cannot get public thumbnail for {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    try:
-        # Fetch task details from Supabase
-        response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url") # Select thumbnail fields
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute()
-        )
-
-        if hasattr(response, 'error') and response.error:
-             logger.error(f"Database error fetching public thumbnail for {task_id}: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error retrieving task info")
-
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-
-        task = response.data # Use the fetched data
-
-        if task["status"] == "failed":
-            error_message = task.get("error", "Unknown error")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription failed: {error_message}"
-            )
-            
-        if task["status"] != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription not completed yet. Current status: {task['status']}"
-            )
-        
-        # Priority 1: Redirect to Supabase Storage URL if available (persistent, CDN-backed)
-        if task.get("supabase_thumbnail_url"):
-            logger.info(f"Redirecting to Supabase thumbnail URL: {task['supabase_thumbnail_url']}")
-            return RedirectResponse(url=task["supabase_thumbnail_url"])
-            
-        # Priority 2: Redirect to external thumbnail URL if available (TikTok CDN)
-        if task.get("thumbnail_url"):
-            logger.info(f"Redirecting to external thumbnail URL: {task['thumbnail_url']}")
-            return RedirectResponse(url=task["thumbnail_url"])
-
-        # Priority 3: Serve locally stored thumbnail file if path exists (fallback for persistent storage)
-        if task.get("thumbnail_local_path"):
-            local_thumbnail_full_path = os.path.join(DOWNLOADS_DIR, task["thumbnail_local_path"])
-            if os.path.exists(local_thumbnail_full_path):
-                logger.info(f"Serving local thumbnail file: {local_thumbnail_full_path}")
-                # Determine media type based on extension
-                media_type = 'image/jpeg'
-                if local_thumbnail_full_path.lower().endswith('.png'):
-                    media_type = 'image/png'
-                elif local_thumbnail_full_path.lower().endswith('.webp'):
-                     media_type = 'image/webp'
-                return FileResponse(local_thumbnail_full_path, media_type=media_type)
-            else:
-                 logger.warning(f"Local thumbnail path found in task data ({task['thumbnail_local_path']}), but file does not exist.")
-                 # Clear the local path from database since file is missing (ephemeral storage)
-                 try:
-                     result = supabase.table('transcriptions').update({"thumbnail_local_path": None}).eq('task_id', task_id).execute()
-                     logger.info(f"Cleared invalid thumbnail_local_path for task {task_id}")
-                 except Exception as e:
-                     logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
-        
-        # Fallback: If no local file or URL, try searching manually (redundant if process_transcription_task works)
-        # This section can be simplified or removed if the above logic is reliable
-        output_dir = os.path.join(DOWNLOADS_DIR, task_id)
-        thumbnail_path = None
-        logger.info(f"(Fallback) Looking for thumbnail images in {output_dir}")
-        for ext in ['.jpg', '.png', '.jpeg', '.webp']:
-            # Search in base and subdirectories
-            files = glob.glob(os.path.join(output_dir, f"**/*{ext}"), recursive=True)
-            if files:
-                thumbnail_path = files[0]
-                break
-        
-        if thumbnail_path:
-            logger.info(f"(Fallback) Found local thumbnail file: {thumbnail_path}")
-            media_type = 'image/jpeg' # Default
-            if thumbnail_path.lower().endswith('.png'): media_type = 'image/png'
-            elif thumbnail_path.lower().endswith('.webp'): media_type = 'image/webp'
-            return FileResponse(thumbnail_path, media_type=media_type)
-
-        # Final Fallback: Provide a default generic thumbnail
-        logger.warning(f"No thumbnail found for task {task_id}, using default")
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        os.makedirs(static_dir, exist_ok=True)
-        default_thumbnail = os.path.join(static_dir, "default_thumbnail.jpg")
-        
-        if not os.path.exists(default_thumbnail):
-            try:
-                img = Image.new('RGB', (640, 360), color=(53, 59, 72))
-                draw = ImageDraw.Draw(img)
-                text = "TikScript"
-                try: font = ImageFont.truetype("Arial", 60)
-                except: font = ImageFont.load_default()
-                text_width, text_height = draw.textsize(text, font=font) if hasattr(draw, 'textsize') else (200, 40)
-                position = ((640-text_width)//2, (360-text_height)//2)
-                draw.text(position, text, fill=(236, 240, 241), font=font)
-                img.save(default_thumbnail)
-                logger.info(f"Created default thumbnail at {default_thumbnail}")
-            except Exception as e:
-                logger.error(f"Error creating default thumbnail: {str(e)}")
-                raise HTTPException(status_code=404, detail="Thumbnail not found and could not create default")
-        
-        return FileResponse(default_thumbnail, media_type="image/jpeg")
-
-    except Exception as e:
-        logger.error(f"Error fetching public thumbnail for task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error fetching thumbnail")
-
-@app.get("/api/public/thumbnail_square/{task_id}", tags=["Public Transcription"])
-async def public_get_square_thumbnail(task_id: str):
-    """Get the square (1:1) thumbnail image for a task without API key - optimized for iMessage/WhatsApp"""
-    if supabase is None:
-        logger.error(f"Cannot get public square thumbnail for {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    try:
-        # Fetch task details from Supabase
-        response = await asyncio.to_thread(
-            supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url, square_thumbnail_url")
-                    .eq('task_id', task_id)
-                    .maybe_single()
-                    .execute()
-        )
-
-        if hasattr(response, 'error') and response.error:
-             logger.error(f"Database error fetching public square thumbnail for {task_id}: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error retrieving task info")
-
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-
-        task = response.data
-
-        if task["status"] == "failed":
-            error_message = task.get("error", "Unknown error")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription failed: {error_message}"
-            )
-            
-        if task["status"] != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Transcription not completed yet. Current status: {task['status']}"
-            )
-        
-        # Priority 1: Serve square thumbnail if it exists
-        output_dir = os.path.join(DOWNLOADS_DIR, task_id)
-        square_thumbnail_path = os.path.join(output_dir, "thumbnail_square.jpg")
-        
-        if os.path.exists(square_thumbnail_path):
-            logger.info(f"Serving square thumbnail file: {square_thumbnail_path}")
-            return FileResponse(square_thumbnail_path, media_type="image/jpeg")
-        
-        # Priority 2: Create square thumbnail on-the-fly from existing thumbnail
-        if task.get("thumbnail_local_path"):
-            local_thumbnail_full_path = os.path.join(DOWNLOADS_DIR, task["thumbnail_local_path"])
-            if os.path.exists(local_thumbnail_full_path):
-                # Create square thumbnail on-demand
-                if create_square_thumbnail(local_thumbnail_full_path, square_thumbnail_path):
-                    logger.info(f"Created square thumbnail on-demand: {square_thumbnail_path}")
-                    return FileResponse(square_thumbnail_path, media_type="image/jpeg")
-            else:
-                # Clear the local path from database since file is missing (ephemeral storage)
-                try:
-                    result = supabase.table('transcriptions').update({"thumbnail_local_path": None}).eq('task_id', task_id).execute()
-                    logger.info(f"Cleared invalid thumbnail_local_path for task {task_id} (square endpoint)")
-                except Exception as e:
-                    logger.error(f"Failed to clear thumbnail_local_path for {task_id}: {e}")
-        
-        # Priority 3: Use Supabase square thumbnail if available
-        if task.get("square_thumbnail_url"):
-            logger.info(f"Redirecting to Supabase square thumbnail URL: {task['square_thumbnail_url']}")
-            return RedirectResponse(url=task["square_thumbnail_url"])
-            
-        # Priority 4: Use Supabase regular thumbnail if available
-        if task.get("supabase_thumbnail_url"):
-            logger.info(f"Redirecting to Supabase thumbnail URL (fallback for square): {task['supabase_thumbnail_url']}")
-            return RedirectResponse(url=task["supabase_thumbnail_url"])
-            
-        # Priority 5: Use external thumbnail URL if available (TikTok CDN)
-        if task.get("thumbnail_url"):
-            logger.info(f"No local square thumbnail, redirecting to external URL: {task['thumbnail_url']}")
-            return RedirectResponse(url=task["thumbnail_url"])
-        
-        # Priority 6: Look for any existing thumbnail and convert it
-        for ext in ['.jpg', '.png', '.jpeg', '.webp']:
-            files = glob.glob(os.path.join(output_dir, f"**/*{ext}"), recursive=True)
-            # Exclude the square thumbnail we're trying to create
-            files = [f for f in files if not f.endswith('thumbnail_square.jpg')]
-            if files:
-                original_thumbnail = files[0]
-                if create_square_thumbnail(original_thumbnail, square_thumbnail_path):
-                    logger.info(f"Created square thumbnail from fallback image: {square_thumbnail_path}")
-                    return FileResponse(square_thumbnail_path, media_type="image/jpeg")
-                break
-        
-        # Final Fallback: Create default square thumbnail
-        logger.warning(f"No thumbnail found for task {task_id}, creating default square thumbnail")
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        os.makedirs(static_dir, exist_ok=True)
-        default_square_thumbnail = os.path.join(static_dir, "default_square_thumbnail.jpg")
-        
-        if not os.path.exists(default_square_thumbnail):
-            try:
-                # Create a square default image
-                img = Image.new('RGB', (1200, 1200), color=(53, 59, 72))
-                draw = ImageDraw.Draw(img)
-                text = "ScribeTok"
-                try: font = ImageFont.truetype("Arial", 120)
-                except: font = ImageFont.load_default()
-                text_width, text_height = draw.textsize(text, font=font) if hasattr(draw, 'textsize') else (400, 80)
-                position = ((1200-text_width)//2, (1200-text_height)//2)
-                draw.text(position, text, fill=(236, 240, 241), font=font)
-                img.save(default_square_thumbnail)
-                logger.info(f"Created default square thumbnail at {default_square_thumbnail}")
-            except Exception as e:
-                logger.error(f"Error creating default square thumbnail: {str(e)}")
-                raise HTTPException(status_code=404, detail="Square thumbnail not found and could not create default")
-        
-        return FileResponse(default_square_thumbnail, media_type="image/jpeg")
-
-    except Exception as e:
-        logger.error(f"Error fetching public square thumbnail for task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error fetching square thumbnail")
+# Public endpoints moved to app/api/public.py
 
 @app.post("/api/tasks", tags=["Private Task Management"])
 async def submit_task(
@@ -3057,511 +2017,7 @@ async def _cleanup_stuck_tasks_logic():
         raise HTTPException(status_code=500, detail="Failed to cleanup stuck tasks")
 
 # ===============================
-# ACCOUNT LINKING ENDPOINTS
-
-@app.post("/api/link-sms-account", response_model=AccountLinkResponse, tags=["SMS Integration"])
-async def link_sms_account(request: Request):
-    """Create phone-based auth account and link SMS user's transcription history"""
-    try:
-        body = await request.json()
-        phone = body.get('phone')
-        
-        if not phone:
-            raise HTTPException(status_code=400, detail="Phone number is required")
-            
-        # Normalize phone number
-        phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if len(phone) == 10:
-            phone = f"+1{phone}"
-        elif len(phone) == 11 and phone.startswith('1'):
-            phone = f"+{phone}"
-        elif not phone.startswith('+'):
-            phone = f"+{phone}"
-            
-        logger.info(f"Creating phone-based auth account for phone {phone} (phone-only auth)")
-        
-        # Check if phone already has auth account via SMS users table
-        sms_user_response = await asyncio.to_thread(
-            supabase.table('sms_users')
-                    .select('auth_user_id')
-                    .eq('phone_number', phone)
-                    .single,
-        )
-        
-        if sms_user_response.data and sms_user_response.data.get('auth_user_id'):
-            logger.warning(f"Phone {phone} already has auth account")
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "Phone number already registered"}
-            )
-        
-        # Check if phone has transcriptions to link
-        stats_response = await asyncio.to_thread(
-            supabase.rpc,
-            'get_sms_user_stats',
-            {'p_phone_number': phone}
-        )
-        
-        if not stats_response.data or stats_response.data[0]['total_transcriptions'] == 0:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "No transcription history found for this phone number"}
-            )
-        
-        transcription_count = stats_response.data[0]['total_transcriptions']
-        
-        # Create Supabase auth user with phone only
-        try:
-            auth_response = await asyncio.to_thread(
-                supabase.auth.admin.create_user,
-                {
-                    "phone": phone,
-                    "phone_confirm": True,
-                    "user_metadata": {
-                        "linked_from_sms": True,
-                        "transcription_count": transcription_count,
-                        "auth_type": "phone_only"
-                    }
-                }
-            )
-            
-            if not auth_response.user:
-                raise Exception("Failed to create auth user")
-                
-            auth_user_id = auth_response.user.id
-            logger.info(f"Created phone-based auth user {auth_user_id} for phone {phone}")
-            
-        except Exception as e:
-            logger.error(f"Failed to create auth user: {str(e)}")
-            return JSONResponse(
-                status_code=500,
-                content={"success": False, "error": f"Failed to create account: {str(e)}"}
-            )
-        
-        # Link transcriptions using database function
-        try:
-            link_response = await asyncio.to_thread(
-                supabase.rpc,
-                'link_sms_user_to_auth',
-                {
-                    'p_phone_number': phone,
-                    'p_auth_user_id': auth_user_id
-                }
-            )
-            
-            linked_count = link_response.data[0]['linked_transcriptions'] if link_response.data else 0
-            
-            logger.info(f"Successfully linked {linked_count} transcriptions for phone {phone} to user {auth_user_id}")
-            
-            return JSONResponse(
-                content={
-                    "success": True,
-                    "linked_transcriptions": linked_count,
-                    "auth_user_id": auth_user_id,
-                    "phone": phone,
-                    "message": f"Successfully created phone-based account and linked {linked_count} transcriptions"
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to link transcriptions: {str(e)}")
-            # Clean up created auth user if linking failed
-            try:
-                await asyncio.to_thread(supabase.auth.admin.delete_user, auth_user_id)
-            except:
-                pass
-            return JSONResponse(
-                status_code=500,
-                content={"success": False, "error": f"Failed to link transcriptions: {str(e)}"}
-            )
-        
-    except Exception as e:
-        logger.error(f"Error in link_sms_account: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ===============================
-# SMS ENDPOINTS
-# ===============================
-
-@app.post("/api/sms/inbound", tags=["SMS Integration"])
-async def handle_inbound_sms(
-    background_tasks: BackgroundTasks,
-    From: str = Form(...),
-    Body: str = Form(...),
-    MessageSid: str = Form(None),
-    To: str = Form(None)
-):
-    """Handle incoming SMS from Twilio webhook"""
-    try:
-        logger.info(f"Received SMS from {From}: {Body[:50]}...")
-        
-        # Log the message to user_messages table
-        command = None
-        if Body.startswith('/'):
-            command = Body.split()[0].lower()
-        
-        await asyncio.to_thread(
-            supabase.table('user_messages')
-                    .insert({
-                        'from_phone': From,
-                        'message_body': Body,
-                        'command': command,
-                        'response_sent': False
-                    })
-                    .execute()
-        )
-        
-        # Process the SMS and get TwiML response
-        twiml_response = await sms.SMSHandler.process_inbound_sms(From, Body)
-        
-        # If this is a video URL, create transcript job and queue processing
-        if sms.SMSHandler.is_video_url(Body):
-            video_url = sms.SMSHandler.extract_video_url(Body)
-            if video_url:
-                # Create transcript job entry
-                job_response = supabase.table('transcript_jobs').insert({
-                    'from_phone': From,
-                    'video_url': video_url,
-                    'status': 'queued',
-                    'message_sid': MessageSid
-                }).execute()
-                
-                if job_response.data:
-                    job_id = job_response.data[0]['id']
-                    
-                    # Create transcription task
-                    task = await init_task(video_url, user_id=None, user_phone=From)
-                    task_id = task['task_id']
-                    
-                    # Link the job to the transcription
-                    result = supabase.table('transcript_jobs').update({'transcript_id': task_id}).eq('id', job_id).execute()
-                    if result.data:
-                        logger.info(f"Linked job {job_id} to task {task_id}")
-                    else:
-                        logger.warning(f"Failed to link job {job_id} to task {task_id}: {result}")
-                    
-                    # Store user phone number for notifications
-                    result = supabase.table('transcriptions').update({'user_phone': From}).eq('task_id', task_id).execute()
-                    if result.data:
-                        logger.info(f"Stored user phone for task {task_id}")
-                    else:
-                        logger.warning(f"Failed to store user phone for task {task_id}: {result}")
-                    
-                    # Queue background processing
-                    background_tasks.add_task(
-                        process_transcription_with_sms_notification,
-                        task_id,
-                        video_url,
-                        From,
-                        job_id
-                    )
-                    logger.info(f"Queued transcription task {task_id} for SMS user {From}")
-        
-        # Mark message as responded
-        result = supabase.table('user_messages').update({'response_sent': True}).eq('from_phone', From).eq('message_body', Body).execute()
-        if result.data:
-            logger.info(f"Marked message as responded for {From}")
-        else:
-            logger.warning(f"Failed to mark message as responded for {From}: {result}")
-        
-        # Return TwiML response
-        return Response(content=twiml_response, media_type="application/xml")
-        
-    except Exception as e:
-        logger.error(f"Error handling inbound SMS: {str(e)}", exc_info=True)
-        # Return error TwiML
-        error_response = sms.SMSHandler.create_twiml_response(
-            "🚨 Oops! Something went wrong. Please try again or contact support."
-        )
-        return Response(content=error_response, media_type="application/xml")
-
-@app.post("/api/sms/status", tags=["SMS Integration"])
-async def handle_sms_status(
-    request: Request,
-    MessageSid: str = Form(...),
-    MessageStatus: str = Form(...),
-    To: str = Form(None),
-    From: str = Form(None)
-):
-    """Handle SMS delivery status updates from Twilio"""
-    try:
-        logger.info(f"SMS status update - SID: {MessageSid}, Status: {MessageStatus}, To: {To}")
-        
-        # You can store these status updates in your database for analytics
-        # For now, just log them
-        
-        return {"status": "received"}
-        
-    except Exception as e:
-        logger.error(f"Error handling SMS status: {str(e)}", exc_info=True)
-        return {"error": "Failed to process status update"}
-
-@app.post("/api/sms/send", response_model=SMSResponse, tags=["SMS Integration"])
-async def send_sms(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
-    """Send SMS message (for testing or manual sends)"""
-    try:
-        body = await request.json()
-        to = body.get("to")
-        message = body.get("message")
-        
-        if not to or not message:
-            raise HTTPException(status_code=400, detail="Both 'to' and 'message' are required")
-        
-        success = await sms.SMSHandler.send_sms(to, message)
-        
-        if success:
-            return {"status": "sent", "to": to}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to send SMS")
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error sending SMS: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to send SMS")
-
-@app.post("/api/sms/summary", tags=["SMS Integration"])
-async def generate_sms_summary(request: Request):
-    """Generate AI summary of user's latest transcript for SMS"""
-    try:
-        body = await request.json()
-        phone = body.get("phone")
-        
-        if not phone:
-            raise HTTPException(status_code=400, detail="Phone number is required")
-        
-        # Use the SMS handler to generate summary
-        summary_result = await sms.SMSHandler.handle_summary_command(phone)
-        
-        return {"summary": summary_result}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating SMS summary: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate summary")
-
-@app.post("/api/sms/chat", response_model=SmsChatResponse, tags=["SMS Integration"])
-async def sms_chat(request: SmsChatRequest):
-    """Answer a user's question about their latest transcript with chat memory."""
-    if supabase is None:
-        logger.error("Cannot chat: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    phone = request.phone.strip()
-    message = request.message.strip()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone number is required")
-    if not message:
-        raise HTTPException(status_code=400, detail="Message is required")
-
-    try:
-        thread = None
-        thread_id = None
-        conversation_summary = ""
-        message_history = []
-        task_id = None
-
-        # Find active thread for this phone number
-        try:
-            thread_response = supabase.table('conversation_threads') \
-                .select('id, task_id, summary, message_count') \
-                .eq('user_phone', phone) \
-                .eq('status', 'active') \
-                .order('last_active', desc=True) \
-                .limit(1) \
-                .execute()
-            thread = thread_response.data[0] if thread_response.data else None
-        except Exception as e:
-            logger.error(f"Error loading conversation thread: {str(e)}")
-            thread = None
-
-        if not thread:
-            # Use latest completed transcript as the default context
-            transcript_lookup = supabase.table('transcriptions') \
-                .select('task_id') \
-                .eq('user_phone', phone) \
-                .eq('status', 'completed') \
-                .order('created_at', desc=True) \
-                .limit(1) \
-                .execute()
-            if not transcript_lookup.data:
-                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
-
-            task_id = transcript_lookup.data[0]['task_id']
-            try:
-                thread_insert = supabase.table('conversation_threads').insert({
-                    'user_phone': phone,
-                    'task_id': task_id,
-                    'summary': None,
-                    'message_count': 0,
-                    'status': 'active',
-                    'last_active': datetime.now(timezone.utc).isoformat(),
-                    'created_at': datetime.now(timezone.utc).isoformat(),
-                    'updated_at': datetime.now(timezone.utc).isoformat()
-                }).select('id, task_id, summary, message_count').single().execute()
-                thread = thread_insert.data if thread_insert.data else None
-            except Exception as e:
-                logger.error(f"Error creating conversation thread: {str(e)}")
-                thread = None
-
-        if thread:
-            task_id = thread.get('task_id')
-            thread_id = thread.get('id')
-            conversation_summary = thread.get('summary') or ""
-        elif not task_id:
-            transcript_lookup = supabase.table('transcriptions') \
-                .select('task_id') \
-                .eq('user_phone', phone) \
-                .eq('status', 'completed') \
-                .order('created_at', desc=True) \
-                .limit(1) \
-                .execute()
-            if not transcript_lookup.data:
-                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
-            task_id = transcript_lookup.data[0]['task_id']
-            thread_id = task_id
-
-        # Fetch transcript context
-        task_response = supabase.table('transcriptions').select(
-            'status, transcript, title, description, quote, tldr, error'
-        ).eq('task_id', task_id).maybe_single().execute()
-
-        if not task_response.data:
-            raise HTTPException(status_code=404, detail="Transcript not found")
-
-        task = task_response.data
-        if task.get('status') == 'failed':
-            error_message = task.get('error', 'Unknown error')
-            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
-        if task.get('status') != 'completed':
-            raise HTTPException(
-                status_code=409,
-                detail=f"Transcription not completed yet. Current status: {task.get('status')}"
-            )
-
-        transcript_text = task.get('transcript') or ''
-        if not transcript_text:
-            raise HTTPException(status_code=400, detail="Transcript not ready yet")
-
-        if thread_id:
-            try:
-                supabase.table('conversation_messages').insert({
-                    'thread_id': thread_id,
-                    'role': 'user',
-                    'content': message
-                }).execute()
-            except Exception as e:
-                logger.error(f"Error saving user message: {str(e)}")
-
-            try:
-                messages_response = supabase.table('conversation_messages') \
-                    .select('role, content, created_at') \
-                    .eq('thread_id', thread_id) \
-                    .order('created_at', desc=True) \
-                    .limit(20) \
-                    .execute()
-                messages = messages_response.data or []
-                messages_sorted = list(reversed(messages))
-                message_history = [
-                    {'role': msg.get('role'), 'content': msg.get('content')}
-                    for msg in messages_sorted
-                    if msg.get('content')
-                ]
-            except Exception as e:
-                logger.error(f"Error loading message history: {str(e)}")
-                message_history = []
-
-        tldr_list = None
-        if task.get('tldr'):
-            try:
-                if isinstance(task['tldr'], str):
-                    tldr_list = json.loads(task['tldr'])
-                elif isinstance(task['tldr'], list):
-                    tldr_list = task['tldr']
-            except (json.JSONDecodeError, TypeError):
-                tldr_list = None
-
-        answer = await sms.SMSHandler.generate_answer(
-            question=message,
-            transcript_text=transcript_text,
-            title=task.get('title') or '',
-            description=task.get('description') or '',
-            quote=task.get('quote') or '',
-            tldr_list=tldr_list,
-            max_chars=request.max_chars or 360,
-            conversation_summary=conversation_summary,
-            message_history=message_history
-        )
-        if not answer:
-            answer = sms.SMSHandler._clip_answer("I can't tell from this video.", request.max_chars or 360)
-
-        if thread_id:
-            try:
-                supabase.table('conversation_messages').insert({
-                    'thread_id': thread_id,
-                    'role': 'assistant',
-                    'content': answer
-                }).execute()
-            except Exception as e:
-                logger.error(f"Error saving assistant message: {str(e)}")
-
-            if thread:
-                summary_messages = message_history + [{'role': 'assistant', 'content': answer}]
-                new_summary = await sms.SMSHandler.generate_chat_summary(
-                    conversation_summary,
-                    summary_messages[-20:],
-                    max_chars=600
-                )
-
-                try:
-                    supabase.table('conversation_threads').update({
-                        'summary': new_summary,
-                        'message_count': (thread.get('message_count') or 0) + 2,
-                        'last_active': datetime.now(timezone.utc).isoformat(),
-                        'updated_at': datetime.now(timezone.utc).isoformat()
-                    }).eq('id', thread_id).execute()
-                except Exception as e:
-                    logger.error(f"Error updating conversation thread: {str(e)}")
-
-        return SmsChatResponse(
-            answer=answer,
-            task_id=task_id,
-            thread_id=thread_id or task_id
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating SMS chat response: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate answer")
-
-@app.post("/api/sms/chat/reset", response_model=SmsChatResetResponse, tags=["SMS Integration"])
-async def sms_chat_reset(request: SmsChatResetRequest):
-    """Reset the active chat thread for a phone number."""
-    if supabase is None:
-        logger.error("Cannot reset chat: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-
-    phone = request.phone.strip()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone number is required")
-
-    try:
-        response = supabase.table('conversation_threads').update({
-            'status': 'closed',
-            'closed_at': datetime.now(timezone.utc).isoformat(),
-            'updated_at': datetime.now(timezone.utc).isoformat()
-        }).eq('user_phone', phone).eq('status', 'active').execute()
-
-        closed_threads = len(response.data) if response.data else 0
-        return SmsChatResetResponse(success=True, closed_threads=closed_threads)
-    except Exception as e:
-        logger.error(f"Error resetting SMS chat: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to reset chat")
+# ACCOUNT LINKING & SMS ENDPOINTS MOVED TO app/api/sms.py
 
 async def process_transcription_with_sms_notification(task_id: str, video_url: str, phone_number: str, job_id: str = None):
     """Process transcription and send SMS notification when complete"""
@@ -3841,55 +2297,7 @@ async def _render_processing_page(title: str):
     """
     return Response(content=html_content, media_type="text/html")
 
-@app.get("/api/analytics/sms", tags=["SMS Integration"])
-async def sms_analytics(api_key: str = Depends(verify_api_key)):
-    """Get SMS usage analytics"""
-    try:
-        # Get transcript jobs stats
-        jobs_response = await asyncio.to_thread(
-            supabase.table('transcript_jobs')
-                    .select("status, created_at, from_phone")
-                    .execute()
-        )
-        
-        # Get user messages stats
-        messages_response = await asyncio.to_thread(
-            supabase.table('user_messages')
-                    .select("command, created_at, from_phone")
-                    .execute()
-        )
-        
-        jobs_data = jobs_response.data if jobs_response.data else []
-        messages_data = messages_response.data if messages_response.data else []
-        
-        # Calculate stats
-        total_jobs = len(jobs_data)
-        completed_jobs = len([j for j in jobs_data if j['status'] == 'completed'])
-        failed_jobs = len([j for j in jobs_data if j['status'] == 'failed'])
-        unique_users = len(set([j['from_phone'] for j in jobs_data]))
-        
-        command_stats = {}
-        for msg in messages_data:
-            cmd = msg.get('command', 'unknown')
-            command_stats[cmd] = command_stats.get(cmd, 0) + 1
-        
-        return {
-            "jobs": {
-                "total": total_jobs,
-                "completed": completed_jobs,
-                "failed": failed_jobs,
-                "success_rate": round((completed_jobs / total_jobs * 100) if total_jobs > 0 else 0, 2)
-            },
-            "users": {
-                "unique_users": unique_users,
-                "total_messages": len(messages_data)
-            },
-            "commands": command_stats
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error retrieving analytics")
+#
 
 # TikTok API Adapter Endpoints
 @app.get("/api/public/tiktok/video-info", tags=["TikTok API"])
@@ -4394,13 +2802,6 @@ async def rich_link_preview(task_id: str, request: Request):
 # ====================================================================================
 # COMMENT EXTRACTION API (PRO FEATURE)
 # ====================================================================================
-
-class FetchCommentsRequest(BaseModel):
-    task_id: str
-    count: int = 30
-    include_replies: bool = False
-    get_all: bool = True
-
 
 @app.post("/api/pro/comments/fetch", tags=["Pro Features - Comments"])
 async def fetch_video_comments(
