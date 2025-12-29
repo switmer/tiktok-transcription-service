@@ -108,15 +108,17 @@ app = FastAPI(
 
 ## Key Features
 - 📱 **SMS Integration** - Text video URLs for instant transcription
-- 🔐 **Phone-First Auth** - No email required, OTP-based verification  
+- 💬 **Web Chat** - Continue SMS conversations in browser with full responses
+- 🔐 **Phone-First Auth** - No email required, OTP-based verification
 - 🚀 **Viral Sharing** - Public transcript pages with social features
 - 📊 **Rich Metadata** - 20+ fields from TikTok/YouTube videos
 - 🔍 **Content Discovery** - Trending, similar, and recent transcriptions
 
-## Phone-First User Flow
+## User Flow
 1. **Text Video URL** → Instant transcription (no signup required)
-2. **Text `/register`** → Create account with full history preserved
-3. **Web Login** → Access dashboard with phone + OTP
+2. **Text `/chat`** → Ask questions about your transcript via SMS
+3. **Click Web Link** → Continue chat in browser with full-length AI responses
+4. **Text `/register`** → Create account with full history preserved
 
 Perfect for building viral social media tools and content analysis applications.
     """,
@@ -145,6 +147,10 @@ Perfect for building viral social media tools and content analysis applications.
         {
             "name": "Content Discovery",
             "description": "Discover trending, similar, and recent transcriptions.",
+        },
+        {
+            "name": "Web Chat",
+            "description": "Continue SMS conversations in the browser. Full-length AI responses without SMS character limits.",
         },
         {
             "name": "System & Health",
