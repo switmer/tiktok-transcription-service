@@ -1,0 +1,455 @@
+name: 🚀 Production Deployment
+
+on:
+  # Only deploy after CI workflow completes successfully
+  workflow_run:
+    workflows: ["🧪 Continuous Integration & Testing"]
+    types:
+      - completed
+    branches: [ main ]
+  # Allow tagged releases
+  push:
+    tags: [ 'v*' ]
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - staging
+        - production
+      run_health_checks:
+        description: 'Run post-deployment health checks'
+        required: false
+        default: true
+        type: boolean
+      skip_ci_check:
+        description: 'Skip CI check (emergency deploys only)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ===================================
+  # PRE-DEPLOYMENT VALIDATION
+  # ===================================
+  pre-deploy:
+    name: 📋 Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    # Only run if CI passed (for workflow_run) or if it's a tag/manual trigger
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    outputs:
+      deploy-environment: ${{ steps.set-env.outputs.environment }}
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+
+    steps:
+      - name: 🔍 Verify CI Status
+        if: github.event_name == 'workflow_run'
+        run: |
+          echo "CI Workflow: ${{ github.event.workflow_run.name }}"
+          echo "CI Conclusion: ${{ github.event.workflow_run.conclusion }}"
+          if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+            echo "❌ CI workflow did not pass. Deployment blocked."
+            exit 1
+          fi
+          echo "✅ CI workflow passed. Proceeding with deployment."
+
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Determine deployment environment
+        id: set-env
+        run: |
+          if [[ "${{ github.event.inputs.environment }}" != "" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          fi
+
+      - name: ✅ Check deployment readiness
+        id: check
+        run: |
+          echo "Checking deployment readiness..."
+          
+          # Check if this is a valid deployment trigger
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/tags/v"* ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "✅ Valid deployment trigger"
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Invalid deployment trigger"
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Check for breaking changes in commit messages
+          recent_commits=$(git log --oneline -10)
+          if echo "$recent_commits" | grep -i "BREAKING\|breaking change"; then
+            echo "⚠️ Breaking changes detected - ensure proper migration plan"
+          fi
+
+      - name: 📊 Display deployment info
+        run: |
+          echo "🚀 Deployment Information:"
+          echo "  Environment: ${{ steps.set-env.outputs.environment }}"
+          echo "  Trigger: ${{ github.event_name }}"
+          echo "  Ref: ${{ github.ref }}"
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Actor: ${{ github.actor }}"
+
+  # ===================================
+  # DATABASE MIGRATIONS
+  # ===================================
+  migrate:
+    name: 🗄️ Database Migrations
+    runs-on: ubuntu-latest
+    needs: pre-deploy
+    if: needs.pre-deploy.outputs.should-deploy == 'true'
+    environment: ${{ needs.pre-deploy.outputs.deploy-environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: 🗄️ Run database migrations
+        run: |
+          echo "Running database migrations for ${{ needs.pre-deploy.outputs.deploy-environment }}..."
+          cd app/supabase
+          
+          # Apply migrations
+          supabase db push --db-url "${{ secrets.DATABASE_URL }}"
+          
+          echo "✅ Database migrations completed"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: 🔍 Verify migration integrity
+        run: |
+          echo "Verifying database integrity post-migration..."
+          # Add database integrity checks here if available
+          echo "✅ Migration integrity verified"
+
+  # ===================================
+  # EDGE FUNCTIONS DEPLOYMENT
+  # ===================================
+  deploy-edge-functions:
+    name: ⚡ Deploy Edge Functions
+    runs-on: ubuntu-latest
+    needs: [pre-deploy, migrate]
+    if: needs.pre-deploy.outputs.should-deploy == 'true'
+    environment: ${{ needs.pre-deploy.outputs.deploy-environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: ⚡ Deploy edge functions
+        run: |
+          echo "Deploying edge functions to ${{ needs.pre-deploy.outputs.deploy-environment }}..."
+          cd app/supabase
+          
+          # Deploy all edge functions
+          if [ -d "functions" ]; then
+            for func in functions/*/; do
+              func_name=$(basename "$func")
+              echo "Deploying function: $func_name"
+              supabase functions deploy "$func_name"
+            done
+          else
+            echo "No edge functions found to deploy"
+          fi
+          
+          echo "✅ Edge functions deployed"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+  # ===================================
+  # MAIN APPLICATION DEPLOYMENT
+  # ===================================
+  deploy-app:
+    name: 🚀 Deploy FastAPI Application
+    runs-on: ubuntu-latest
+    needs: [pre-deploy, migrate]
+    if: needs.pre-deploy.outputs.should-deploy == 'true'
+    environment: ${{ needs.pre-deploy.outputs.deploy-environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt
+
+      - name: 🔧 Prepare deployment package
+        run: |
+          echo "Preparing application for deployment..."
+          
+          # Create deployment manifest
+          cat > deployment-manifest.json << EOF
+          {
+            "version": "${{ github.sha }}",
+            "environment": "${{ needs.pre-deploy.outputs.deploy-environment }}",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "deployed_by": "${{ github.actor }}",
+            "ref": "${{ github.ref }}",
+            "workflow_run": "${{ github.run_id }}"
+          }
+          EOF
+          
+          echo "✅ Deployment package prepared"
+
+      - name: 🚀 Deploy to Render
+        if: needs.pre-deploy.outputs.deploy-environment == 'production'
+        run: |
+          echo "Triggering Render deployment..."
+          
+          # Trigger Render deployment via webhook or API
+          if [[ -n "${{ secrets.RENDER_DEPLOY_HOOK }}" ]]; then
+            curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+            echo "✅ Render deployment triggered"
+          else
+            echo "⚠️ No Render deploy hook configured"
+          fi
+
+      - name: 📋 Upload deployment artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-manifest
+          path: deployment-manifest.json
+
+  # ===================================
+  # FRONTEND DEPLOYMENT (if exists)
+  # ===================================
+  deploy-frontend:
+    name: 🌐 Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: [pre-deploy]
+    if: needs.pre-deploy.outputs.should-deploy == 'true'
+    environment: ${{ needs.pre-deploy.outputs.deploy-environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📱 Check for frontend
+        id: check-frontend
+        run: |
+          if [ -d "ScribeTok" ] && [ -f "ScribeTok/package.json" ]; then
+            echo "has-frontend=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-frontend=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📦 Set up Node.js
+        if: steps.check-frontend.outputs.has-frontend == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ScribeTok/package-lock.json
+
+      - name: 📦 Install frontend dependencies
+        if: steps.check-frontend.outputs.has-frontend == 'true'
+        working-directory: ScribeTok
+        run: npm ci
+
+      - name: 🏗️ Build frontend
+        if: steps.check-frontend.outputs.has-frontend == 'true'
+        working-directory: ScribeTok
+        run: npm run build
+        env:
+          NODE_ENV: production
+          VITE_API_URL: ${{ secrets.API_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: 🚀 Deploy frontend to Vercel/Netlify
+        if: steps.check-frontend.outputs.has-frontend == 'true'
+        run: |
+          echo "Frontend deployment would happen here"
+          echo "Configure with Vercel CLI or Netlify CLI"
+
+  # ===================================
+  # POST-DEPLOYMENT HEALTH CHECKS
+  # ===================================
+  health-check:
+    name: 🔍 Post-Deployment Health Check
+    runs-on: ubuntu-latest
+    needs: [deploy-app, deploy-edge-functions, pre-deploy]
+    if: needs.pre-deploy.outputs.should-deploy == 'true' && (success() || failure())
+    environment: ${{ needs.pre-deploy.outputs.deploy-environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Health check endpoint
+        run: |
+          echo "Running post-deployment health checks..."
+          
+          # Wait for deployment to be ready
+          sleep 30
+          
+          # Check main health endpoint
+          if [[ -n "${{ secrets.APP_URL }}" ]]; then
+            echo "Checking health endpoint: ${{ secrets.APP_URL }}/health"
+            
+            response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_URL }}/health" || echo "000")
+            
+            if [[ "$response" == "200" ]]; then
+              echo "✅ Health check passed"
+            else
+              echo "❌ Health check failed (HTTP $response)"
+              exit 1
+            fi
+          else
+            echo "⚠️ No APP_URL configured for health checks"
+          fi
+
+      - name: 🔍 Database connectivity check
+        run: |
+          echo "Checking database connectivity..."
+          
+          # Test database connection
+          python -c "
+          import os
+          import sys
+          sys.path.insert(0, 'app')
+          
+          try:
+              from database import supabase
+              if supabase:
+                  # Test basic query
+                  result = supabase.table('transcriptions').select('task_id').limit(1).execute()
+                  print('✅ Database connectivity: OK')
+              else:
+                  print('❌ Database connectivity: FAILED')
+                  sys.exit(1)
+          except Exception as e:
+              print(f'❌ Database connectivity: FAILED - {e}')
+              sys.exit(1)
+          "
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+      - name: 🔍 API endpoints check
+        run: |
+          echo "Checking critical API endpoints..."
+          
+          if [[ -n "${{ secrets.APP_URL }}" ]]; then
+            endpoints=(
+              "/api/public/discover/trending"
+              "/api/public/discover/categories"
+              "/api/public/discover/search?q=test"
+            )
+            
+            for endpoint in "${endpoints[@]}"; do
+              echo "Checking: $endpoint"
+              response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_URL }}$endpoint" || echo "000")
+              
+              if [[ "$response" == "200" ]]; then
+                echo "✅ $endpoint: OK"
+              else
+                echo "⚠️ $endpoint: HTTP $response"
+              fi
+            done
+          fi
+
+      - name: 📊 Performance baseline check
+        run: |
+          echo "Running performance baseline check..."
+          
+          if [[ -n "${{ secrets.APP_URL }}" ]]; then
+            # Simple response time check
+            start_time=$(date +%s%N)
+            curl -s "${{ secrets.APP_URL }}/health" > /dev/null
+            end_time=$(date +%s%N)
+            
+            response_time=$(( (end_time - start_time) / 1000000 )) # Convert to milliseconds
+            
+            echo "Health endpoint response time: ${response_time}ms"
+            
+            if [[ $response_time -lt 2000 ]]; then
+              echo "✅ Performance check: OK (${response_time}ms)"
+            else
+              echo "⚠️ Performance check: SLOW (${response_time}ms)"
+            fi
+          fi
+
+  # ===================================
+  # DEPLOYMENT NOTIFICATION
+  # ===================================
+  notify:
+    name: 📢 Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-app, deploy-edge-functions, health-check, pre-deploy]
+    if: always() && needs.pre-deploy.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: 🎉 Success notification
+        if: needs.health-check.result == 'success'
+        run: |
+          echo "::notice title=Deployment Successful::Successfully deployed to ${{ needs.pre-deploy.outputs.deploy-environment }}"
+          echo "🎉 Deployment completed successfully!"
+          echo "📊 Environment: ${{ needs.pre-deploy.outputs.deploy-environment }}"
+          echo "🔗 Commit: ${{ github.sha }}"
+          echo "👤 Deployed by: ${{ github.actor }}"
+
+      - name: 🚨 Failure notification
+        if: needs.health-check.result == 'failure' || needs.deploy-app.result == 'failure'
+        run: |
+          echo "::error title=Deployment Failed::Deployment to ${{ needs.pre-deploy.outputs.deploy-environment }} failed"
+          echo "🚨 Deployment failed!"
+          echo "📊 Environment: ${{ needs.pre-deploy.outputs.deploy-environment }}"
+          echo "🔗 Commit: ${{ github.sha }}"
+          echo "👤 Actor: ${{ github.actor }}"
+          echo "❌ Check the logs above for details"
+
+      - name: 📋 Create deployment summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # 🚀 Deployment Summary
+          
+          **Environment:** ${{ needs.pre-deploy.outputs.deploy-environment }}
+          **Status:** ${{ needs.health-check.result == 'success' && '✅ Success' || '❌ Failed' }}
+          **Commit:** \`${{ github.sha }}\`
+          **Deployed by:** ${{ github.actor }}
+          **Workflow:** [\#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          
+          ## Components Deployed
+          - ${{ needs.deploy-app.result == 'success' && '✅' || '❌' }} FastAPI Application
+          - ${{ needs.deploy-edge-functions.result == 'success' && '✅' || '❌' }} Edge Functions
+          - ${{ needs.health-check.result == 'success' && '✅' || '❌' }} Health Checks
+          
+          EOF

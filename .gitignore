@@ -15,6 +15,10 @@
 !app/
 !app/**
 
+# And not GitHub workflows
+!.github/
+!.github/**
+
 # Python files to ignore 
 **/__pycache__/
 **/*.py[cod]
@@ -79,8 +83,9 @@ temp_input.json
 # macOS
 **/.DS_Store
 
-# Test files
-test_*.py
+# Test files (but allow app/tests/)
+/test_*.py
+!/app/tests/
 
 # Virtual Environments (anywhere, including subdirectories)
 **/env/
