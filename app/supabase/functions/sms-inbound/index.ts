@@ -1,4 +1,16 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.39.3';
+
+// XML escape function for TwiML responses - prevents XML parsing errors from & and < characters
+function escapeXml(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 // Utility functions for phone-first auth system
 function normalizePhoneNumber(phone) {
   // Remove all non-digit characters
@@ -201,49 +213,30 @@ async function pollForCompletion(taskId: string, phoneNumber: string) {
 async function sendTranscriptSMS(phoneNumber, title, transcript, taskId) {
   try {
     const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
-    
+
     // Get user's current credits
     const { data: smsUser } = await supabase.from('sms_users').select('credits_remaining').eq('phone_number', normalizePhoneNumber(phoneNumber)).single();
     const creditsRemaining = smsUser?.credits_remaining || 0;
-    
-    // Get first 50 words of transcript for SMS
-    const words = transcript.split(' ').slice(0, 50);
-    const shortTranscript = words.join(' ') + (transcript.split(' ').length > 50 ? '...' : '');
-    
-    let message = `🎬 Transcript ready: "${title}"
 
-${shortTranscript}
+    // Truncate title to prevent bloat
+    const shortTitle = truncateTitle(title, 50);
+    const shareUrl = `https://share.scribetok.com/v/${taskId}`;
 
-📖 Full transcript: https://share.scribetok.com/v/${taskId}
-💳 Credits remaining: ${creditsRemaining}`;
+    // Build a compact message that stays under SMS limits
+    // Target: ~500 chars to avoid error 30019 (carrier limit exceeded)
+    const header = `Ready: "${shortTitle}"\n\n`;
+    const footer = `\n\n${shareUrl}\n/full for more | /tldr to regenerate\n${creditsRemaining} credits left`;
 
-    // Add upsell messages based on credits remaining - optimized conversion flow
-    // Note: creditsRemaining is the CURRENT amount (after this transcription was deducted)
+    // Calculate available space for transcript preview
+    const availableChars = SMS_SAFE_CHARS - header.length - footer.length;
+    const shortTranscript = truncateForSMS(transcript, Math.max(availableChars, 150));
+
+    let message = `${header}${shortTranscript}${footer}`;
+
+    // Only add upsell for 0 credits (keep it short!)
     if (creditsRemaining === 0) {
-      message += `
-
-💳 You've used all 3 free transcripts!
-Get 5 more for just $1.99 - cheaper than 1 jukebox song!
-🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-
-🎁 Or invite friends: /referral`;
-    } else if (creditsRemaining === 1) {
-      message += `
-
-⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-🎁 Or invite friends: /referral`;
-    } else if (creditsRemaining === 2) {
-      message += `
-
-💡 Only 2 free transcripts left! 
-🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
+      message += `\n\nOut of credits! 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
     }
-
-    message += `
-
-💬 Share with friends who'd love this!
-📱 Send link: https://share.scribetok.com/v/${taskId}
-🎁 Want free credits? Text /referral for your sharing link!`;
 
     await sendSMS(phoneNumber, message);
     console.log('Transcript SMS sent successfully to:', phoneNumber);
@@ -260,6 +253,32 @@ async function sendFailureSMS(phoneNumber) {
     console.error('Error sending failure SMS:', error);
   }
 }
+// SMS length helper - prevents error 30019 (content size exceeds carrier limit)
+// UCS-2 encoding (emojis present) = 70 chars/segment, GSM = 160 chars/segment
+// Most carriers limit concatenated SMS to ~10 segments
+const SMS_MAX_CHARS = 1400;  // Safe limit for ~10 segments with UCS-2
+const SMS_SAFE_CHARS = 600;   // Ideal for 8-9 segments with UCS-2
+const SMS_GSM_8_SEGMENTS = 1200;  // 8 segments with GSM encoding (no emojis): 160 × 8 = 1280, with buffer
+
+function truncateForSMS(text: string, maxChars: number = SMS_SAFE_CHARS): string {
+  if (!text || text.length <= maxChars) return text;
+  // Find a good break point (space, newline) near the limit
+  let truncateAt = text.lastIndexOf(' ', maxChars - 3);
+  if (truncateAt < maxChars * 0.5) truncateAt = maxChars - 3; // fallback if no space
+  return text.substring(0, truncateAt) + '...';
+}
+
+function truncateTitle(title: string, maxLen: number = 60): string {
+  if (!title || title.length <= maxLen) return title;
+  return title.substring(0, maxLen - 3) + '...';
+}
+
+// Remove emojis for long messages to use GSM encoding (160 chars/segment vs 70)
+function stripEmojisForLength(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/gu, '');
+}
+
 // Generic SMS sending function
 async function sendSMS(phoneNumber, message) {
   const twilioAccountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
@@ -328,6 +347,15 @@ async function sendSMS(phoneNumber, message) {
 function isYouTubeUrl(url) {
   return /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/i.test(url);
 }
+function isTikTokUrl(url) {
+  return /(?:tiktok\.com\/@[^/]+\/video\/|tiktok\.com\/t\/|vm\.tiktok\.com\/)/i.test(url);
+}
+function isInstagramUrl(url) {
+  return /(?:instagram\.com\/(?:reel|p|tv)\/)/i.test(url);
+}
+function isFacebookUrl(url) {
+  return /(?:facebook\.com\/.*\/videos\/|facebook\.com\/reel\/|fb\.watch\/)/i.test(url);
+}
 function extractYouTubeVideoId(url) {
   // Handles watch?v=, youtu.be/, shorts/
   const match = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/);
@@ -352,7 +380,8 @@ async function fetchYouTubeTranscript(youtubeUrl, videoId, lang = "en") {
 }
 Deno.serve(async (req)=>{
   // Immediate response function to avoid Twilio timeout
-  const sendTwilioResponse = (message)=>new Response(`<Response><Message>${message}</Message></Response>`, {
+  // Note: escapeXml disabled temporarily for debugging - re-enable after testing
+  const sendTwilioResponse = (message)=>new Response(`<Response><Message>${message || ''}</Message></Response>`, {
       status: 200,
       headers: {
         'Content-Type': 'text/xml'
@@ -454,7 +483,7 @@ Deno.serve(async (req)=>{
 • Unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02
 • Refer friends: Both get 3 bonus credits!
 
-Just text any TikTok/YouTube link to save the good stuff!`);
+Just text any TikTok/YouTube/Instagram/Facebook link to save the good stuff!`);
   }
   // Login command - send OTP
   if (Body.trim().toLowerCase() === '/login') {
@@ -779,26 +808,23 @@ Reply /help for more commands!`);
 
       const latest = transcripts[0];
 
-      const title = latest.title || 'Video';
-      const transcript = latest.transcript;
-      const words = transcript.split(' ');
-      
-      // SMS has character limits, so we need to chunk long transcripts
-      let message;
-      if (words.length > 100) {
-        const chunk = words.slice(0, 100).join(' ') + '...';
-        message = `📄 Full transcript: "${title}"
+      // Truncate title to avoid bloating the message
+      const title = truncateTitle(latest.title || 'Video', 50);
+      const shareUrl = `https://share.scribetok.com/v/${latest.task_id}`;
 
-${chunk}
+      // For /full we strip emojis to use GSM encoding (160 chars/segment vs 70)
+      // This lets us fit ~1200 chars in 8 segments instead of ~560
+      const cleanTranscript = stripEmojisForLength(latest.transcript || '');
+      const cleanTitle = stripEmojisForLength(title);
 
-💡 This is a preview. Full version: https://share.scribetok.com/v/${latest.task_id}`;
-      } else {
-        message = `📄 Full transcript: "${title}"
+      const baseMessage = `Full transcript: "${cleanTitle}"\n\n`;
+      const footer = `\n\nFull version: ${shareUrl}`;
+      const availableChars = SMS_GSM_8_SEGMENTS - baseMessage.length - footer.length;
 
-${transcript}
+      // Truncate transcript content to fit (~1100 chars of actual content)
+      const truncatedTranscript = truncateForSMS(cleanTranscript, Math.max(availableChars, 200));
 
-🔗 Share: https://share.scribetok.com/v/${latest.task_id}`;
-      }
+      const message = `${baseMessage}${truncatedTranscript}${footer}`;
       
       await sendSMS(From, message);
       return sendTwilioResponse('');
@@ -916,6 +942,11 @@ ${transcript}
   }
   // Use the first matched URL
   const url = match[0];
+  if (!isYouTubeUrl(url) && !isTikTokUrl(url) && !isInstagramUrl(url) && !isFacebookUrl(url)) {
+    return sendTwilioResponse(
+      "⚠️ We currently support TikTok, YouTube, Instagram, and Facebook links. Send one of those and I’ll transcribe it!"
+    );
+  }
   try {
     // Get or create SMS user and check credits
     const smsUser = await getOrCreateSMSUser(normalizedFrom, supabase);
@@ -1001,43 +1032,22 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
           console.error('Supabase insert error:', error);
           return sendTwilioResponse('⚠️ Error saving your YouTube transcript. Try again.');
         }
-        // Send SMS with transcript preview
-        const words = transcript.split(' ').slice(0, 50);
-        const shortTranscript = words.join(' ') + (transcript.split(' ').length > 50 ? '...' : '');
-        
-        let message = `🎬 YouTube Transcript ready: "${transcriptData.title || 'Video'}"
+        // Send SMS with transcript preview - keep compact to avoid error 30019
+        const shortTitle = truncateTitle(transcriptData.title || 'Video', 50);
+        const shareUrl = `https://share.scribetok.com/v/${insertedTask.task_id}`;
 
-${shortTranscript}
+        const header = `YouTube ready: "${shortTitle}"\n\n`;
+        const footer = `\n\n${shareUrl}\n/full for more | /tldr to regenerate\n${newCreditsRemaining} credits left`;
 
-📖 Full transcript: https://share.scribetok.com/v/${insertedTask.task_id}
-💳 Credits remaining: ${newCreditsRemaining}`;
+        const availableChars = SMS_SAFE_CHARS - header.length - footer.length;
+        const shortTranscript = truncateForSMS(transcript, Math.max(availableChars, 150));
 
-        // Add upsell messages based on credits remaining - optimized conversion flow
+        let message = `${header}${shortTranscript}${footer}`;
+
+        // Only add upsell for 0 credits
         if (newCreditsRemaining === 0) {
-          message += `
-
-💳 You've used all 3 free transcripts!
-Get 5 more for just $1.99 - cheaper than 1 jukebox song!
-🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-
-🎁 Or invite friends: /referral`;
-        } else if (newCreditsRemaining === 1) {
-          message += `
-
-⚠️ Last free transcript! Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-🎁 Or invite friends: /referral`;
-        } else if (newCreditsRemaining === 2) {
-          message += `
-
-💡 Only 2 free transcripts left! 
-🚀 Get 5 more for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
+          message += `\n\nOut of credits! 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
         }
-
-        message += `
-
-💬 Share with friends who'd love this!
-📱 Send link: https://share.scribetok.com/v/${insertedTask.task_id}
-🎁 Want free credits? Text /referral for your sharing link!`;
 
         await sendSMS(From, message);
         return sendTwilioResponse('✅ YouTube transcript complete! Check your texts for details.');
