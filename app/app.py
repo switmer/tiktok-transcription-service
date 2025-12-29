@@ -166,7 +166,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://scribetok.com",
-        "https://www.scribetok.com", 
+        "https://www.scribetok.com",
+        "https://share.scribetok.com",
         "https://api.scribetok.com",
         "https://project-waitlist-signup-card-with-animation-586.magicpatterns.app",
         "https://c9218a45-acf5-4cc4-a39d-076b2ba2fab6-render.magicpatterns.app",
