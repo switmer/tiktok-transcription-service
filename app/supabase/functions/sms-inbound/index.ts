@@ -361,6 +361,98 @@ function extractYouTubeVideoId(url) {
   const match = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/);
   return match ? match[1] : null;
 }
+// Create unique Stripe checkout session with phone number in metadata (one-time payment)
+async function createStripeCheckoutUrl(phoneNumber: string, priceId: string, credits: number): Promise<string | null> {
+  const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY');
+  if (!stripeSecretKey || !priceId) {
+    console.log('Stripe not configured, cannot create checkout session');
+    return null;
+  }
+
+  try {
+    const frontendUrl = Deno.env.get('FRONTEND_URL') || 'https://scribetok.com';
+
+    const params = new URLSearchParams();
+    params.append('payment_method_types[]', 'card');
+    params.append('line_items[0][price]', priceId);
+    params.append('line_items[0][quantity]', '1');
+    params.append('mode', 'payment');
+    params.append('success_url', `${frontendUrl}/sms-payment-success?session_id={CHECKOUT_SESSION_ID}`);
+    params.append('cancel_url', `${frontendUrl}/sms-payment-canceled`);
+    params.append('metadata[phone_number]', phoneNumber);
+    params.append('metadata[credits]', String(credits));
+    params.append('metadata[source]', 'sms_out_of_credits');
+
+    const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${stripeSecretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('Stripe checkout creation failed:', error);
+      return null;
+    }
+
+    const session = await response.json();
+    console.log(`Created Stripe checkout session ${session.id} for phone ${phoneNumber}`);
+    return session.url;
+  } catch (error) {
+    console.error('Error creating Stripe checkout:', error);
+    return null;
+  }
+}
+
+// Create unique Stripe checkout session for subscription (unlimited plan)
+async function createStripeSubscriptionUrl(phoneNumber: string, priceId: string): Promise<string | null> {
+  const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY');
+  if (!stripeSecretKey || !priceId) {
+    console.log('Stripe not configured, cannot create subscription checkout');
+    return null;
+  }
+
+  try {
+    const frontendUrl = Deno.env.get('FRONTEND_URL') || 'https://scribetok.com';
+
+    const params = new URLSearchParams();
+    params.append('payment_method_types[]', 'card');
+    params.append('line_items[0][price]', priceId);
+    params.append('line_items[0][quantity]', '1');
+    params.append('mode', 'subscription');
+    params.append('success_url', `${frontendUrl}/sms-subscription-success?session_id={CHECKOUT_SESSION_ID}`);
+    params.append('cancel_url', `${frontendUrl}/sms-payment-canceled`);
+    params.append('metadata[phone_number]', phoneNumber);
+    params.append('metadata[plan]', 'unlimited');
+    params.append('metadata[source]', 'sms_out_of_credits');
+
+    const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${stripeSecretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('Stripe subscription checkout creation failed:', error);
+      return null;
+    }
+
+    const session = await response.json();
+    console.log(`Created Stripe subscription checkout ${session.id} for phone ${phoneNumber}`);
+    return session.url;
+  } catch (error) {
+    console.error('Error creating Stripe subscription checkout:', error);
+    return null;
+  }
+}
+
 async function fetchYouTubeTranscript(youtubeUrl, videoId, lang = "en") {
   const apiUrl = "https://youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com/transcript";
   const headers = {
@@ -459,6 +551,47 @@ Deno.serve(async (req)=>{
     console.log(`Rate limit exceeded for ${From}`);
     return sendTwilioResponse('⚠️ Too many commands. Please wait a minute before trying again.');
   }
+
+  // Secret code for free credits (customer support / promos)
+  const secretCode = Deno.env.get('FREE_CREDITS_SECRET_CODE') || '';
+  if (secretCode && Body.trim().toUpperCase() === secretCode.toUpperCase()) {
+    try {
+      // Check if user exists, create if not
+      const { data: existingUser } = await supabase
+        .from('sms_users')
+        .select('credits_remaining')
+        .eq('phone_number', From)
+        .single();
+
+      if (existingUser) {
+        // Add 10 credits to existing user
+        const newCredits = (existingUser.credits_remaining || 0) + 10;
+        await supabase
+          .from('sms_users')
+          .update({ credits_remaining: newCredits })
+          .eq('phone_number', From);
+
+        console.log(`Secret code used: Added 10 credits to ${From}, new balance: ${newCredits}`);
+        return sendTwilioResponse(`🎉 Boom! 10 credits added to your account!\n\n💳 New balance: ${newCredits} credits\n\nEnjoy! 🚀`);
+      } else {
+        // Create new user with 10 credits
+        await supabase
+          .from('sms_users')
+          .insert({
+            phone_number: From,
+            credits_remaining: 10,
+            created_at: new Date().toISOString()
+          });
+
+        console.log(`Secret code used: Created new user ${From} with 10 credits`);
+        return sendTwilioResponse(`🎉 Welcome! 10 credits added to your new account!\n\n💳 Balance: 10 credits\n\nText any TikTok/YouTube link to get started! 🚀`);
+      }
+    } catch (error) {
+      console.error('Error applying secret code:', error);
+      return sendTwilioResponse('❌ Something went wrong. Please try again or contact support.');
+    }
+  }
+
   // Handle commands
   if (Body.trim().toLowerCase() === '/help') {
     return sendTwilioResponse(`🤖 ScribeTok Help:
@@ -479,12 +612,59 @@ Deno.serve(async (req)=>{
 
 💳 Credits:
 • New users get 3 free transcripts
-• 5 more for just $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-• Unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02
+• Text /upgrade for pricing options
 • Refer friends: Both get 3 bonus credits!
 
 Just text any TikTok/YouTube/Instagram/Facebook link to save the good stuff!`);
   }
+
+  // Upgrade command - generate unique payment links
+  if (Body.trim().toLowerCase() === '/upgrade') {
+    // Get user's current credits
+    let currentCredits = 0;
+    try {
+      const { data: userData } = await supabase
+        .from('sms_users')
+        .select('credits_remaining')
+        .eq('phone_number', From)
+        .single();
+      currentCredits = userData?.credits_remaining || 0;
+    } catch (e) {
+      console.log('Could not fetch user credits for upgrade command');
+    }
+
+    // Generate unique checkout URLs with phone number in metadata
+    const fiveCreditsPrice = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || '';
+    const tenCreditsPrice = Deno.env.get('STRIPE_SMS_CREDITS_PRICE_ID') || '';
+    const unlimitedPrice = Deno.env.get('STRIPE_UNLIMITED_PRICE_ID') || '';
+
+    const fiveCreditsUrl = await createStripeCheckoutUrl(From, fiveCreditsPrice, 5);
+    const tenCreditsUrl = await createStripeCheckoutUrl(From, tenCreditsPrice, 10);
+    const unlimitedUrl = await createStripeSubscriptionUrl(From, unlimitedPrice);
+
+    // Build message with available options
+    let message = `💳 Current Credits: ${currentCredits}\n\n🎯 Buy More Credits:\n`;
+
+    if (fiveCreditsUrl) {
+      message += `• 5 credits for $1.99: ${fiveCreditsUrl}\n`;
+    }
+    if (tenCreditsUrl) {
+      message += `• 10 credits for $4.75: ${tenCreditsUrl}\n`;
+    }
+    if (unlimitedUrl) {
+      message += `• Unlimited for $6.75/mo: ${unlimitedUrl}\n`;
+    }
+
+    // Fallback if no Stripe configured
+    if (!fiveCreditsUrl && !tenCreditsUrl && !unlimitedUrl) {
+      message = `💳 Current Credits: ${currentCredits}\n\n⚠️ Payment links temporarily unavailable. Please try again later or contact support.`;
+    } else {
+      message += `\n✨ Credits are instantly added after purchase!\n🎁 Or text /referral to earn free credits!`;
+    }
+
+    return sendTwilioResponse(message);
+  }
+
   // Login command - send OTP
   if (Body.trim().toLowerCase() === '/login') {
     const result = await sendOTP(From, supabase);
@@ -997,13 +1177,25 @@ Reply /help for more commands!`);
     // Check if user has credits remaining (pre-check for UX; actual deduction happens after enqueue)
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0) {
+      // Generate unique checkout URLs with phone number in metadata
+      const fiveCreditsPrice = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || '';
+      const unlimitedPrice = Deno.env.get('STRIPE_UNLIMITED_PRICE_ID') || '';
+
+      // Create unique checkout links for this user
+      const fiveCreditsUrl = await createStripeCheckoutUrl(From, fiveCreditsPrice, 5);
+      const unlimitedUrl = await createStripeSubscriptionUrl(From, unlimitedPrice);
+
+      // Fallback to static links if Stripe checkout creation fails
+      const buyLink = fiveCreditsUrl || 'https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01';
+      const unlimitedLink = unlimitedUrl || 'https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02';
+
       return sendTwilioResponse(`💳 You've used all your free transcripts!
 
 Get 5 more for just $1.99 - cheaper than 1 jukebox song!
-🚀 Buy now: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
+🚀 Buy now: ${buyLink}
 
 🎁 Or invite friends for 3 free credits each: /referral
-💻 Go unlimited for $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
+💻 Go unlimited for $6.75/month: ${unlimitedLink}`);
     }
 
     // We only deduct credits AFTER the backend successfully queues the job.

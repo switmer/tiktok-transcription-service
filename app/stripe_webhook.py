@@ -323,7 +323,7 @@ async def send_purchase_confirmation_sms(phone_number: str, credits_added: int, 
     """
     try:
         # Import here to avoid circular imports
-        from sms_handler import send_sms
+        from sms import send_sms
         
         message = f"🎉 Purchase confirmed! You now have {total_credits} credits ({credits_added} added). Send any TikTok/YouTube link to transcribe!"
         

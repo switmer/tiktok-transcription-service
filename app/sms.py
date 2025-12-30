@@ -201,25 +201,58 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
     async def handle_upgrade_command(phone_number: str) -> str:
         """Handle /upgrade command for purchasing credits"""
         try:
+            import stripe
+
             # Check current credit balance
             result = supabase.table("sms_users").select("credits_remaining, free_credits_used").eq("phone_number", phone_number).execute()
-            
+
             current_credits = 0
             free_used = 0
             if result.data:
                 current_credits = result.data[0].get("credits_remaining", 0)
                 free_used = result.data[0].get("free_credits_used", 0)
-            
+
             # Calculate free credits remaining
             free_remaining = max(0, 5 - free_used)
-            
-            # Get the Stripe payment link from environment
-            stripe_payment_link = os.getenv("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/test_your_payment_link_here")
-            
+
+            # Create a unique Stripe Checkout Session with phone_number in metadata
+            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+            stripe_price_id = os.getenv("STRIPE_SMS_CREDITS_PRICE_ID")  # Price ID for 10 credits
+
+            if not stripe.api_key or not stripe_price_id:
+                # Fallback to static link if Stripe not configured
+                stripe_payment_link = os.getenv("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/test_your_payment_link_here")
+                logger.warning("Stripe not fully configured, using static payment link")
+            else:
+                # Create unique checkout session with phone_number baked in
+                frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
+
+                checkout_session = stripe.checkout.Session.create(
+                    payment_method_types=['card'],
+                    line_items=[{
+                        'price': stripe_price_id,
+                        'quantity': 1,
+                    }],
+                    mode='payment',
+                    success_url=f'{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}',
+                    cancel_url=f'{frontend_url}/sms-payment-canceled',
+                    metadata={
+                        'phone_number': phone_number,  # This is the key - phone number is now in the session
+                        'credits': '10',
+                        'package_name': '10 SMS Credits',
+                        'source': 'sms_upgrade'
+                    },
+                    # Pre-fill customer phone if possible
+                    phone_number_collection={'enabled': True},
+                )
+
+                stripe_payment_link = checkout_session.url
+                logger.info(f"Created unique checkout session {checkout_session.id} for phone {phone_number}")
+
             status_text = f"💳 Current Credits: {current_credits}"
             if free_remaining > 0:
                 status_text += f" ({free_remaining} free remaining)"
-            
+
             return (
                 f"{status_text}\n\n"
                 f"🎯 Buy 10 SMS Credits for $5:\n"
@@ -228,7 +261,7 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
                 f"💬 No account required - credits never expire.\n\n"
                 f"Questions? Reply HELP"
             )
-            
+
         except Exception as e:
             logger.error(f"Error in upgrade command: {str(e)}")
             return "💳 Sorry, couldn't load upgrade info right now. Please try again later!"
