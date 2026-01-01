@@ -2611,7 +2611,7 @@ async def rich_link_preview(task_id: str, request: Request):
             return str(num)
         
         # Build the title - prioritize quote/TLDR format
-        title = task.get('title', 'TikTok Transcript')
+        title = task.get('title') or 'TikTok Transcript'
         if len(title) > 60:
             title = title[:57] + "..."
         
