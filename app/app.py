@@ -1923,6 +1923,149 @@ async def submit_task(
         logger.error(f"Error submitting task for URL {request.url}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to submit task")
 
+@app.post("/api/tasks/{task_id}/retry", tags=["Private Task Management"])
+async def retry_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key)
+):
+    """Retry a failed transcription task."""
+    if supabase is None:
+        logger.error("Cannot retry task: Supabase client not initialized")
+        raise HTTPException(status_code=500, detail="Database connection error")
+
+    try:
+        # Fetch the existing task
+        response = await asyncio.to_thread(
+            lambda: supabase.table('transcriptions')
+                    .select("task_id, url, status")
+                    .eq('task_id', task_id)
+                    .single()
+                    .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = response.data
+        video_url = task.get('url')
+
+        if not video_url:
+            raise HTTPException(status_code=400, detail="Task has no URL to retry")
+
+        # Only allow retry for failed tasks (or optionally pending/stuck tasks)
+        if task.get('status') not in ['failed', 'pending']:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot retry task with status '{task.get('status')}'. Only failed tasks can be retried."
+            )
+
+        # Reset task status to pending and clear error
+        await asyncio.to_thread(
+            lambda: supabase.table('transcriptions')
+                    .update({
+                        "status": "pending",
+                        "error": None,
+                        "updated_at": datetime.now().isoformat()
+                    })
+                    .eq('task_id', task_id)
+                    .execute()
+        )
+
+        logger.info(f"Retrying task {task_id} for URL: {video_url}")
+
+        # Queue the task for reprocessing
+        background_tasks.add_task(
+            process_transcription_task,
+            task_id,
+            video_url,
+            None,  # callback_url
+            None   # proxy
+        )
+
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "message": "Task queued for retry"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying task {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retry task")
+
+@app.post("/api/public/tasks/{task_id}/retry", tags=["Public Task Management"])
+async def public_retry_task(
+    task_id: str,
+    background_tasks: BackgroundTasks
+):
+    """Retry a failed transcription task (public endpoint)."""
+    if supabase is None:
+        logger.error("Cannot retry task: Supabase client not initialized")
+        raise HTTPException(status_code=500, detail="Database connection error")
+
+    try:
+        # Fetch the existing task
+        response = await asyncio.to_thread(
+            lambda: supabase.table('transcriptions')
+                    .select("task_id, url, status")
+                    .eq('task_id', task_id)
+                    .single()
+                    .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = response.data
+        video_url = task.get('url')
+
+        if not video_url:
+            raise HTTPException(status_code=400, detail="Task has no URL to retry")
+
+        # Only allow retry for failed tasks
+        if task.get('status') != 'failed':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot retry task with status '{task.get('status')}'. Only failed tasks can be retried."
+            )
+
+        # Reset task status to pending and clear error
+        await asyncio.to_thread(
+            lambda: supabase.table('transcriptions')
+                    .update({
+                        "status": "pending",
+                        "error": None,
+                        "updated_at": datetime.now().isoformat()
+                    })
+                    .eq('task_id', task_id)
+                    .execute()
+        )
+
+        logger.info(f"Retrying task {task_id} for URL: {video_url}")
+
+        # Queue the task for reprocessing
+        background_tasks.add_task(
+            process_transcription_task,
+            task_id,
+            video_url,
+            None,  # callback_url
+            None   # proxy
+        )
+
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "message": "Task queued for retry"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying task {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retry task")
+
 @app.post("/api/cleanup-stuck-tasks", tags=["System & Health"])
 async def cleanup_stuck_tasks(api_key: str = Depends(verify_api_key)):
     """Mark long-pending tasks as failed (requires API key)"""
