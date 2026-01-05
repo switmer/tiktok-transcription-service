@@ -568,3 +568,94 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
     except Exception as e:
         logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving analytics")
+
+
+@router.get("/api/admin/stats")
+async def admin_stats(
+    period: str = "month",
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get comprehensive admin statistics including costs, revenue, and trends.
+
+    Args:
+        period: Time period for stats - 'day', 'week', 'month', or 'all'
+
+    Returns:
+        Detailed admin stats including financials, users, usage, and cost breakdown
+    """
+    try:
+        from ..cost_tracker import CostTracker
+
+        # Validate period
+        if period not in ['day', 'week', 'month', 'all']:
+            period = 'month'
+
+        stats = await CostTracker.get_admin_stats(period)
+
+        if not stats:
+            # Return empty stats structure if no data
+            return {
+                "period": period,
+                "financials": {
+                    "revenue_cents": 0,
+                    "costs_cents": 0,
+                    "profit_cents": 0,
+                    "margin_percent": 0
+                },
+                "users": {
+                    "total": 0,
+                    "active": 0,
+                    "new": 0,
+                    "paid": 0,
+                    "conversion_rate": 0
+                },
+                "usage": {
+                    "transcriptions": 0,
+                    "success_rate": 0
+                },
+                "cost_breakdown": [],
+                "revenue_breakdown": {}
+            }
+
+        return stats
+
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Cost tracking module not available")
+    except Exception as e:
+        logger.error(f"Error getting admin stats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error retrieving admin stats: {str(e)}")
+
+
+@router.get("/api/admin/trends")
+async def admin_trends(
+    days: int = 30,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get daily cost/revenue trends for charting.
+
+    Args:
+        days: Number of days to fetch (default 30, max 90)
+
+    Returns:
+        List of daily data with costs, revenue, and transcription counts
+    """
+    try:
+        from ..cost_tracker import CostTracker
+
+        # Cap days at 90
+        days = min(days, 90)
+
+        trends = await CostTracker.get_cost_trends(days)
+
+        if not trends:
+            return []
+
+        return trends
+
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Cost tracking module not available")
+    except Exception as e:
+        logger.error(f"Error getting admin trends: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error retrieving trends: {str(e)}")

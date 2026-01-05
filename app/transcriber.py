@@ -10,9 +10,25 @@ import logging
 import requests
 import json
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import asyncio
+import threading
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+# Cost tracking helper - fire-and-forget for sync functions
+def _track_cost_async(coro):
+    """Run an async cost tracking coroutine from sync code without blocking."""
+    def run():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(coro)
+            loop.close()
+        except Exception as e:
+            logger.debug(f"Cost tracking background task error: {e}")
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
 
 # Initialize OpenAI client with explicit API key and timeout
 api_key = os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -213,13 +229,24 @@ def download_youtube_rapidapi(url: str) -> dict:
             data = response.json()
             logger.info(f"YouTube RapidAPI response received")
             normalized_metadata = _extract_youtube_metadata(data)
-            
+
+            # Track RapidAPI cost (fire-and-forget)
+            try:
+                from .cost_tracker import log_rapidapi_cost
+                _track_cost_async(log_rapidapi_cost(
+                    platform="youtube",
+                    video_id=video_id,
+                    success=True
+                ))
+            except ImportError:
+                pass
+
             # Extract transcript
             transcript = data.get("transcript", "")
             if transcript:
                 # Format transcript with simple line breaks (matching Edge Function style)
                 transcript_text = transcript.strip()
-                
+
                 logger.info(f"YouTube RapidAPI success - video_id: {video_id}")
                 return {
                     "video_id": video_id,
@@ -238,11 +265,22 @@ def download_youtube_rapidapi(url: str) -> dict:
             else:
                 logger.error(f"No transcript found in YouTube RapidAPI response: {data}")
                 return None
-                
+
         else:
             logger.error(f"YouTube RapidAPI request failed: {response.status_code}: {response.text}")
+            # Track failed RapidAPI call
+            try:
+                from .cost_tracker import log_rapidapi_cost
+                _track_cost_async(log_rapidapi_cost(
+                    platform="youtube",
+                    video_id=video_id,
+                    success=False,
+                    error_message=f"HTTP {response.status_code}"
+                ))
+            except ImportError:
+                pass
             return None
-            
+
     except Exception as e:
         logger.error(f"YouTube RapidAPI transcription failed: {str(e)}")
         return None
@@ -331,6 +369,18 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                             json.dump(metadata, f, indent=2)
                         
                         logger.info(f"RapidAPI success - returning video_url: {video_url}")
+
+                        # Track TikTok RapidAPI cost (fire-and-forget)
+                        try:
+                            from .cost_tracker import log_rapidapi_cost
+                            _track_cost_async(log_rapidapi_cost(
+                                platform="tiktok",
+                                video_id=video_id,
+                                success=True
+                            ))
+                        except ImportError:
+                            pass
+
                         return {
                             "video_id": video_id,
                             "title": title,
@@ -339,23 +389,33 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                             "metadata_file": metadata_path,
                             "video_url": video_url  # Direct CDN URL for database storage
                         }
-                        
+
                     except subprocess.CalledProcessError as e:
                         logger.error(f"FFmpeg failed: {e}")
                         return None
-                        
+
                 else:
                     logger.error(f"Failed to download video: {video_response.status_code}")
                     return None
-                    
+
             else:
                 logger.error(f"RapidAPI returned error: {data}")
                 return None
-                
+
         else:
             logger.error(f"RapidAPI request failed: {response.status_code}")
+            # Track failed RapidAPI call
+            try:
+                from .cost_tracker import log_rapidapi_cost
+                _track_cost_async(log_rapidapi_cost(
+                    platform="tiktok",
+                    success=False,
+                    error_message=f"HTTP {response.status_code}"
+                ))
+            except ImportError:
+                pass
             return None
-            
+
     except Exception as e:
         logger.error(f"RapidAPI download failed: {str(e)}")
         return None
@@ -470,6 +530,17 @@ def download_instagram_rapidapi(url: str, output_dir: str):
                     with open(metadata_path, 'w') as f:
                         json.dump(metadata, f, indent=2)
 
+                    # Track Instagram RapidAPI cost (fire-and-forget)
+                    try:
+                        from .cost_tracker import log_rapidapi_cost
+                        _track_cost_async(log_rapidapi_cost(
+                            platform="instagram",
+                            video_id=video_id,
+                            success=True
+                        ))
+                    except ImportError:
+                        pass
+
                     return {
                         "video_id": video_id,
                         "title": title,
@@ -488,6 +559,16 @@ def download_instagram_rapidapi(url: str, output_dir: str):
                 return None
         elif response.status_code == 429:
             logger.warning("Instagram RapidAPI rate limit exceeded")
+            # Track rate limit as failed call
+            try:
+                from .cost_tracker import log_rapidapi_cost
+                _track_cost_async(log_rapidapi_cost(
+                    platform="instagram",
+                    success=False,
+                    error_message="Rate limit exceeded"
+                ))
+            except ImportError:
+                pass
             return None
         else:
             logger.error(f"Instagram RapidAPI request failed: {response.status_code}")
@@ -615,6 +696,17 @@ def download_facebook_rapidapi(url: str, output_dir: str):
                 metadata_path = os.path.join(output_dir, f"{video_id}.info.json")
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=2)
+
+                # Track Facebook RapidAPI cost (fire-and-forget)
+                try:
+                    from .cost_tracker import log_rapidapi_cost
+                    _track_cost_async(log_rapidapi_cost(
+                        platform="facebook",
+                        video_id=video_id,
+                        success=True
+                    ))
+                except ImportError:
+                    pass
 
                 return {
                     "video_id": video_id,
@@ -886,7 +978,7 @@ def format_timestamped_transcript(transcript_data, max_duration_seconds=None):
         
     return '\n'.join(formatted_lines)
 
-def transcribe_audio(audio_file: str, output_dir: str, video_id: str):
+def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone: str = None, task_id: str = None):
     """Transcribe audio file using OpenAI Whisper, always requesting verbose_json."""
     if client is None:
         logger.error("Cannot transcribe audio: OpenAI client not initialized")
@@ -894,17 +986,40 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str):
 
     try:
         logger.info(f"Transcribing audio file: {audio_file} (Requesting verbose_json)")
-        
+
+        # Get audio file size for cost tracking
+        audio_file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else None
+
         # Always request verbose_json for timestamped data
-        openai_format = "verbose_json" 
-        
+        openai_format = "verbose_json"
+
         with open(audio_file, "rb") as audio:
             transcript_response = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio,
                 response_format=openai_format
             )
-        
+
+        # Extract duration for cost tracking (from verbose_json response)
+        duration_seconds = 0
+        if hasattr(transcript_response, 'duration'):
+            duration_seconds = transcript_response.duration
+        elif isinstance(transcript_response, dict) and 'duration' in transcript_response:
+            duration_seconds = transcript_response['duration']
+
+        # Track Whisper cost (fire-and-forget)
+        try:
+            from .cost_tracker import log_whisper_cost
+            _track_cost_async(log_whisper_cost(
+                duration_seconds=duration_seconds,
+                user_phone=user_phone,
+                task_id=task_id or video_id,
+                audio_file_size_bytes=audio_file_size,
+                success=True
+            ))
+        except ImportError:
+            pass  # Cost tracking module not available
+
         # Always format the verbose_json response
         final_transcript_text = format_timestamped_transcript(transcript_response)
 
@@ -912,28 +1027,40 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str):
         transcript_file = os.path.join(output_dir, f"{video_id}_transcript.txt")
         with open(transcript_file, "w", encoding="utf-8") as f:
             f.write(final_transcript_text)
-        
+
         logger.info(f"Transcript saved to: {transcript_file}")
         # Return the raw verbose_json response and the file path
-        return transcript_response, transcript_file 
-    
+        return transcript_response, transcript_file
+
     except Exception as e:
         logger.error(f"Error transcribing audio: {str(e)}")
+        # Track failed transcription cost attempt
+        try:
+            from .cost_tracker import log_whisper_cost
+            _track_cost_async(log_whisper_cost(
+                duration_seconds=0,
+                user_phone=user_phone,
+                task_id=task_id or video_id,
+                success=False,
+                error_message=str(e)
+            ))
+        except ImportError:
+            pass
         return None, None
 
-def generate_quote_and_tldr(transcript_text: str, title: str = "", description: str = "") -> dict:
+def generate_quote_and_tldr(transcript_text: str, title: str = "", description: str = "", user_phone: str = None, task_id: str = None) -> dict:
     """Generate a shareable quote and TLDR summary from transcript text"""
     if client is None:
         logger.error("Cannot generate quote+TLDR: OpenAI client not initialized")
         return {"quote": None, "tldr": None}
-    
+
     try:
         # Truncate transcript if too long (GPT-3.5 has token limits)
         max_chars = 3000
         truncated_transcript = transcript_text[:max_chars] + "..." if len(transcript_text) > max_chars else transcript_text
         safe_title = (title or "").strip()
         safe_description = (description or "").strip()
-        
+
         prompt = f"""You are ScribeTok's AI that extracts memorable quotes and detailed insights from video content. Your job is to capture the REAL value - the specific advice, unique perspectives, and actionable wisdom that people actually want to save and share.
 
 Use the title/description to resolve names, topics, and context. If anything conflicts, trust the transcript.
@@ -944,7 +1071,7 @@ QUOTE Guidelines:
 - Can be philosophical, funny, controversial, or deeply relatable
 - Don't pick generic feel-good lines - pick the MEAT
 
-TLDR Guidelines:  
+TLDR Guidelines:
 - 3-4 bullet points that capture the specific, actionable content
 - Include concrete examples, methods, or unique approaches mentioned
 - Focus on what someone could actually DO or specific perspectives they shared
@@ -974,32 +1101,62 @@ Transcript:
             max_tokens=600,
             temperature=0.8
         )
-        
+
+        # Track GPT cost (fire-and-forget)
+        tokens_used = None
+        if hasattr(response, 'usage') and response.usage:
+            tokens_used = response.usage.total_tokens
+        try:
+            from .cost_tracker import log_gpt_cost
+            _track_cost_async(log_gpt_cost(
+                model="gpt-3.5-turbo",
+                tokens_used=tokens_used,
+                user_phone=user_phone,
+                task_id=task_id,
+                purpose="quote_tldr",
+                success=True
+            ))
+        except ImportError:
+            pass
+
         # Parse the JSON response
         result_text = response.choices[0].message.content.strip()
         logger.info(f"Quote+TLDR raw response: {result_text}")
-        
+
         # Try to parse JSON
         try:
             parsed_result = json.loads(result_text)
             quote = parsed_result.get("quote", "").strip('"')  # Remove extra quotes
             tldr = parsed_result.get("tldr", [])
-            
+
             # Validate results
             if not quote or not tldr:
                 logger.warning("Quote or TLDR missing from response")
                 return {"quote": None, "tldr": None}
-                
+
             logger.info(f"Generated quote: {quote}")
             logger.info(f"Generated TLDR: {tldr}")
-            
+
             return {"quote": quote, "tldr": tldr}
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse quote+TLDR JSON: {e}")
             logger.error(f"Raw response was: {result_text}")
             return {"quote": None, "tldr": None}
-            
+
     except Exception as e:
         logger.error(f"Error generating quote+TLDR: {str(e)}")
+        # Track failed GPT call
+        try:
+            from .cost_tracker import log_gpt_cost
+            _track_cost_async(log_gpt_cost(
+                model="gpt-3.5-turbo",
+                user_phone=user_phone,
+                task_id=task_id,
+                purpose="quote_tldr",
+                success=False,
+                error_message=str(e)
+            ))
+        except ImportError:
+            pass
         return {"quote": None, "tldr": None} 
