@@ -117,4 +117,7 @@ venv.bak/
 venv-py312/
 downloads/
 .env
-*.log 
+*.log
+
+# Local test/debug scripts
+test_*.py
