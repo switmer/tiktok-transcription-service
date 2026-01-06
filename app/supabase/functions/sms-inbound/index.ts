@@ -471,9 +471,16 @@ async function fetchYouTubeTranscript(youtubeUrl, videoId, lang = "en") {
   return await response.json();
 }
 Deno.serve(async (req)=>{
+  // Escape XML special characters to avoid breaking TwiML
+  const escapeXml = (str: string) => str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
   // Immediate response function to avoid Twilio timeout
-  // Note: escapeXml disabled temporarily for debugging - re-enable after testing
-  const sendTwilioResponse = (message)=>new Response(`<Response><Message>${message || ''}</Message></Response>`, {
+  const sendTwilioResponse = (message)=>new Response(`<Response><Message>${escapeXml(message || '')}</Message></Response>`, {
       status: 200,
       headers: {
         'Content-Type': 'text/xml'
@@ -631,35 +638,13 @@ Just text any TikTok/YouTube/Instagram/Facebook link!`);
       console.log('Could not fetch user credits for upgrade command');
     }
 
-    // Generate unique checkout URLs with phone number in metadata
-    const fiveCreditsPrice = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || '';
-    const tenCreditsPrice = Deno.env.get('STRIPE_SMS_CREDITS_PRICE_ID') || '';
-    const unlimitedPrice = Deno.env.get('STRIPE_UNLIMITED_PRICE_ID') || '';
+    // Use short URL that redirects to Stripe checkout (keeps SMS under carrier limit)
+    const apiBaseUrl = Deno.env.get('RENDER_SERVICE_URL') || 'https://api.scribetok.com';
+    const shortPayUrl = `${apiBaseUrl}/pay?p=${encodeURIComponent(From)}&c=5`;
 
-    const fiveCreditsUrl = await createStripeCheckoutUrl(From, fiveCreditsPrice, 5);
-    const tenCreditsUrl = await createStripeCheckoutUrl(From, tenCreditsPrice, 10);
-    const unlimitedUrl = await createStripeSubscriptionUrl(From, unlimitedPrice);
+    const message = `💳 Credits: ${currentCredits}\n\n🎯 Get 5 for $1.99:\n${shortPayUrl}\n\n✨ Instant!\n🎁 /referral = free`;
 
-    // Build message with available options
-    let message = `💳 Current Credits: ${currentCredits}\n\n🎯 Buy More Credits:\n`;
-
-    if (fiveCreditsUrl) {
-      message += `• 5 credits for $1.99: ${fiveCreditsUrl}\n`;
-    }
-    if (tenCreditsUrl) {
-      message += `• 10 credits for $4.75: ${tenCreditsUrl}\n`;
-    }
-    if (unlimitedUrl) {
-      message += `• Unlimited for $6.75/mo: ${unlimitedUrl}\n`;
-    }
-
-    // Fallback if no Stripe configured
-    if (!fiveCreditsUrl && !tenCreditsUrl && !unlimitedUrl) {
-      message = `💳 Current Credits: ${currentCredits}\n\n⚠️ Payment links temporarily unavailable. Please try again later or contact support.`;
-    } else {
-      message += `\n✨ Credits are instantly added after purchase!\n🎁 Or text /referral to earn free credits!`;
-    }
-
+    console.log('Sending upgrade response, message length:', message.length);
     return sendTwilioResponse(message);
   }
 

@@ -2648,6 +2648,48 @@ async def handle_stripe_webhook(request: Request):
         logger.error(f"Error handling Stripe webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
+@app.get("/pay", tags=["Payment & Billing"])
+async def pay_redirect(p: str = Query(..., description="Phone number"), c: int = Query(5, description="Credits")):
+    """
+    Short URL redirect to Stripe checkout.
+    Creates a checkout session and redirects to Stripe.
+    URL format: /pay?p=+16103244250&c=5
+    """
+    import stripe
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Payment system not configured")
+
+    # Map credits to price IDs
+    price_map = {
+        5: os.getenv("STRIPE_5_CREDITS_PRICE_ID"),
+        10: os.getenv("STRIPE_SMS_CREDITS_PRICE_ID"),
+    }
+
+    price_id = price_map.get(c)
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Invalid credit amount")
+
+    try:
+        frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{'price': price_id, 'quantity': 1}],
+            mode='payment',
+            success_url=f"{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{frontend_url}/sms-payment-canceled",
+            metadata={
+                'phone_number': p,
+                'credits': str(c),
+                'source': 'sms_short_url'
+            }
+        )
+        return RedirectResponse(url=session.url, status_code=303)
+    except Exception as e:
+        logger.error(f"Error creating checkout session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create payment session")
+
 @app.post("/api/webhook/supabase", tags=["System & Health"])
 async def handle_supabase_webhook(
     request: Request,
