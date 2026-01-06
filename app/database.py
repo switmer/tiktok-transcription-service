@@ -1,6 +1,16 @@
-import os
-from supabase.client import create_client, Client
 import logging
+import os
+from typing import Any
+
+try:
+    from supabase.client import create_client, Client
+except Exception as exc:
+    create_client = None
+    Client = Any
+    logging.getLogger(__name__).error(
+        "Supabase client import failed; database operations disabled: %s",
+        exc,
+    )
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -11,6 +21,9 @@ supabase: Client = None
 def init_supabase():
     global supabase
     try:
+        if create_client is None:
+            logger.error("Supabase client library unavailable; skipping initialization")
+            return None
         # Get credentials from environment
         supabase_url = os.environ.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
         supabase_key = os.environ.get("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")

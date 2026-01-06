@@ -597,25 +597,23 @@ Deno.serve(async (req)=>{
     return sendTwilioResponse(`🤖 ScribeTok Help:
 
 📱 Commands:
-/register - Create account & link your history
-/login - Get verification code
-/verify 123456 - Verify with code
-/profile - View your stats & credits
+/link @handle - Connect your TikTok
+/stats - View your creator dashboard
 /vault - View transcripts
 /chat [question] - Ask about your latest transcript
 /tldr - AI summary of your latest transcript
 /quote - Get the best quote from latest video
 /full - See full transcript of latest video
-/reset - Reset your current chat thread
 /referral - Get your referral link for free credits
-/feedback [message] - Send feedback to improve ScribeTok
+/upgrade - Buy more credits
+/profile - View account info
+/feedback [message] - Send feedback
 
 💳 Credits:
 • New users get 3 free transcripts
-• Text /upgrade for pricing options
 • Refer friends: Both get 3 bonus credits!
 
-Just text any TikTok/YouTube/Instagram/Facebook link to save the good stuff!`);
+Just text any TikTok/YouTube/Instagram/Facebook link!`);
   }
 
   // Upgrade command - generate unique payment links
@@ -938,6 +936,114 @@ Success: ${usage.success_rate || 0}%`;
     }
   }
 
+  // Link TikTok account command
+  if (Body.trim().toLowerCase().startsWith('/link')) {
+    try {
+      const input = Body.trim().substring(5).trim(); // Remove '/link '
+
+      if (!input) {
+        return sendTwilioResponse(`🔗 Link your TikTok account:
+
+/link @yourhandle
+or
+/link https://tiktok.com/@yourhandle
+
+Once linked, use /stats to see your creator dashboard!`);
+      }
+
+      // Call the database function to link the TikTok profile
+      const { data, error } = await supabase.rpc('link_tiktok_profile', {
+        p_user_phone: normalizedFrom,
+        p_handle_or_url: input
+      });
+
+      if (error) {
+        console.error('Error linking TikTok profile:', error);
+        if (error.message?.includes('Invalid')) {
+          return sendTwilioResponse(`❌ Invalid TikTok handle or URL.
+
+Try:
+/link @yourhandle
+/link https://tiktok.com/@yourhandle`);
+        }
+        return sendTwilioResponse('❌ Error linking account. Try again later.');
+      }
+
+      const linkedHandle = data?.tiktok_handle || input.replace(/^@/, '');
+
+      return sendTwilioResponse(`🔗 Success! Your TikTok account @${linkedHandle} has been linked to ScribeTok.
+
+You can now use /stats to see your creator dashboard!`);
+    } catch (error) {
+      console.error('Link command error:', error);
+      return sendTwilioResponse('❌ Error linking account. Try again later.');
+    }
+  }
+
+  // Stats command - creator dashboard
+  if (Body.trim().toLowerCase() === '/stats') {
+    try {
+      // Call the database function to get creator stats
+      const { data: stats, error } = await supabase.rpc('get_user_creator_stats', {
+        p_user_phone: normalizedFrom
+      });
+
+      if (error) {
+        console.error('Error fetching creator stats:', error);
+        return sendTwilioResponse('❌ Error loading stats. Try again later.');
+      }
+
+      if (!stats) {
+        return sendTwilioResponse('📊 No stats yet! Send a video link to get started.');
+      }
+
+      // Format the stats into a readable SMS message
+      const totalTranscribed = stats.total_transcribed || 0;
+      const creditsRemaining = stats.credits_remaining || 0;
+      const freeCreditsUsed = stats.free_credits_used || 0;
+      const freeRemaining = Math.max(0, 3 - freeCreditsUsed);
+      const totalReferrals = stats.total_referrals || 0;
+      const referralCredits = stats.total_referral_credits || 0;
+      const tiktokHandle = stats.tiktok_handle;
+      const joinedDate = stats.joined_date ? new Date(stats.joined_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
+
+      let message = `📊 Your ScribeTok Creator Stats
+
+🎥 ${totalTranscribed} videos transcribed
+💳 ${creditsRemaining} credits (${freeRemaining} free remaining)`;
+
+      if (totalReferrals > 0) {
+        message += `\n🎁 ${totalReferrals} friends referred (+${referralCredits} bonus credits)`;
+      }
+
+      if (tiktokHandle) {
+        message += `\n🔗 Linked: @${tiktokHandle}`;
+      } else {
+        message += `\n🔗 No TikTok linked - use /link @handle`;
+      }
+
+      message += `\n📅 Member since: ${joinedDate}`;
+
+      // Add most popular video if available
+      if (stats.most_popular_video?.title) {
+        const views = stats.most_popular_video.views;
+        const viewsFormatted = views >= 1000000
+          ? `${(views / 1000000).toFixed(1)}M`
+          : views >= 1000
+            ? `${(views / 1000).toFixed(0)}K`
+            : views;
+        message += `\n🏆 Top video: "${truncateTitle(stats.most_popular_video.title, 30)}" (${viewsFormatted} views)`;
+      }
+
+      message += `\n\nText /referral for free credits!`;
+
+      return sendTwilioResponse(message);
+    } catch (error) {
+      console.error('Stats command error:', error);
+      return sendTwilioResponse('❌ Error loading stats. Try again later.');
+    }
+  }
+
   // Feedback command
   if (Body.trim().toLowerCase().startsWith('/feedback ')) {
     try {
@@ -1197,6 +1303,7 @@ Reply /help for more commands!`);
     // Note: This is an exact-string match. TikTok shortlinks can vary; a stronger
     // dedupe could normalize by video_id once we resolve it.
     // normalizedFrom was already computed and validated above
+    let isFreeRetry = false; // Track if this is a free retry of a failed task
     try {
       const { data: existingTasks, error: existingError } = await supabase
         .from('transcriptions')
@@ -1224,9 +1331,16 @@ Reply /help for more commands!`);
         if (existing.status === 'pending' || existing.status === 'processing') {
           return sendTwilioResponse(
             `⏳ That link is already being processed.\n\n` +
-              `I’ll text you when it’s ready.\n` +
+              `I'll text you when it's ready.\n` +
               `💳 Credits remaining: ${smsUser.credits_remaining ?? 0}`
           );
+        }
+
+        // If the previous attempt failed, allow a free retry
+        if (existing.status === 'failed' || existing.status === 'error') {
+          console.log(`Free retry for previously failed task ${existing.task_id} (status: ${existing.status})`);
+          isFreeRetry = true;
+          // Continue to normal processing flow - don't return, just flag for free retry
         }
       }
     } catch (dedupeErr) {
@@ -1234,8 +1348,9 @@ Reply /help for more commands!`);
     }
 
     // Check if user has credits remaining (pre-check for UX; actual deduction happens after enqueue)
+    // Skip credit check for free retries of failed tasks
     const creditsRemaining = smsUser.credits_remaining || 0;
-    if (creditsRemaining <= 0) {
+    if (creditsRemaining <= 0 && !isFreeRetry) {
       // Generate unique checkout URLs with phone number in metadata
       const fiveCreditsPrice = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || '';
       const unlimitedPrice = Deno.env.get('STRIPE_UNLIMITED_PRICE_ID') || '';
@@ -1264,34 +1379,69 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
       const videoId = extractYouTubeVideoId(url);
       try {
         const transcriptData = await fetchYouTubeTranscript(url, videoId);
-        const transcript = transcriptData.transcript || '';
+        const transcript = transcriptData?.transcript || '';
+        const title = transcriptData?.title || '';
+        const description = transcriptData?.description || '';
+
+        // Validate we got meaningful data back
+        // Priority: transcript > substantial description > fail
+        const hasTranscript = transcript && transcript.trim().length > 0;
+        const hasTitle = title && title.trim().length > 0;
+        // Consider description "substantial" if it's at least 100 chars (not just "Check out my links!")
+        const hasSubstantialDescription = description && description.trim().length >= 100;
+
+        // Determine what content to use
+        let finalTranscript = transcript;
+        let contentSource = 'transcript';
+
+        if (!hasTranscript) {
+          if (hasSubstantialDescription) {
+            // Use description as the content - video may have no audio but good description
+            console.log('No transcript but has substantial description, using that:', videoId);
+            finalTranscript = `[Video Description]\n\n${description.trim()}`;
+            contentSource = 'description';
+          } else if (!hasTitle) {
+            // Got nothing - complete API failure
+            console.error('YouTube API returned no data for video:', videoId, transcriptData);
+            throw new Error('Failed to fetch video data - API returned empty response');
+          } else {
+            // Has title but no transcript and no substantial description
+            console.error('YouTube video has no usable content:', videoId);
+            throw new Error('No transcript or description available for this video');
+          }
+        }
+
         // Store in Supabase as completed
+        const tags = ['sms-inbound', 'youtube'];
+        if (contentSource === 'description') {
+          tags.push('from-description'); // Flag that content came from description, not audio
+        }
+
         const { data: insertedTask, error } = await supabase.from('transcriptions').insert({
           url: url,
           status: 'completed',
-          tags: [
-            'sms-inbound',
-            'youtube'
-          ],
+          tags: tags,
           category: 'youtube-transcription',
-          title: transcriptData.title || null,
+          title: title || null,
+          description: description || null,
           user_phone: From,
           user_id: null,
-          transcript: transcript
+          transcript: finalTranscript
         }).select('task_id').single();
         if (error) {
           console.error('Supabase insert error:', error);
           return sendTwilioResponse('⚠️ Error saving your YouTube transcript. Try again.');
         }
         // Send SMS with transcript preview - keep compact to avoid error 30019
-        const shortTitle = truncateTitle(transcriptData.title || 'Video', 50);
+        const shortTitle = truncateTitle(title || 'Video', 50);
         const shareUrl = `https://share.scribetok.com/v/${insertedTask.task_id}`;
 
-        const header = `YouTube ready: "${shortTitle}"\n\n`;
+        const contentLabel = contentSource === 'description' ? 'Description' : 'YouTube ready';
+        const header = `${contentLabel}: "${shortTitle}"\n\n`;
         const footer = `\n\n${shareUrl}\n/full for more | /tldr to regenerate\n${newCreditsRemaining} credits left`;
 
         const availableChars = SMS_SAFE_CHARS - header.length - footer.length;
-        const shortTranscript = truncateForSMS(transcript, Math.max(availableChars, 150));
+        const shortTranscript = truncateForSMS(finalTranscript, Math.max(availableChars, 150));
 
         let message = `${header}${shortTranscript}${footer}`;
 
@@ -1345,27 +1495,35 @@ Get 5 more for just $1.99 - cheaper than 1 jukebox song!
       }
 
       // Charge one credit now that the job is successfully queued.
-      try {
-        const { data: creditResult, error: creditError } = await supabase.rpc('atomic_credit_transaction', {
-          user_phone_param: normalizedFrom,
-          credit_change: -1,
-          transaction_type: 'transcription',
-          description: 'SMS transcription',
-          metadata: { url, message_sid: MessageSid ? String(MessageSid) : null },
-        });
-        if (creditError) {
-          console.error('Credit deduction RPC failed:', creditError);
-        } else if (creditResult?.success === false) {
-          console.warn('Insufficient credits at deduction time:', creditResult);
-          // We already queued the job; do not block delivery, but tell user their balance is low.
-        } else if (typeof creditResult?.new_balance === 'number') {
-          newCreditsRemaining = creditResult.new_balance;
+      // Skip credit deduction for free retries of failed tasks
+      if (!isFreeRetry) {
+        try {
+          const { data: creditResult, error: creditError } = await supabase.rpc('atomic_credit_transaction', {
+            user_phone_param: normalizedFrom,
+            credit_change: -1,
+            transaction_type: 'transcription',
+            description: 'SMS transcription',
+            metadata: { url, message_sid: MessageSid ? String(MessageSid) : null },
+          });
+          if (creditError) {
+            console.error('Credit deduction RPC failed:', creditError);
+          } else if (creditResult?.success === false) {
+            console.warn('Insufficient credits at deduction time:', creditResult);
+            // We already queued the job; do not block delivery, but tell user their balance is low.
+          } else if (typeof creditResult?.new_balance === 'number') {
+            newCreditsRemaining = creditResult.new_balance;
+          }
+        } catch (e) {
+          console.error('Credit deduction exception:', e);
         }
-      } catch (e) {
-        console.error('Credit deduction exception:', e);
+      } else {
+        console.log(`Free retry - skipping credit deduction for ${normalizedFrom}`);
       }
 
-      console.log(`Transcription queued for phone ${normalizedFrom}`);
+      console.log(`Transcription queued for phone ${normalizedFrom}${isFreeRetry ? ' (free retry)' : ''}`);
+      if (isFreeRetry) {
+        return sendTwilioResponse(`🔄 Retrying (free)! Last attempt failed.\n💳 ${creditsRemaining} credits`);
+      }
       return sendTwilioResponse(`👍 Got it! Processing your video...\n💳 ${newCreditsRemaining} left`);
     } catch (apiError) {
       console.error('Failed to call Render API:', apiError);
