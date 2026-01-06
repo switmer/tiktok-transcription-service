@@ -830,6 +830,65 @@ ${verifiedStatus}
     }
   }
 
+  // Admin Stats command (admin only)
+  if (Body.trim().toLowerCase() === '/adminstats' || Body.trim().toLowerCase() === '/admin') {
+    // Admin phone numbers
+    const ADMIN_PHONES = ['+16103244250'];
+    if (!ADMIN_PHONES.includes(normalizedFrom)) {
+      return sendTwilioResponse('Unknown command. Text /help for options.');
+    }
+
+    try {
+      // Call Python backend for admin stats
+      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
+      const apiKey = Deno.env.get('RENDER_API_KEY') || '';
+      const statsResponse = await fetch(`${baseUrl.replace(/\/$/, '')}/api/admin/stats?period=month`, {
+        method: 'GET',
+        headers: {
+          'X-API-Key': apiKey,
+          'User-Agent': 'Supabase-Edge-Function'
+        }
+      });
+
+      if (!statsResponse.ok) {
+        console.error('Admin stats API failed:', statsResponse.status);
+        return sendTwilioResponse('Error fetching admin stats. Try again later.');
+      }
+
+      const stats = await statsResponse.json();
+      const f = stats.financials || {};
+      const u = stats.users || {};
+      const usage = stats.usage || {};
+
+      const revenue = (f.revenue_cents || 0) / 100;
+      const costs = (f.costs_cents || 0) / 100;
+      const profit = (f.profit_cents || 0) / 100;
+      const margin = f.margin_percent || 0;
+
+      const message = `ADMIN STATS (Month)
+====================
+FINANCIALS
+Revenue: $${revenue.toFixed(2)}
+Costs: $${costs.toFixed(2)}
+Profit: $${profit.toFixed(2)} (${margin}%)
+
+USERS
+Total: ${u.total || 0}
+Active: ${u.active || 0}
+New: ${u.new || 0}
+Paid: ${u.paid || 0} (${u.conversion_rate || 0}%)
+
+USAGE
+Transcriptions: ${usage.transcriptions || 0}
+Success: ${usage.success_rate || 0}%`;
+
+      return sendTwilioResponse(message);
+    } catch (error) {
+      console.error('Admin stats error:', error);
+      return sendTwilioResponse('Error fetching admin stats. Try again later.');
+    }
+  }
+
   // Referral command
   if (Body.trim().toLowerCase() === '/referral') {
     try {
