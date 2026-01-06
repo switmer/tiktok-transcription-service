@@ -150,24 +150,56 @@ class SMSHandler:
         if not twilio_client:
             logger.error("Cannot send SMS: Twilio client not initialized")
             return False
-        
+
         try:
             message_data = {
                 'to': to,
                 'body': body,
                 'messaging_service_sid': TWILIO_MESSAGING_SERVICE_SID
             }
-            
+
             if status_callback:
                 message_data['status_callback'] = status_callback
-            
+
             message = twilio_client.messages.create(**message_data)
-            
+
             logger.info(f"SMS sent successfully to {to}, SID: {message.sid}")
+
+            # Track outbound SMS cost (calculate segments based on message length)
+            # SMS segment: 160 chars for GSM-7, 70 chars for Unicode
+            segments = (len(body) // 160) + 1 if len(body) > 0 else 1
+            try:
+                from .cost_tracker import log_twilio_sms_cost
+                await log_twilio_sms_cost(
+                    direction="outbound",
+                    segments=segments,
+                    user_phone=to,
+                    message_sid=message.sid,
+                    success=True
+                )
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug(f"Cost tracking error: {e}")
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to send SMS to {to}: {str(e)}")
+            # Track failed SMS attempt
+            try:
+                from .cost_tracker import log_twilio_sms_cost
+                await log_twilio_sms_cost(
+                    direction="outbound",
+                    segments=1,
+                    user_phone=to,
+                    success=False,
+                    error_message=str(e)
+                )
+            except ImportError:
+                pass
+            except Exception:
+                pass
             return False
     
     @staticmethod
@@ -1113,10 +1145,24 @@ Content:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(url, headers=headers, json=data)
                 response.raise_for_status()
-                
+
                 result = response.json()
+
+                # Track Claude API cost
+                try:
+                    from .cost_tracker import log_claude_cost
+                    await log_claude_cost(
+                        model="claude-3-haiku-20240307",
+                        purpose="summary",
+                        success=True
+                    )
+                except ImportError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"Cost tracking error: {e}")
+
                 return result["content"][0]["text"].strip()
-                
+
         except Exception as e:
             logger.error(f"Claude API error: {str(e)}")
             raise e
@@ -1163,6 +1209,20 @@ Answer:"""
                 response = await client.post(url, headers=headers, json=data)
                 response.raise_for_status()
                 result = response.json()
+
+                # Track Claude API cost
+                try:
+                    from .cost_tracker import log_claude_cost
+                    await log_claude_cost(
+                        model="claude-3-haiku-20240307",
+                        purpose="chat_answer",
+                        success=True
+                    )
+                except ImportError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"Cost tracking error: {e}")
+
                 return result["content"][0]["text"].strip()
         except Exception as e:
             logger.error(f"Claude API error (answer): {str(e)}")
@@ -1211,6 +1271,20 @@ Updated summary:"""
                 response = await client.post(url, headers=headers, json=data)
                 response.raise_for_status()
                 result = response.json()
+
+                # Track Claude API cost
+                try:
+                    from .cost_tracker import log_claude_cost
+                    await log_claude_cost(
+                        model="claude-3-haiku-20240307",
+                        purpose="chat_summary",
+                        success=True
+                    )
+                except ImportError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"Cost tracking error: {e}")
+
                 return result["content"][0]["text"].strip()
         except Exception as e:
             logger.error(f"Claude API error (summary): {str(e)}")
@@ -1340,12 +1414,50 @@ Updated summary:"""
             raise e
     
     @staticmethod
+    async def handle_adminstats_command(phone_number: str, period: str = "month") -> str:
+        """Handle /AdminStats command for admin users only"""
+        # Admin phone numbers (format: +1XXXXXXXXXX)
+        ADMIN_PHONES = ["+16103244250"]
+
+        # Normalize phone number
+        normalized = phone_number
+        if not phone_number.startswith("+"):
+            normalized = "+1" + phone_number.lstrip("+")
+
+        if normalized not in ADMIN_PHONES:
+            return "Unknown command. Text /help for options."
+
+        try:
+            from .cost_tracker import CostTracker
+            return await CostTracker.format_admin_stats_detailed()
+        except ImportError:
+            return "Admin stats module not available."
+        except Exception as e:
+            logger.error(f"Error in adminstats command: {str(e)}")
+            return f"Error fetching admin stats: {str(e)}"
+
+    @staticmethod
     async def process_inbound_sms(from_number: str, body: str) -> str:
         """Process incoming SMS and return TwiML response"""
         body = body.strip()
-        
+
         logger.info(f"Processing SMS from {from_number}: {body[:50]}...")
-        
+
+        # Track inbound SMS cost
+        try:
+            from .cost_tracker import log_twilio_sms_cost
+            segments = (len(body) // 160) + 1 if len(body) > 0 else 1
+            await log_twilio_sms_cost(
+                direction="inbound",
+                segments=segments,
+                user_phone=from_number,
+                success=True
+            )
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Cost tracking error: {e}")
+
         # Handle commands
         if body.lower() == '/help':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_help_command(from_number))
@@ -1376,7 +1488,19 @@ Updated summary:"""
         
         elif body.lower() == '/myvideos':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_myvideos_command(from_number))
-        
+
+        # Admin commands
+        elif body.lower() == '/adminstats' or body.lower() == '/admin':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_adminstats_command(from_number))
+
+        elif body.lower().startswith('/adminstats '):
+            # Support period parameter: /adminstats day, /adminstats week, /adminstats month
+            parts = body.lower().split(' ', 1)
+            period = parts[1].strip() if len(parts) > 1 else "month"
+            if period not in ['day', 'week', 'month', 'all']:
+                period = 'month'
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_adminstats_command(from_number, period))
+
         # Check for video URLs
         elif SMSHandler.is_video_url(body):
             video_url = SMSHandler.extract_video_url(body)
@@ -1419,24 +1543,41 @@ async def send_sms(phone_number: str, message: str) -> bool:
         if not twilio_client:
             logger.warning(f"Twilio not available, cannot send SMS to {phone_number}")
             return False
-            
+
         # Use messaging service if available, otherwise use phone number
         if TWILIO_MESSAGING_SERVICE_SID:
-            message = twilio_client.messages.create(
+            msg = twilio_client.messages.create(
                 body=message,
                 messaging_service_sid=TWILIO_MESSAGING_SERVICE_SID,
                 to=phone_number
             )
         else:
-            message = twilio_client.messages.create(
+            msg = twilio_client.messages.create(
                 body=message,
                 from_=TWILIO_PHONE_NUMBER,
                 to=phone_number
             )
-        
-        logger.info(f"SMS sent successfully to {phone_number}: {message.sid}")
+
+        logger.info(f"SMS sent successfully to {phone_number}: {msg.sid}")
+
+        # Track outbound SMS cost
+        segments = (len(message) // 160) + 1 if len(message) > 0 else 1
+        try:
+            from .cost_tracker import log_twilio_sms_cost
+            await log_twilio_sms_cost(
+                direction="outbound",
+                segments=segments,
+                user_phone=phone_number,
+                message_sid=msg.sid,
+                success=True
+            )
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Cost tracking error: {e}")
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to send SMS to {phone_number}: {str(e)}")
         return False
