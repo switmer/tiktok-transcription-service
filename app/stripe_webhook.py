@@ -22,9 +22,22 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-# Credit package configuration
+# Credit package configuration - mapped by PRICE ID
 CREDIT_PACKAGES = {
-    "prod_SiTcSm4J45POT4": {  # Your 10 SMS Credits product ID
+    # 5 Credits - $1.99
+    "price_1RnBh3BaZtBtpc8wC4aXxkCx": {
+        "credits": 5,
+        "product_name": "5 SMS Credits",
+        "price": 1.99
+    },
+    # 10 Credits - $4.75
+    "price_1Rn2f6BaZtBtpc8w8r76vyTJ": {
+        "credits": 10,
+        "product_name": "10 SMS Credits",
+        "price": 4.75
+    },
+    # Also support product ID lookup (legacy)
+    "prod_SiTcSm4J45POT4": {
         "credits": 10,
         "product_name": "10 SMS Credits",
         "price": 4.75
@@ -137,20 +150,21 @@ async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
                 price_id = item["price"]["id"]
                 product_id = item["price"]["product"]
                 quantity = item["quantity"]
-                
-                # Check if this is a known credit package
-                if product_id in CREDIT_PACKAGES:
-                    package_info = CREDIT_PACKAGES[product_id]
+
+                # Check if this is a known credit package (by price_id or product_id)
+                package_info = CREDIT_PACKAGES.get(price_id) or CREDIT_PACKAGES.get(product_id)
+                if package_info:
                     credits_to_add = package_info["credits"] * quantity
                     total_credits += credits_to_add
-                    
+
                     purchased_products.append({
+                        "price_id": price_id,
                         "product_id": product_id,
                         "product_name": package_info["product_name"],
                         "quantity": quantity,
                         "credits": credits_to_add
                     })
-                    
+
                     logger.info(f"Found credit package: {package_info['product_name']} x{quantity} = {credits_to_add} credits")
         
         if total_credits == 0:
