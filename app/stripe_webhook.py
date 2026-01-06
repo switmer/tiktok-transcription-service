@@ -10,7 +10,7 @@ import os
 import logging
 import stripe
 from fastapi import Request, HTTPException
-from database import supabase_client
+from database import supabase as supabase_client
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 import json
