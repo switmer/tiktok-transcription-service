@@ -16,19 +16,25 @@ import threading
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Cost tracking helper - fire-and-forget for sync functions
+# Cost tracking helper - run synchronously to ensure database context
 def _track_cost_async(coro):
-    """Run an async cost tracking coroutine from sync code without blocking."""
-    def run():
+    """Run an async cost tracking coroutine from sync code."""
+    try:
+        # Try to get the running loop if we're in an async context
         try:
+            loop = asyncio.get_running_loop()
+            # Schedule as a task if we're already in an async context
+            asyncio.ensure_future(coro)
+        except RuntimeError:
+            # No running loop - create one and run synchronously
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(coro)
-            loop.close()
-        except Exception as e:
-            logger.debug(f"Cost tracking background task error: {e}")
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+    except Exception as e:
+        logger.warning(f"Cost tracking error: {e}")
 
 # Initialize OpenAI client with explicit API key and timeout
 api_key = os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
