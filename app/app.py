@@ -259,17 +259,17 @@ async def root(ref: Optional[str] = None):
 @app.get("/robots.txt", include_in_schema=False)
 async def robots_txt():
     """Serve robots.txt from static directory"""
-    return FileResponse("static/robots.txt", media_type="text/plain")
+    return FileResponse(os.path.join(static_dir, "robots.txt"), media_type="text/plain")
 
 @app.get("/apple-touch-icon.png", include_in_schema=False)
 async def apple_touch_icon():
     """Serve apple-touch-icon.png from static directory"""
-    return FileResponse("static/apple-touch-icon.png", media_type="image/png")
+    return FileResponse(os.path.join(static_dir, "apple-touch-icon.png"), media_type="image/png")
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon_ico():
     """Serve favicon.ico from static directory"""
-    return FileResponse("static/favicon.ico", media_type="image/x-icon")
+    return FileResponse(os.path.join(static_dir, "favicon.ico"), media_type="image/x-icon")
 
 # ===========================================
 # HEALTH CHECK ENDPOINTS
