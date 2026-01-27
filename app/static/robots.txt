@@ -1,0 +1,9 @@
+# robots.txt for ScribeTok
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+Disallow: /webhook/
+
+# Sitemap location (update if you have one)
+# Sitemap: https://scribetok.com/sitemap.xml

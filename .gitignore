@@ -77,6 +77,8 @@ app/static/*
 !app/static/favicon.png
 !app/static/transcript.css
 !app/static/.gitkeep
+!app/static/robots.txt
+!app/static/apple-touch-icon.png
 **/*.tmp
 temp_input.json
 
