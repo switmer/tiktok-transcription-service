@@ -1022,6 +1022,23 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
         # Always format the verbose_json response
         final_transcript_text = format_timestamped_transcript(transcript_response)
 
+        # Log when Whisper returns empty/short — helps distinguish silence vs extraction failure
+        raw_text = ""
+        if hasattr(transcript_response, 'text'):
+            raw_text = transcript_response.text or ""
+        elif isinstance(transcript_response, dict):
+            raw_text = transcript_response.get('text', '') or ""
+        if len(raw_text.strip()) == 0:
+            logger.warning(
+                f"Whisper returned empty transcript: task={task_id}, video={video_id}, "
+                f"audio_duration={duration_seconds}s, audio_file_size={audio_file_size} bytes"
+            )
+        elif len(raw_text.strip()) < 200:
+            logger.info(
+                f"Whisper returned short transcript ({len(raw_text.strip())} chars): task={task_id}, "
+                f"audio_duration={duration_seconds}s, audio_file_size={audio_file_size} bytes"
+            )
+
         # Save the formatted transcript to file
         transcript_file = os.path.join(output_dir, f"{video_id}_transcript.txt")
         with open(transcript_file, "w", encoding="utf-8") as f:
@@ -1052,6 +1069,22 @@ def generate_quote_and_tldr(transcript_text: str, title: str = "", description: 
     if client is None:
         logger.error("Cannot generate quote+TLDR: OpenAI client not initialized")
         return {"quote": None, "tldr": None}
+
+    # Gate: skip generation for empty or very short transcripts
+    clean_text = (transcript_text or "").strip()
+    word_count = len(clean_text.split())
+
+    if not clean_text:
+        logger.warning(f"Skipping quote/TLDR generation: transcript is empty (task={task_id})")
+        return {"quote": None, "tldr": None, "skipped": "empty_transcript"}
+
+    if len(clean_text) < 200 or word_count < 40:
+        logger.info(f"Transcript too short for full summary ({len(clean_text)} chars, {word_count} words, task={task_id}), returning raw text")
+        return {
+            "quote": clean_text[:200] if len(clean_text) > 50 else clean_text,
+            "tldr": ["Transcript was very short — here's the raw text above."],
+            "skipped": "short_transcript",
+        }
 
     try:
         # Truncate transcript if too long (GPT-3.5 has token limits)

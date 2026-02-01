@@ -406,7 +406,7 @@ async def public_get_thumbnail(task_id: str):
 
     try:
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
                     .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url")
                     .eq('task_id', task_id)
                     .maybe_single()
@@ -513,7 +513,7 @@ async def public_get_square_thumbnail(task_id: str):
 
     try:
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
                     .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url")
                     .eq('task_id', task_id)
                     .maybe_single()

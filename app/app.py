@@ -22,7 +22,7 @@ import glob
 from datetime import datetime, timezone, timedelta
 import uuid
 import tempfile
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Request, Query, Form
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Request, Query, Form, status
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -187,6 +187,23 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
+# Scanner/bot filter patterns - silently reject common vulnerability probes
+SCANNER_PATTERNS = {
+    ".env", ".git", "wp-config", ".sql", ".key",
+    ".pem", "id_rsa", "node_modules", "vendor",
+    "admin/phpmyadmin", "database_backup"
+}
+
+@app.middleware("http")
+async def filter_scanners(request: Request, call_next):
+    path = request.url.path.lower()
+    if any(pattern in path for pattern in SCANNER_PATTERNS):
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not Found"}
+        )
+    return await call_next(request)
+
 # Mount at /static so CSS/JS/images are served
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -259,17 +276,27 @@ async def root(ref: Optional[str] = None):
 @app.get("/robots.txt", include_in_schema=False)
 async def robots_txt():
     """Serve robots.txt from static directory"""
-    return FileResponse("static/robots.txt", media_type="text/plain")
+    path = os.path.join(static_dir, "robots.txt")
+    if not os.path.exists(path):
+        return Response(status_code=404)
+    return FileResponse(path, media_type="text/plain")
 
 @app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
 async def apple_touch_icon():
     """Serve apple-touch-icon.png from static directory"""
-    return FileResponse("static/apple-touch-icon.png", media_type="image/png")
+    path = os.path.join(static_dir, "apple-touch-icon.png")
+    if not os.path.exists(path):
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/png")
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon_ico():
     """Serve favicon.ico from static directory"""
-    return FileResponse("static/favicon.ico", media_type="image/x-icon")
+    path = os.path.join(static_dir, "favicon.ico")
+    if not os.path.exists(path):
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/x-icon")
 
 # ===========================================
 # HEALTH CHECK ENDPOINTS
