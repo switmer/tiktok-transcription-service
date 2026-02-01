@@ -1170,11 +1170,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 # Send SMS notification if user_phone is provided
                 if user_phone:
                     try:
-                        await sms.send_completion_sms(user_phone, task_id, youtube_result['title'])
+                        quote = quote_tldr_result.get("quote", "")
+                        tldr_list = quote_tldr_result.get("tldr", [])
+                        await send_completion_sms(task_id, user_phone, title or 'Video', transcript_text, quote, tldr_list)
                         logger.info(f"SMS completion notification sent for YouTube task {task_id}")
                     except Exception as sms_error:
                         logger.error(f"Failed to send SMS notification for YouTube task {task_id}: {str(sms_error)}")
-                
+
                 # Clean up - no local files needed for YouTube instant transcription
                 output_dir = os.path.join(DOWNLOADS_DIR, task_id)
                 if os.path.exists(output_dir):
@@ -1231,7 +1233,9 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             # SMS notify
                             if user_phone:
                                 try:
-                                    await sms.send_completion_sms(user_phone, task_id, ytdlp_title)
+                                    quote = quote_tldr_result.get("quote", "")
+                                    tldr_list = quote_tldr_result.get("tldr", [])
+                                    await send_completion_sms(task_id, user_phone, ytdlp_title or 'Video', transcript_text, quote, tldr_list)
                                 except Exception as sms_error:
                                     logger.error(f"Failed to send SMS notification (yt-dlp path) for task {task_id}: {sms_error}")
                             # Cleanup
@@ -1622,13 +1626,26 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             
             # Try the Edge Function approach
             result = update_transcription_via_edge_function(task_id, update_data)
-            
-            # If Edge Function fails, we're out of options - mark as failed
+
+            # If Edge Function fails, fall back to direct Supabase client update
             if result is None:
-                logger.error(f"All update methods failed for task {task_id}")
-                # Don't attempt any more Supabase client calls - they all fail with same error
-                # Let the task be marked as failed in the error handling below
-                raise Exception("All transcription update methods failed due to PostGREST ON CONFLICT bug")
+                logger.warning(f"Edge Function update failed for task {task_id}, trying direct Supabase update")
+                try:
+                    direct_result = await asyncio.to_thread(
+                        lambda: supabase.table('transcriptions')
+                                .update(update_data)
+                                .eq('task_id', task_id)
+                                .execute()
+                    )
+                    if direct_result.data:
+                        logger.info(f"Direct Supabase update succeeded for task {task_id}")
+                        result = direct_result
+                    else:
+                        logger.error(f"Direct Supabase update returned no data for task {task_id}")
+                        raise Exception("All transcription update methods failed")
+                except Exception as fallback_error:
+                    logger.error(f"Direct Supabase update also failed for task {task_id}: {fallback_error}")
+                    raise Exception(f"All transcription update methods failed: {fallback_error}")
             if result.data:
                 logger.info(f"Successfully updated transcription record for task {task_id}")
             else:
@@ -1637,11 +1654,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             
             # Send SMS notification if this was an SMS request
             if update_data.get('user_phone'):
-                logger.info(f"Sending SMS completion notification to {update_data['user_phone']} for task {task_id}")
-                # Get the generated quote and TLDR for SMS
-                quote = quote_tldr_result.get("quote", "")
-                tldr_list = quote_tldr_result.get("tldr", [])
-                await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text, quote, tldr_list)
+                try:
+                    logger.info(f"Sending SMS completion notification to {update_data['user_phone']} for task {task_id}")
+                    quote = quote_tldr_result.get("quote", "")
+                    tldr_list = quote_tldr_result.get("tldr", [])
+                    await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text, quote, tldr_list)
+                except Exception as sms_error:
+                    logger.error(f"Failed to send SMS notification for task {task_id}: {sms_error}")
             else:
                 logger.info(f"No SMS notification needed for task {task_id} (no user_phone in update_data: {list(update_data.keys())})")
         else:

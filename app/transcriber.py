@@ -833,7 +833,7 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
         return mp3_file, video_id, title
     
     except Exception as e:
-        print(f"Error downloading video: {str(e)}")
+        logger.error(f"Error downloading video via yt-dlp: {str(e)}", exc_info=True)
         return None, None, None
 
 def _is_tiktok_url(url: str) -> bool:
