@@ -79,12 +79,14 @@ except ImportError:
     enhanced_download_tiktok = transcriber.download_tiktok
     print("Using transcriber.download_tiktok as fallback")
 
-# Configure logging
+# Configure logging with redaction
+from .log_redactor import RedactingFormatter
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(RedactingFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.root.addHandler(_handler)
+logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 
 # Task timeout decorator
 def task_timeout(timeout_seconds=1800):  # 30 minutes default
@@ -700,15 +702,22 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, vi
             with open(transcript_file_path_abs, 'r', encoding='utf-8') as f:
                 transcript_text = f.read()
             
-            # Generate quote and TLDR
-            logger.info(f"Generating quote and TLDR for task {task_id}")
+            # Generate quote and TLDR (skip if already exists from a previous run)
             quote_tldr_result = {}
             try:
-                                quote_tldr_result = transcriber.generate_quote_and_tldr(
-                                    transcript_text,
-                                    title=ytdlp_title or "",
-                                    description=""
-                                )
+                existing_qt = supabase.table('transcriptions').select('quote, tldr').eq('task_id', task_id).maybe_single().execute()
+                if existing_qt.data and existing_qt.data.get('quote'):
+                    logger.info(f"Skipping quote/TLDR generation for task {task_id} — already exists")
+                    quote_tldr_result = {
+                        "quote": existing_qt.data['quote'],
+                        "tldr": json.loads(existing_qt.data['tldr']) if existing_qt.data.get('tldr') else []
+                    }
+                else:
+                    quote_tldr_result = transcriber.generate_quote_and_tldr(
+                        transcript_text,
+                        title=ytdlp_title or "",
+                        description=""
+                    )
             except Exception as e:
                 logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
                 # Continue without quote/TLDR rather than failing the entire enrichment
@@ -1116,15 +1125,23 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 title = youtube_result['title']
                 platform = 'youtube'
                 
-                # Generate quote and TLDR for YouTube too
+                # Generate quote and TLDR for YouTube too (skip if already exists)
                 quote_tldr_result = {}
                 try:
-                    quote_tldr_result = transcriber.generate_quote_and_tldr(
-                        transcript_text,
-                        title=title or "",
-                        description=youtube_result.get('description') or ""
-                    )
-                    logger.info(f"Generated quote/TLDR for YouTube video {video_id}")
+                    existing_qt = supabase.table('transcriptions').select('quote, tldr').eq('task_id', task_id).maybe_single().execute()
+                    if existing_qt.data and existing_qt.data.get('quote'):
+                        logger.info(f"Skipping quote/TLDR generation for YouTube task {task_id} — already exists")
+                        quote_tldr_result = {
+                            "quote": existing_qt.data['quote'],
+                            "tldr": json.loads(existing_qt.data['tldr']) if existing_qt.data.get('tldr') else []
+                        }
+                    else:
+                        quote_tldr_result = transcriber.generate_quote_and_tldr(
+                            transcript_text,
+                            title=title or "",
+                            description=youtube_result.get('description') or ""
+                        )
+                        logger.info(f"Generated quote/TLDR for YouTube video {video_id}")
                 except Exception as e:
                     logger.warning(f"Failed to generate quote/TLDR for YouTube video: {str(e)}")
                 
@@ -1202,14 +1219,22 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             if transcript_file_path and os.path.exists(transcript_file_path):
                                 with open(transcript_file_path, 'r', encoding='utf-8') as f:
                                     transcript_text = f.read()
-                            # Quote/TLDR
+                            # Quote/TLDR (skip if already exists)
                             quote_tldr_result = {}
                             try:
-                                quote_tldr_result = transcriber.generate_quote_and_tldr(
-                                    transcript_text,
-                                    title=ytdlp_title or "",
-                                    description=""
-                                )
+                                existing_qt = supabase.table('transcriptions').select('quote, tldr').eq('task_id', task_id).maybe_single().execute()
+                                if existing_qt.data and existing_qt.data.get('quote'):
+                                    logger.info(f"Skipping quote/TLDR generation (yt-dlp path) for task {task_id} — already exists")
+                                    quote_tldr_result = {
+                                        "quote": existing_qt.data['quote'],
+                                        "tldr": json.loads(existing_qt.data['tldr']) if existing_qt.data.get('tldr') else []
+                                    }
+                                else:
+                                    quote_tldr_result = transcriber.generate_quote_and_tldr(
+                                        transcript_text,
+                                        title=ytdlp_title or "",
+                                        description=""
+                                    )
                             except Exception as e:
                                 logger.error(f"Failed to generate quote/TLDR (yt-dlp path) for task {task_id}: {e}")
                             # Update DB
@@ -1484,15 +1509,22 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.warning(f"Used fallback transcript extraction ({len(transcript_text)} characters)")
             category = await guess_category(title or '', transcript_text)
             
-            # Generate quote and TLDR
-            logger.info(f"Generating quote and TLDR for task {task_id}")
+            # Generate quote and TLDR (skip if already exists)
             quote_tldr_result = {}
             try:
-                quote_tldr_result = transcriber.generate_quote_and_tldr(
-                    transcript_text,
-                    title=title or "",
-                    description=rich_metadata.get('description') or ""
-                )
+                existing_qt = supabase.table('transcriptions').select('quote, tldr').eq('task_id', task_id).maybe_single().execute()
+                if existing_qt.data and existing_qt.data.get('quote'):
+                    logger.info(f"Skipping quote/TLDR generation for task {task_id} — already exists")
+                    quote_tldr_result = {
+                        "quote": existing_qt.data['quote'],
+                        "tldr": json.loads(existing_qt.data['tldr']) if existing_qt.data.get('tldr') else []
+                    }
+                else:
+                    quote_tldr_result = transcriber.generate_quote_and_tldr(
+                        transcript_text,
+                        title=title or "",
+                        description=rich_metadata.get('description') or ""
+                    )
             except Exception as e:
                 logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
                 # Continue without quote/TLDR rather than failing the entire enrichment
@@ -1691,6 +1723,23 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
     """Send SMS notification when transcription completes with modern credit/upsell logic."""
     try:
         logger.info(f"send_completion_sms called: task_id={task_id}, phone={phone_number}, quote={bool(quote)}, tldr={bool(tldr_list)}")
+
+        # Idempotency: check if we already sent a completion SMS for this task
+        try:
+            existing_sms = await asyncio.to_thread(
+                lambda: supabase.table('user_messages')
+                        .select('id')
+                        .eq('to_phone', phone_number)
+                        .ilike('message_body', f'%{task_id}%')
+                        .limit(1)
+                        .execute()
+            )
+            if existing_sms.data:
+                logger.info(f"Completion SMS already sent for task {task_id} to {phone_number}, skipping duplicate")
+                return
+        except Exception as dedup_err:
+            logger.debug(f"SMS dedup check failed, proceeding with send: {dedup_err}")
+
         if not all([os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN')]):
             logger.warning("Twilio credentials not available, skipping SMS notification")
             return
@@ -2256,32 +2305,50 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                                 .execute()
                     )
                 
-                # Send success notification with enhanced message
-                title = task_data.get('title', 'Video')
-                transcript = task_data.get('transcript', '')
-                
-                # Get first few lines for preview
-                preview_lines = []
-                if transcript:
-                    lines = transcript.split('\n')
-                    for line in lines:
-                        if line.strip() and not line.strip().startswith('0'):  # Skip timestamps
-                            preview_lines.append(line.strip())
-                            if len(preview_lines) >= 2:
-                                break
-                
-                preview = '\n'.join(preview_lines)[:150] + '...' if preview_lines else 'Transcript ready!'
-                
-                # Enhanced SMS with public link
-                public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
-                
-                success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\n💬 Reply /summary for AI summary or /vault for history!"
-                
-                await sms.SMSHandler.send_sms(
-                    to=phone_number,
-                    body=success_message,
-                    status_callback=f"{os.getenv('BASE_URL', '')}/api/sms/status"
-                )
+                # Idempotency: check if completion SMS was already sent for this task
+                already_sent = False
+                try:
+                    existing_sms = await asyncio.to_thread(
+                        lambda: supabase.table('user_messages')
+                                .select('id')
+                                .eq('to_phone', phone_number)
+                                .ilike('message_body', f'%{task_id}%')
+                                .limit(1)
+                                .execute()
+                    )
+                    if existing_sms.data:
+                        logger.info(f"Completion SMS already sent for task {task_id}, skipping duplicate")
+                        already_sent = True
+                except Exception as dedup_err:
+                    logger.debug(f"SMS dedup check failed, proceeding with send: {dedup_err}")
+
+                if not already_sent:
+                    # Send success notification with enhanced message
+                    title = task_data.get('title', 'Video')
+                    transcript = task_data.get('transcript', '')
+
+                    # Get first few lines for preview
+                    preview_lines = []
+                    if transcript:
+                        lines = transcript.split('\n')
+                        for line in lines:
+                            if line.strip() and not line.strip().startswith('0'):  # Skip timestamps
+                                preview_lines.append(line.strip())
+                                if len(preview_lines) >= 2:
+                                    break
+
+                    preview = '\n'.join(preview_lines)[:150] + '...' if preview_lines else 'Transcript ready!'
+
+                    # Enhanced SMS with public link
+                    public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
+
+                    success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\n💬 Reply /summary for AI summary or /vault for history!"
+
+                    await sms.SMSHandler.send_sms(
+                        to=phone_number,
+                        body=success_message,
+                        status_callback=f"{os.getenv('BASE_URL', '')}/api/sms/status"
+                    )
                 
             elif task_data['status'] == 'failed':
                 # Update job status to failed
