@@ -9,11 +9,20 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from PIL import Image, ImageDraw, ImageFont
 
+from ..core.errors import (
+    ApiError,
+    INTERNAL_ERROR,
+    SERVICE_UNAVAILABLE,
+    TASK_NOT_FOUND,
+    TRANSCRIPT_NOT_READY,
+    VALIDATION_ERROR,
+)
 from ..app import (
     create_square_thumbnail,
     init_task,
     is_youtube_url,
     process_transcription_task,
+    send_completion_sms,
 )
 from ..core.paths import DOWNLOADS_DIR, static_dir
 from ..database import supabase
@@ -55,7 +64,7 @@ async def transcribe(
 
         if not response.data:
             logger.error(f"Failed to retrieve task details immediately after creation for task_id: {task_id}")
-            raise HTTPException(status_code=500, detail="Failed to retrieve task details")
+            raise ApiError(500, INTERNAL_ERROR, "Failed to retrieve task details")
 
         task_data = response.data
 
@@ -95,6 +104,17 @@ async def transcribe(
                         task_data['platform'] = 'youtube'
 
                         logger.info(f"YouTube instant transcription completed for task {task_id}")
+
+                        # Send SMS notification if this was an SMS request
+                        if request.user_phone:
+                            try:
+                                await send_completion_sms(
+                                    task_id, request.user_phone,
+                                    youtube_result['title'] or 'Video',
+                                    youtube_result['transcript'],
+                                )
+                            except Exception as sms_err:
+                                logger.error(f"Failed to send SMS for YouTube instant task {task_id}: {sms_err}")
                     else:
                         logger.warning(
                             f"YouTube instant transcription failed for {task_id}, falling back to background processing"
@@ -143,9 +163,11 @@ async def transcribe(
             thumbnail_local_path=task_data.get('thumbnail_local_path'),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in transcribe endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to start transcription")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to start transcription")
 
 
 @router.get("/api/public/tasks/{task_id}")
@@ -153,7 +175,7 @@ async def public_get_task(task_id: str):
     """Get task status without requiring API key."""
     if supabase is None:
         logger.error(f"Cannot get task {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -166,10 +188,10 @@ async def public_get_task(task_id: str):
 
         if hasattr(response, 'error') and response.error:
             logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
-            raise HTTPException(status_code=500, detail="Database error retrieving task")
+            raise ApiError(500, INTERNAL_ERROR, "Database error retrieving task")
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task_data = response.data
 
@@ -212,7 +234,7 @@ async def public_get_task(task_id: str):
         raise
     except Exception as e:
         logger.error(f"Error fetching task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error retrieving task")
+        raise ApiError(500, INTERNAL_ERROR, "Server error retrieving task")
 
 
 @router.get("/api/public/transcript/{task_id}")
@@ -220,7 +242,7 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
     """Get transcript content for a task (public)"""
     if supabase is None:
         logger.error(f"Cannot get transcript {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -232,14 +254,14 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
         )
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
         if task.get('status') != 'completed':
-            raise HTTPException(status_code=400, detail="Transcript not ready")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready")
 
         transcript_text = task.get('transcript') or ''
-        if format == "plain":
+        if format in ("plain", "text"):
             return Response(content=transcript_text, media_type="text/plain")
         if format == "json":
             return {"task_id": task_id, "transcript": transcript_text}
@@ -249,7 +271,7 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
         raise
     except Exception as e:
         logger.error(f"Error retrieving transcript {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error retrieving transcript")
+        raise ApiError(500, INTERNAL_ERROR, "Server error retrieving transcript")
 
 
 @router.post(
@@ -259,7 +281,7 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
 async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
     if supabase is None:
         logger.error("Cannot chat with transcript: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -271,11 +293,11 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
         )
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
         if task.get('status') != 'completed':
-            raise HTTPException(status_code=400, detail="Transcript not ready")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready")
 
         tldr_list = None
         if task.get('tldr'):
@@ -303,7 +325,7 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
         raise
     except Exception as e:
         logger.error(f"Error generating transcript chat response: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate answer")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to generate answer")
 
 
 @router.get("/api/public/tasks", response_model=TaskListResponse)
@@ -311,7 +333,7 @@ async def public_list_tasks():
     """List completed public tasks for discovery/browse."""
     if supabase is None:
         logger.error("Cannot list public tasks: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     response = await asyncio.to_thread(
         lambda: supabase.table('transcriptions')
@@ -340,7 +362,7 @@ async def public_list_tasks():
                 )
             )
 
-    return TaskListResponse(tasks=tasks_list)
+    return TaskListResponse(tasks=tasks_list, total=len(tasks_list), limit=50, offset=0)
 
 
 @router.get("/api/public/search", response_model=SearchResponse)
@@ -353,7 +375,7 @@ async def public_search_transcriptions(
 ):
     if supabase is None:
         logger.error("Cannot search transcriptions: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     query = (q or "").strip()
     if len(query) < 2:
@@ -375,7 +397,7 @@ async def public_search_transcriptions(
 
         if hasattr(response, "error") and response.error:
             logger.error(f"Search RPC error: {response.error}")
-            raise HTTPException(status_code=500, detail="Search failed")
+            raise ApiError(500, INTERNAL_ERROR, "Search failed")
 
         results: List[SearchHit] = []
         for row in (response.data or []):
@@ -394,7 +416,7 @@ async def public_search_transcriptions(
         raise
     except Exception as e:
         logger.error(f"Search exception: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error searching transcriptions")
+        raise ApiError(500, INTERNAL_ERROR, "Server error searching transcriptions")
 
 
 @router.get("/api/public/thumbnail/{task_id}")
@@ -402,7 +424,7 @@ async def public_get_thumbnail(task_id: str):
     """Get the thumbnail image for a task without API key"""
     if supabase is None:
         logger.error(f"Cannot get public thumbnail for {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -415,21 +437,21 @@ async def public_get_thumbnail(task_id: str):
 
         if hasattr(response, 'error') and response.error:
             logger.error(f"Database error fetching public thumbnail for {task_id}: {response.error}")
-            raise HTTPException(status_code=500, detail="Database error retrieving task info")
+            raise ApiError(500, INTERNAL_ERROR, "Database error retrieving task info")
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
 
         if task["status"] == "failed":
             error_message = task.get("error", "Unknown error")
-            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, f"Transcription failed: {error_message}")
 
         if task["status"] != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Transcription not completed yet. Current status: {task['status']}",
+            raise ApiError(
+                400, TRANSCRIPT_NOT_READY,
+                f"Transcription not completed yet. Current status: {task['status']}",
             )
 
         if task.get("supabase_thumbnail_url"):
@@ -495,13 +517,15 @@ async def public_get_thumbnail(task_id: str):
                 logger.info(f"Created default thumbnail at {default_thumbnail}")
             except Exception as e:
                 logger.error(f"Error creating default thumbnail: {str(e)}")
-                raise HTTPException(status_code=404, detail="Thumbnail not found and could not create default")
+                raise ApiError(404, TASK_NOT_FOUND, "Thumbnail not found and could not create default")
 
         return FileResponse(default_thumbnail, media_type="image/jpeg")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching public thumbnail for task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error fetching thumbnail")
+        raise ApiError(500, INTERNAL_ERROR, "Server error fetching thumbnail")
 
 
 @router.get("/api/public/thumbnail_square/{task_id}")
@@ -509,7 +533,7 @@ async def public_get_square_thumbnail(task_id: str):
     """Get square thumbnail image for a task (optimized for iMessage/WhatsApp previews)"""
     if supabase is None:
         logger.error(f"Cannot get public square thumbnail for {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -522,21 +546,21 @@ async def public_get_square_thumbnail(task_id: str):
 
         if hasattr(response, 'error') and response.error:
             logger.error(f"Database error fetching public square thumbnail for {task_id}: {response.error}")
-            raise HTTPException(status_code=500, detail="Database error retrieving task info")
+            raise ApiError(500, INTERNAL_ERROR, "Database error retrieving task info")
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
 
         if task["status"] == "failed":
             error_message = task.get("error", "Unknown error")
-            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, f"Transcription failed: {error_message}")
 
         if task["status"] != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Transcription not completed yet. Current status: {task['status']}",
+            raise ApiError(
+                400, TRANSCRIPT_NOT_READY,
+                f"Transcription not completed yet. Current status: {task['status']}",
             )
 
         if task.get("supabase_thumbnail_url"):
@@ -555,7 +579,7 @@ async def public_get_square_thumbnail(task_id: str):
                 if not os.path.exists(square_thumbnail_path):
                     success = create_square_thumbnail(local_thumbnail_full_path, square_thumbnail_path)
                     if not success:
-                        raise HTTPException(status_code=500, detail="Failed to create square thumbnail")
+                        raise ApiError(500, INTERNAL_ERROR, "Failed to create square thumbnail")
 
                 return FileResponse(square_thumbnail_path, media_type="image/jpeg")
 
@@ -575,13 +599,15 @@ async def public_get_square_thumbnail(task_id: str):
                 logger.info(f"Created default square thumbnail at {default_square_thumbnail}")
             except Exception as e:
                 logger.error(f"Error creating default square thumbnail: {str(e)}")
-                raise HTTPException(
-                    status_code=404,
-                    detail="Square thumbnail not found and could not create default",
+                raise ApiError(
+                    404, TASK_NOT_FOUND,
+                    "Square thumbnail not found and could not create default",
                 )
 
         return FileResponse(default_square_thumbnail, media_type="image/jpeg")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching public square thumbnail for task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error fetching square thumbnail")
+        raise ApiError(500, INTERNAL_ERROR, "Server error fetching square thumbnail")

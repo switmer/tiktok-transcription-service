@@ -1,8 +1,16 @@
 from typing import List, Optional, Any, Dict
 from fastapi import APIRouter, HTTPException
+
+try:
+    from .core.errors import ApiError, SERVICE_UNAVAILABLE
+except ImportError:
+    from core.errors import ApiError, SERVICE_UNAVAILABLE
 import asyncio
 from datetime import datetime, timedelta
 import logging
+import os
+import time
+from threading import Lock
 from pydantic import BaseModel, Field
 
 # Import supabase client - handle both package and direct imports
@@ -16,6 +24,63 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/public/discover", tags=["discovery"])
+
+DEFAULT_DISCOVERY_CACHE_TTL_SECONDS = 300
+
+
+def _load_discovery_cache_ttl() -> int:
+    raw_ttl = os.environ.get("DISCOVERY_CACHE_TTL_SECONDS") or os.getenv(
+        "DISCOVERY_CACHE_TTL_SECONDS"
+    )
+    if not raw_ttl:
+        return DEFAULT_DISCOVERY_CACHE_TTL_SECONDS
+
+    try:
+        ttl_value = int(raw_ttl)
+        if ttl_value <= 0:
+            raise ValueError("ttl must be positive")
+        return ttl_value
+    except ValueError:
+        logger.warning(
+            "Invalid DISCOVERY_CACHE_TTL_SECONDS=%s; using %ds",
+            raw_ttl,
+            DEFAULT_DISCOVERY_CACHE_TTL_SECONDS,
+        )
+        return DEFAULT_DISCOVERY_CACHE_TTL_SECONDS
+
+
+DISCOVERY_CACHE_TTL_SECONDS = _load_discovery_cache_ttl()
+_DISCOVERY_CACHE: Dict[str, Dict[str, Any]] = {}
+_DISCOVERY_CACHE_LOCK = Lock()
+
+
+def _cache_key(prefix: str, **params: Any) -> str:
+    ordered = [prefix]
+    for key in sorted(params):
+        ordered.append(f"{key}={params[key]}")
+    return "|".join(ordered)
+
+
+def _get_cached_results(cache_key: str) -> Optional[List[Dict[str, Any]]]:
+    with _DISCOVERY_CACHE_LOCK:
+        entry = _DISCOVERY_CACHE.get(cache_key)
+
+    if not entry:
+        return None
+
+    age_seconds = time.time() - entry["timestamp"]
+    if age_seconds > DISCOVERY_CACHE_TTL_SECONDS:
+        with _DISCOVERY_CACHE_LOCK:
+            _DISCOVERY_CACHE.pop(cache_key, None)
+        return None
+
+    return entry["data"]
+
+
+def _set_cached_results(cache_key: str, data: List[Dict[str, Any]]) -> None:
+    with _DISCOVERY_CACHE_LOCK:
+        _DISCOVERY_CACHE[cache_key] = {"timestamp": time.time(), "data": data}
+
 
 class AuthorInfo(BaseModel):
     nickname: str = Field(..., example="SteveHenny")
@@ -43,6 +108,36 @@ class DiscoveryResponse(BaseModel):
 class DiscoveryListResponse(BaseModel):
     tasks: List[DiscoveryResponse]
 
+def _map_to_discovery_response(row: dict) -> DiscoveryResponse:
+    """Map a raw DB row to DiscoveryResponse, extracting author info."""
+    raw_meta = row.get("raw_metadata") or {}
+    raw_data = raw_meta.get("data", {}) if isinstance(raw_meta, dict) else {}
+    author_data = raw_data.get("author") if isinstance(raw_data, dict) else None
+    author = None
+    if isinstance(author_data, dict):
+        author = AuthorInfo(
+            nickname=author_data.get("nickname", ""),
+            unique_id=author_data.get("unique_id", ""),
+        )
+    return DiscoveryResponse(
+        task_id=row.get("task_id", ""),
+        title=row.get("title") or "Untitled",
+        video_id=row.get("video_id"),
+        thumbnail_url=row.get("thumbnail_url"),
+        view_count=row.get("view_count") or 0,
+        like_count=row.get("like_count"),
+        comment_count=row.get("comment_count"),
+        share_count=row.get("share_count"),
+        play_count=row.get("play_count"),
+        duration=row.get("duration"),
+        platform=row.get("platform"),
+        author=author,
+        category=row.get("category"),
+        tags=row.get("tags"),
+        created_at=row.get("created_at") or datetime.now().isoformat(),
+    )
+
+
 @router.get(
     "/trending",
     response_model=List[DiscoveryResponse],
@@ -56,9 +151,17 @@ async def get_trending_transcriptions(
 ):
     """Get trending public transcriptions with full data for TranscriptionCard."""
     try:
+        cache_key = _cache_key(
+            "trending",
+            time_window=time_window or "week",
+            category=category or "",
+            limit=limit,
+        )
+
         if supabase is None:
             logger.error("Cannot get trending: Supabase client not initialized")
-            return []
+            cached = _get_cached_results(cache_key)
+            return cached if cached is not None else []
 
         logger.info(f"Fetching trending transcriptions: time_window={time_window}, category={category}, limit={limit}")
 
@@ -84,19 +187,25 @@ async def get_trending_transcriptions(
                 query = query.gte('created_at', cutoff.isoformat())
                 logger.info(f"Added time filter: >= {cutoff.isoformat()}")
 
-            response = await asyncio.to_thread(lambda: query.execute())
+            response = await asyncio.to_thread(query.execute)
             logger.info(f"Trending query returned {len(response.data) if response.data else 0} rows")
 
-            # Return full transcription data for frontend compatibility
-            return response.data if response.data else []
+            results = [_map_to_discovery_response(row) for row in (response.data or [])]
+            _set_cached_results(cache_key, results)
+            return results
 
         except Exception as e:
             logger.error(f"Error executing trending query: {str(e)}")
+            cached = _get_cached_results(cache_key)
+            if cached is not None:
+                logger.warning("Returning cached trending results due to query failure")
+                return cached
             return []
 
     except Exception as e:
         logger.error(f"Error getting trending transcriptions: {str(e)}", exc_info=True)
         return []
+
 
 @router.get("/similar/{task_id}", response_model=List[DiscoveryResponse])
 async def get_similar_transcriptions(
@@ -144,8 +253,7 @@ async def get_similar_transcriptions(
             response = await asyncio.to_thread(query.execute)
             logger.info(f"Similar query returned {len(response.data) if response.data else 0} rows")
 
-            # Return full transcription data for frontend compatibility
-            return response.data if response.data else []
+            return [_map_to_discovery_response(row) for row in (response.data or [])]
 
         except Exception as e:
             logger.error(f"Error querying similar transcriptions: {str(e)}")
@@ -155,6 +263,7 @@ async def get_similar_transcriptions(
         logger.error(f"Error getting similar transcriptions: {str(e)}", exc_info=True)
         return []
 
+
 @router.get("/recent", response_model=List[DiscoveryResponse])
 async def get_recent_transcriptions(
     category: Optional[str] = None,
@@ -162,9 +271,12 @@ async def get_recent_transcriptions(
 ):
     """Get recently added public transcriptions with full data for TranscriptionCard."""
     try:
+        cache_key = _cache_key("recent", category=category or "", limit=limit)
+
         if supabase is None:
             logger.error("Cannot get recent: Supabase client not initialized")
-            return []
+            cached = _get_cached_results(cache_key)
+            return cached if cached is not None else []
 
         logger.info(f"Fetching recent transcriptions: category={category}, limit={limit}")
 
@@ -181,19 +293,25 @@ async def get_recent_transcriptions(
                 query = query.eq('category', category)
                 logger.info(f"Added category filter: {category}")
 
-            response = await asyncio.to_thread(lambda: query.execute())
+            response = await asyncio.to_thread(query.execute)
             logger.info(f"Recent query returned {len(response.data) if response.data else 0} rows")
 
-            # Return full transcription data for frontend compatibility
-            return response.data if response.data else []
+            results = [_map_to_discovery_response(row) for row in (response.data or [])]
+            _set_cached_results(cache_key, results)
+            return results
 
         except Exception as e:
             logger.error(f"Error querying recent transcriptions: {str(e)}")
+            cached = _get_cached_results(cache_key)
+            if cached is not None:
+                logger.warning("Returning cached recent results due to query failure")
+                return cached
             return []
 
     except Exception as e:
         logger.error(f"Error getting recent transcriptions: {str(e)}", exc_info=True)
         return []
+
 
 @router.get("/categories", response_model=List[str])
 async def get_categories():
@@ -201,40 +319,36 @@ async def get_categories():
     try:
         if supabase is None:
             logger.error("Cannot get categories: Supabase client not initialized")
-            raise HTTPException(status_code=500, detail="Database connection not available")
+            raise ApiError(500, SERVICE_UNAVAILABLE, "Database connection not available")
 
-        # First, get the column names to confirm if 'category' and 'visibility' exist
-        logger.info("Checking if columns exist in transcriptions table")
-        
-        # Try a simplified query that just gets any categories
+        # Query only completed tasks with non-null categories
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
                             .select('category')
+                            .eq('status', 'completed')
+                            .not_.is_('category', 'null')
                             .execute()
         )
-        
-        # Log the response for debugging
+
         logger.info(f"Categories query returned {len(response.data) if response.data else 0} rows")
-        
-        # Extract unique non-empty categories
-        categories = set()
-        for item in response.data:
-            if item.get('category') and isinstance(item['category'], str):
-                categories.add(item['category'])
+
+        # Deduplicate (Supabase REST API doesn't support SELECT DISTINCT)
+        categories = sorted({
+            item['category'] for item in (response.data or [])
+            if item.get('category') and isinstance(item['category'], str)
+        })
         
         # If we have no categories, use a default list
         if not categories:
             default_categories = [
-                "education", "entertainment", "music", "gaming", 
+                "education", "entertainment", "music", "gaming",
                 "food", "fitness", "tech", "other"
             ]
             logger.info(f"No categories found in database, using defaults: {default_categories}")
             return default_categories
-            
-        # Return sorted list of categories
-        sorted_categories = sorted(list(categories))
-        logger.info(f"Returning {len(sorted_categories)} categories: {sorted_categories}")
-        return sorted_categories
+
+        logger.info(f"Returning {len(categories)} categories: {categories}")
+        return categories
 
     except Exception as e:
         logger.error(f"Error getting categories: {str(e)}", exc_info=True)
@@ -245,6 +359,7 @@ async def get_categories():
         ]
         logger.info(f"Using default categories due to error: {default_categories}")
         return default_categories
+
 
 class SearchResponse(BaseModel):
     task_id: str = Field(..., example="550e8400-e29b-41d4-a716-446655440000")
@@ -261,6 +376,7 @@ class SearchListResponse(BaseModel):
     query: str = Field(..., example="motivation success")
     results: List[SearchResponse]
     total_results: int = Field(..., example=42)
+
 
 @router.get(
     "/search",

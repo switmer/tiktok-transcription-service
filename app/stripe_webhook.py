@@ -10,6 +10,7 @@ import os
 import logging
 import stripe
 from fastapi import Request, HTTPException
+from core.errors import ApiError, VALIDATION_ERROR, INTERNAL_ERROR
 from database import supabase as supabase_client
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -58,7 +59,7 @@ async def handle_stripe_webhook(request: Request) -> Dict[str, Any]:
         
         if not sig_header:
             logger.error("Missing Stripe signature header")
-            raise HTTPException(status_code=400, detail="Missing signature")
+            raise ApiError(400, VALIDATION_ERROR, "Missing signature")
         
         # Verify webhook signature
         try:
@@ -67,10 +68,10 @@ async def handle_stripe_webhook(request: Request) -> Dict[str, Any]:
             )
         except ValueError as e:
             logger.error(f"Invalid payload: {e}")
-            raise HTTPException(status_code=400, detail="Invalid payload")
+            raise ApiError(400, VALIDATION_ERROR, "Invalid payload")
         except stripe.error.SignatureVerificationError as e:
             logger.error(f"Invalid signature: {e}")
-            raise HTTPException(status_code=400, detail="Invalid signature")
+            raise ApiError(400, VALIDATION_ERROR, "Invalid signature")
         
         # Handle the event
         if event["type"] == "checkout.session.completed":
@@ -86,9 +87,11 @@ async def handle_stripe_webhook(request: Request) -> Dict[str, Any]:
             logger.info(f"Unhandled event type: {event['type']}")
             return {"status": "ignored", "event_type": event["type"]}
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Webhook error: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Webhook processing error")
 
 async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
     """

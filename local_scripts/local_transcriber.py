@@ -37,9 +37,11 @@ def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
             audio = AudioSegment.from_wav(file_path)
         elif file_extension == '.mp3':
              audio = AudioSegment.from_mp3(file_path)
-        # Add other formats as needed (e.g., .m4a, .ogg)
-        # elif file_extension == '.m4a':
-        #     audio = AudioSegment.from_file(file_path, format="m4a")
+        elif file_extension == '.mp4':
+            # MP4 files can be video files; pydub will extract the audio track
+            audio = AudioSegment.from_file(file_path, format="mp4")
+        elif file_extension == '.m4a':
+            audio = AudioSegment.from_file(file_path, format="m4a")
         else:
             logging.warning(f"Unsupported audio format {file_extension}. Attempting generic load.")
             audio = AudioSegment.from_file(file_path)
@@ -54,8 +56,10 @@ def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
     chunks = []
     base_name = os.path.splitext(file_path)[0]
     # Map file extensions to ffmpeg format names
+    # Note: MP4 files are video files, but we extract audio and export chunks as mp3
     format_map = {
         '.m4a': 'mp4',
+        '.mp4': 'mp3',  # Export audio chunks from MP4 as mp3 (audio format)
         '.wav': 'wav',
         '.mp3': 'mp3',
         '.ogg': 'ogg',
@@ -117,11 +121,11 @@ def split_audio(file_path, chunk_length_ms=600000, max_size_bytes=25*1024*1024):
 
 def transcribe_local_wav(file_path):
     """
-    Transcribes a local audio file (WAV, MP3, etc.) using the OpenAI Whisper API,
+    Transcribes a local audio or video file (WAV, MP3, MP4, etc.) using the OpenAI Whisper API,
     handling chunking for large files.
 
     Args:
-        file_path (str): The path to the local audio file.
+        file_path (str): The path to the local audio or video file.
 
     Returns:
         str: The concatenated transcribed text, or None if an error occurs.
@@ -176,7 +180,7 @@ def transcribe_local_wav(file_path):
     return " ".join(full_transcription)
 
 def main():
-    parser = argparse.ArgumentParser(description="Transcribe a local audio file (e.g., WAV, MP3) using OpenAI Whisper, with auto-chunking.")
+    parser = argparse.ArgumentParser(description="Transcribe a local audio or video file (e.g., WAV, MP3, MP4) using OpenAI Whisper, with auto-chunking.")
     parser.add_argument("audio_file", help="Path to the input audio file.")
     args = parser.parse_args()
 

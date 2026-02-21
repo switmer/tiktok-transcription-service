@@ -56,6 +56,11 @@ try:
     from . import health_check
     from .storage_utils import upload_thumbnail_to_supabase
     from .core.paths import BASE_DIR, DOWNLOADS_DIR, static_dir, templates
+    from .core.errors import (
+        ApiError, AUTH_REQUIRED, AUTH_INVALID, TASK_NOT_FOUND, TASK_NOT_RETRYABLE,
+        TRANSCRIPT_NOT_READY, INSUFFICIENT_CREDITS, VALIDATION_ERROR,
+        SERVICE_UNAVAILABLE, INTERNAL_ERROR,
+    )
 except ImportError:
     # Fall back to absolute imports (when running directly)
     import sys
@@ -70,6 +75,11 @@ except ImportError:
     from tiktok_service import tiktok_service
     from storage_utils import upload_thumbnail_to_supabase
     from core.paths import BASE_DIR, DOWNLOADS_DIR, static_dir, templates
+    from core.errors import (
+        ApiError, AUTH_REQUIRED, AUTH_INVALID, TASK_NOT_FOUND, TASK_NOT_RETRYABLE,
+        TRANSCRIPT_NOT_READY, INSUFFICIENT_CREDITS, VALIDATION_ERROR,
+        SERVICE_UNAVAILABLE, INTERNAL_ERROR,
+    )
 
 # Import tiktok downloader directly
 try:
@@ -169,25 +179,43 @@ if os.path.exists("static"):
 # In-memory task map used by legacy test endpoints; keep defined to avoid runtime/lint errors
 tasks: Dict[str, Dict[str, Any]] = {}
 
-# Add CORS middleware
+# CORS configuration
+_DEFAULT_ORIGINS = [
+    "https://scribetok.com",
+    "https://www.scribetok.com",
+    "https://share.scribetok.com",
+    "https://api.scribetok.com",
+]
+_DEV_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8001",
+]
+
+def _load_allowed_origins():
+    extra = os.getenv("ALLOWED_ORIGINS", "")
+    origins = list(_DEFAULT_ORIGINS)
+    if os.getenv("ENVIRONMENT", "production") != "production":
+        origins.extend(_DEV_ORIGINS)
+    if extra:
+        origins.extend([o.strip() for o in extra.split(",") if o.strip()])
+    return origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://scribetok.com",
-        "https://www.scribetok.com",
-        "https://share.scribetok.com",
-        "https://api.scribetok.com",
-        "https://project-waitlist-signup-card-with-animation-586.magicpatterns.app",
-        "https://c9218a45-acf5-4cc4-a39d-076b2ba2fab6-render.magicpatterns.app",
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "*"  # Allow all for development
-    ],
-    allow_credentials=True,
+    allow_origins=_load_allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"]
 )
+
+@app.exception_handler(ApiError)
+async def api_error_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.detail, "details": exc.details}},
+    )
 
 # Scanner/bot filter patterns - silently reject common vulnerability probes
 SCANNER_PATTERNS = {
@@ -330,7 +358,7 @@ async def health_live():
             "uptime_seconds": int(time.time() - health_check.health_checker.start_time)
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Service not alive: {str(e)}")
+        raise ApiError(503, SERVICE_UNAVAILABLE, f"Service not alive: {str(e)}")
 
 # Public transcription endpoints moved to app/api/public.py
 
@@ -339,7 +367,7 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
     """List the last 50 transcription tasks from Supabase."""
     if supabase is None:
         logger.error(f"Cannot list tasks: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         response = await asyncio.to_thread(
@@ -349,11 +377,11 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
                             .limit(50)
                             .execute()
         )
-        
+
         # Check for errors during the query
         if hasattr(response, 'error') and response.error:
              logger.error(f"Failed to list tasks from Supabase: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error listing tasks")
+             raise ApiError(500, INTERNAL_ERROR, "Database error listing tasks")
              
         # Map the results to the response model
         tasks_list = []
@@ -372,11 +400,13 @@ async def list_tasks(api_key: str = Depends(verify_api_key)):
                     thumbnail_local_path=task_data.get('thumbnail_local_path')
                 ))
                 
-        return TaskListResponse(tasks=tasks_list)
-        
+        return TaskListResponse(tasks=tasks_list, total=len(tasks_list), limit=50, offset=0)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Exception listing tasks from Supabase: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error listing tasks")
+        raise ApiError(500, INTERNAL_ERROR, "Server error listing tasks")
 
 @app.get(
     "/api/tasks/{task_id}",
@@ -422,7 +452,7 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
     """Get task status from Supabase."""
     if supabase is None:
         logger.error(f"Cannot get task {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
@@ -433,23 +463,23 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
         )
         if hasattr(response, 'error') and response.error:
              logger.error(f"Failed to get task {task_id} from Supabase: {response.error}")
-             raise HTTPException(status_code=500, detail="Database error retrieving task")
+             raise ApiError(500, INTERNAL_ERROR, "Database error retrieving task")
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
         task_data = response.data
         return TranscriptionResponse(**task_data)
     except HTTPException:
          raise
     except Exception as e:
         logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error retrieving task")
+        raise ApiError(500, INTERNAL_ERROR, "Server error retrieving task")
 
-@app.delete("/api/tasks/{task_id}", tags=["Private Task Management"])
+@app.delete("/api/tasks/{task_id}", status_code=204, tags=["Private Task Management"])
 async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
     """Delete task record from Supabase and associated local files."""
     if supabase is None:
         logger.error(f"Cannot delete task {task_id}: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     # Step 1: Attempt to delete the record from Supabase first
     try:
@@ -465,13 +495,13 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
             logger.error(f"Failed to delete task {task_id} from Supabase: {response.error}")
             # Decide if this is a 500 or if we should still try to delete files
             # For now, let's treat DB error as critical
-            raise HTTPException(status_code=500, detail="Database error deleting task")
+            raise ApiError(500, INTERNAL_ERROR, "Database error deleting task")
 
         # Check if any rows were actually deleted (response.data might be empty on delete)
         # Supabase delete often returns the deleted records in response.data
         if not response.data:
             # If no data was returned (and no error), the task ID likely didn't exist
-            raise HTTPException(status_code=404, detail="Task not found in database")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found in database")
             
         logger.info(f"Task {task_id} deleted from Supabase.")
 
@@ -479,7 +509,7 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
         raise
     except Exception as e:
         logger.error(f"Exception deleting task {task_id} from Supabase: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error deleting task record")
+        raise ApiError(500, INTERNAL_ERROR, "Server error deleting task record")
 
     # Step 2: Delete local files associated with the task (if DB deletion was successful)
     try:
@@ -494,44 +524,7 @@ async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
         logger.error(f"Error deleting local files for task {task_id}: {str(e)}", exc_info=True)
         # Consider returning a partial success message or just logging
 
-    return {"message": f"Task {task_id} deleted successfully"}
-
-@app.get("/api/transcript/{task_id}", tags=["Private Task Management"])
-async def get_transcript(task_id: str, api_key: str = Depends(verify_api_key)):
-    """Get transcript for a task"""
-    if task_id not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-        
-    task = tasks[task_id]
-    
-    if task["status"] == "failed":
-        error_message = task.get("error", "Unknown error")
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Transcription failed: {error_message}"
-        )
-        
-    if task["status"] != "completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Transcription not completed yet. Current status: {task['status']}"
-        )
-        
-    # Look for transcript file
-    output_dir = os.path.join(DOWNLOADS_DIR, task_id)
-    
-    # Use glob to find transcript files
-    transcript_files = glob.glob(os.path.join(output_dir, "*_transcript.txt"))
-    
-    if not transcript_files:
-        # Try another common pattern if the first one fails
-        transcript_files = glob.glob(os.path.join(output_dir, "*.txt"))
-    
-    if not transcript_files:
-        raise HTTPException(status_code=404, detail="Transcript file not found")
-        
-    # Return the first transcript file found
-    return FileResponse(transcript_files[0])
+    return Response(status_code=204)
 
 @app.get("/api/healthcheck", response_model=HealthCheckResponse, tags=["System & Health"])
 async def healthcheck():
@@ -553,7 +546,7 @@ async def healthcheck():
     }
 
 @app.get("/api/test", response_model=str, tags=["System & Health"])
-async def test_endpoint():
+async def test_endpoint(api_key: str = Depends(verify_api_key)):
     """Test endpoint that checks API key and OpenAI connectivity"""
     try:
         # Test OpenAI connection
@@ -587,7 +580,7 @@ async def test_endpoint():
         return f"Test failed: {str(e)}"
 
 @app.post("/api/test-download", response_model=str, tags=["System & Health"])
-async def test_download(request: Request):
+async def test_download(request: Request, api_key: str = Depends(verify_api_key)):
     """Test TikTok download functionality with a public video"""
     try:
         body = await request.json()
@@ -1939,7 +1932,7 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
     """Initialize a new task entry in the Supabase database."""
     if supabase is None:
         logger.error("Cannot initialize task: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database error during task initialization")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         # Skip user_transcriptions table lookup since it might not exist
@@ -1976,18 +1969,20 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         # Check for errors
         if hasattr(response, 'error') and response.error:
             logger.error(f"Supabase error creating task: {response.error}")
-            raise HTTPException(status_code=500, detail="Database error creating task")
-        
+            raise ApiError(500, INTERNAL_ERROR, "Database error creating task")
+
         logger.info(f"Created new task {task_id} for URL: {video_url}")
         return {"task_id": task_id}
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error initializing task: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database error during task initialization")
+        raise ApiError(500, INTERNAL_ERROR, "Database error during task initialization")
 
 # Public endpoints moved to app/api/public.py
 
-@app.post("/api/tasks", tags=["Private Task Management"])
+@app.post("/api/tasks", status_code=201, tags=["Private Task Management"])
 async def submit_task(
     request: TranscriptionRequest, 
     background_tasks: BackgroundTasks, 
@@ -1996,7 +1991,7 @@ async def submit_task(
     """Submit a new transcription task."""
     if supabase is None:
         logger.error("Cannot submit task: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database connection error")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         # Initialize task in DB, passing the validated user_id
@@ -2012,11 +2007,11 @@ async def submit_task(
         )
         
         return task
-    except HTTPException as http_exc:
-        raise http_exc # Re-raise specific HTTP exceptions
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error submitting task for URL {request.url}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to submit task")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to submit task")
 
 @app.post("/api/tasks/{task_id}/retry", tags=["Private Task Management"])
 async def retry_task(
@@ -2027,7 +2022,7 @@ async def retry_task(
     """Retry a failed transcription task."""
     if supabase is None:
         logger.error("Cannot retry task: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database connection error")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         # Fetch the existing task
@@ -2040,19 +2035,19 @@ async def retry_task(
         )
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
         video_url = task.get('url')
 
         if not video_url:
-            raise HTTPException(status_code=400, detail="Task has no URL to retry")
+            raise ApiError(400, TASK_NOT_RETRYABLE, "Task has no URL to retry")
 
         # Only allow retry for failed tasks (or optionally pending/stuck tasks)
         if task.get('status') not in ['failed', 'pending']:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot retry task with status '{task.get('status')}'. Only failed tasks can be retried."
+            raise ApiError(
+                400, TASK_NOT_RETRYABLE,
+                f"Cannot retry task with status '{task.get('status')}'. Only failed tasks can be retried."
             )
 
         # Reset task status to pending and clear error
@@ -2088,87 +2083,11 @@ async def retry_task(
         raise
     except Exception as e:
         logger.error(f"Error retrying task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to retry task")
-
-@app.post("/api/public/tasks/{task_id}/retry", tags=["Public Task Management"])
-async def public_retry_task(
-    task_id: str,
-    background_tasks: BackgroundTasks
-):
-    """Retry a failed transcription task (public endpoint)."""
-    if supabase is None:
-        logger.error("Cannot retry task: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database connection error")
-
-    try:
-        # Fetch the existing task
-        response = await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                    .select("task_id, url, status")
-                    .eq('task_id', task_id)
-                    .single()
-                    .execute()
-        )
-
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-
-        task = response.data
-        video_url = task.get('url')
-
-        if not video_url:
-            raise HTTPException(status_code=400, detail="Task has no URL to retry")
-
-        # Only allow retry for failed tasks
-        if task.get('status') != 'failed':
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot retry task with status '{task.get('status')}'. Only failed tasks can be retried."
-            )
-
-        # Reset task status to pending and clear error
-        await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                    .update({
-                        "status": "pending",
-                        "error": None,
-                        "updated_at": datetime.now().isoformat()
-                    })
-                    .eq('task_id', task_id)
-                    .execute()
-        )
-
-        logger.info(f"Retrying task {task_id} for URL: {video_url}")
-
-        # Queue the task for reprocessing
-        background_tasks.add_task(
-            process_transcription_task,
-            task_id,
-            video_url,
-            None,  # callback_url
-            None   # proxy
-        )
-
-        return {
-            "task_id": task_id,
-            "status": "pending",
-            "message": "Task queued for retry"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrying task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to retry task")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to retry task")
 
 @app.post("/api/cleanup-stuck-tasks", tags=["System & Health"])
 async def cleanup_stuck_tasks(api_key: str = Depends(verify_api_key)):
     """Mark long-pending tasks as failed (requires API key)"""
-    return await _cleanup_stuck_tasks_logic()
-
-@app.post("/api/public/cleanup-stuck-tasks", tags=["System & Health"])
-async def public_cleanup_stuck_tasks():
-    """Mark long-pending tasks as failed (public endpoint)"""
     return await _cleanup_stuck_tasks_logic()
 
 @app.post("/api/reprocess-sms-jobs", tags=["System & Health"])
@@ -2176,23 +2095,19 @@ async def reprocess_sms_jobs(background_tasks: BackgroundTasks, api_key: str = D
     """Reprocess stuck SMS transcription jobs (requires API key)"""
     return await _reprocess_sms_jobs_logic(background_tasks)
 
-@app.post("/api/public/reprocess-sms-jobs", tags=["System & Health"])
-async def public_reprocess_sms_jobs(background_tasks: BackgroundTasks):
-    """Reprocess stuck SMS transcription jobs (public endpoint)"""
-    return await _reprocess_sms_jobs_logic(background_tasks)
-
 async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
     """Find and reprocess stuck SMS jobs"""
     if supabase is None:
         logger.error("Cannot reprocess SMS jobs: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-    
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
+
     try:
         # Find pending SMS jobs
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
             .select("task_id, url, tags")
             .eq('status', 'pending')
+            .limit(500)
             .execute()
         )
         
@@ -2224,23 +2139,24 @@ async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
         
     except Exception as e:
         logger.error(f"Error reprocessing SMS jobs: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to reprocess SMS jobs: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to reprocess SMS jobs")
 
 async def _cleanup_stuck_tasks_logic():
     """Shared cleanup logic"""
     if supabase is None:
         logger.error("Cannot cleanup stuck tasks: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Database connection not available")
-    
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
+
     try:
         # Find tasks pending for more than 30 minutes
         cutoff_time = (datetime.now() - timedelta(minutes=30)).isoformat()
-        
+
         response = await asyncio.to_thread(
             supabase.table('transcriptions')
             .select("task_id")
             .eq('status', 'pending')
             .lt('created_at', cutoff_time)
+            .limit(500)
             .execute()
         )
         
@@ -2259,7 +2175,7 @@ async def _cleanup_stuck_tasks_logic():
         
     except Exception as e:
         logger.error(f"Error cleaning stuck tasks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cleanup stuck tasks")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to cleanup stuck tasks")
 
 # ===============================
 # ACCOUNT LINKING & SMS ENDPOINTS MOVED TO app/api/sms.py
@@ -2572,7 +2488,7 @@ async def get_tiktok_video_info(video_url: str = Query(..., description="TikTok 
     and API failures by automatically switching between different TikTok APIs.
     """
     if not video_url:
-        raise HTTPException(status_code=400, detail="video_url parameter is required")
+        raise ApiError(400, VALIDATION_ERROR, "video_url parameter is required")
     
     try:
         result = tiktok_service.get_video_info(video_url)
@@ -2594,7 +2510,7 @@ async def get_tiktok_video_info(video_url: str = Query(..., description="TikTok 
             
     except Exception as e:
         logger.error(f"Error in get_tiktok_video_info: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to get video info")
 
 @app.get("/api/public/tiktok/adapters-status", tags=["TikTok API"])
 async def get_tiktok_adapters_status():
@@ -2608,7 +2524,7 @@ async def get_tiktok_adapters_status():
         return status
     except Exception as e:
         logger.error(f"Error getting adapters status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to get adapters status")
 
 @app.post("/api/tiktok/refresh-adapters", dependencies=[Depends(verify_api_key)], tags=["TikTok API"])
 async def refresh_tiktok_adapters():
@@ -2627,7 +2543,7 @@ async def refresh_tiktok_adapters():
         }
     except Exception as e:
         logger.error(f"Error refreshing adapters: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to refresh adapters")
 
 @app.post("/api/payments/create-checkout-session", tags=["Payment & Billing"])
 async def create_checkout_session(
@@ -2642,22 +2558,20 @@ async def create_checkout_session(
         # Initialize Stripe
         stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
         if not stripe.api_key:
-            raise HTTPException(status_code=500, detail="Stripe not configured")
+            raise ApiError(503, SERVICE_UNAVAILABLE, "Stripe not configured")
         
-        # Get user ID from auth headers or query params
+        # Get verified user ID from Supabase auth token
         auth_header = request.headers.get("authorization") if request else None
         user_id = None
-        
-        # Try to extract user_id from auth token or request body
+
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.replace("Bearer ", "")
-            # Decode JWT to get user ID (simplified - you may want to use proper JWT library)
             try:
-                import base64
-                decoded = base64.b64decode(token.split('.')[1] + '==')
-                payload = json.loads(decoded)
-                user_id = payload.get('sub') or payload.get('user_id')
-            except:
+                user_response = supabase.auth.get_user(token)
+                if user_response and user_response.user:
+                    user_id = user_response.user.id
+            except Exception:
+                logger.warning("Failed to verify auth token for checkout, proceeding as anonymous")
                 pass
         
         # Get frontend URL for redirects
@@ -2672,7 +2586,7 @@ async def create_checkout_session(
         
         package_info = CREDIT_PACKAGES.get(price_id)
         if not package_info:
-            raise HTTPException(status_code=400, detail="Invalid price ID")
+            raise ApiError(400, VALIDATION_ERROR, "Invalid price ID")
         
         # Create metadata for webhook
         metadata = {
@@ -2704,7 +2618,7 @@ async def create_checkout_session(
         raise
     except Exception as e:
         logger.error(f"Error creating checkout session: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to create checkout session")
 
 @app.get("/api/users/credits", tags=["Payment & Billing"])
 async def get_user_credits(
@@ -2713,20 +2627,19 @@ async def get_user_credits(
 ):
     """Get the current user's credit balance"""
     try:
-        # Get user email from auth
+        # Get verified user email from Supabase auth token
         user_email = None
         auth_header = request.headers.get("authorization")
         if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
             try:
-                import json
-                import base64
-                token = auth_header.replace("Bearer ", "")
-                decoded = base64.b64decode(token.split('.')[1] + '==')
-                payload = json.loads(decoded)
-                user_email = payload.get('email')
-            except:
+                user_response = supabase.auth.get_user(token)
+                if user_response and user_response.user:
+                    user_email = user_response.user.email
+            except Exception:
+                logger.warning("Failed to verify auth token for credits lookup")
                 pass
-        
+
         if not user_email:
             # Try alternative: get email from user object directly
             # Return 0 for unauthenticated users
@@ -2746,7 +2659,7 @@ async def get_user_credits(
         raise
     except Exception as e:
         logger.error(f"Error getting user credits: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get user credits: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to get user credits")
 
 @app.post("/api/webhook/stripe", tags=["Payment & Billing"])
 async def handle_stripe_webhook(request: Request):
@@ -2759,7 +2672,7 @@ async def handle_stripe_webhook(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error handling Stripe webhook: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Webhook processing failed")
 
 @app.get("/pay", tags=["Payment & Billing"])
 async def pay_redirect(p: str = Query(..., description="Phone number"), c: int = Query(5, description="Credits")):
@@ -2772,7 +2685,7 @@ async def pay_redirect(p: str = Query(..., description="Phone number"), c: int =
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
     if not stripe.api_key:
-        raise HTTPException(status_code=500, detail="Payment system not configured")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Payment system not configured")
 
     # Map credits to price IDs
     price_map = {
@@ -2782,7 +2695,7 @@ async def pay_redirect(p: str = Query(..., description="Phone number"), c: int =
 
     price_id = price_map.get(c)
     if not price_id:
-        raise HTTPException(status_code=400, detail="Invalid credit amount")
+        raise ApiError(400, VALIDATION_ERROR, "Invalid credit amount")
 
     try:
         frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
@@ -2801,7 +2714,7 @@ async def pay_redirect(p: str = Query(..., description="Phone number"), c: int =
         return RedirectResponse(url=session.url, status_code=303)
     except Exception as e:
         logger.error(f"Error creating checkout session: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create payment session")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to create payment session")
 
 @app.post("/api/webhook/supabase", tags=["System & Health"])
 async def handle_supabase_webhook(
@@ -2879,10 +2792,10 @@ async def rich_link_preview(task_id: str, request: Request):
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="Transcript not found")
-        
+            raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
+
         task = response.data
-        
+
         # Parse JSONB fields from database
         if task.get('tldr'):
             try:
@@ -3136,18 +3049,18 @@ async def fetch_video_comments(
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="Transcription not found")
-        
+            raise ApiError(404, TASK_NOT_FOUND, "Transcription not found")
+
         # Handle response.data being a list or dict
         task = response.data[0] if isinstance(response.data, list) else response.data
         video_id = task.get('video_id')
         user_phone = task.get('user_phone')
         already_fetched = task.get('comments_fetched', False)
-        
+
         if not video_id:
-            raise HTTPException(
-                status_code=400, 
-                detail="Video ID not available for this transcription"
+            raise ApiError(
+                400, VALIDATION_ERROR,
+                "Video ID not available for this transcription"
             )
         
         # Check if comments already fetched
@@ -3166,9 +3079,9 @@ async def fetch_video_comments(
         
         rapidapi_key = os.getenv('RAPIDAPI_KEY')
         if not rapidapi_key:
-            raise HTTPException(
-                status_code=500,
-                detail="Comment extraction not configured"
+            raise ApiError(
+                503, SERVICE_UNAVAILABLE,
+                "Comment extraction not configured"
             )
         
         adapter = TikTokCommentsAdapter([rapidapi_key])
@@ -3178,9 +3091,9 @@ async def fetch_video_comments(
         preview_result = adapter.fetch_comments(video_id, count=20, get_all=False)
         
         if preview_result.get('error'):
-            raise HTTPException(
-                status_code=503,
-                detail=f"Failed to fetch preview: {preview_result['error']}"
+            raise ApiError(
+                503, SERVICE_UNAVAILABLE,
+                f"Failed to fetch preview: {preview_result['error']}"
             )
         
         preview_comments = preview_result.get('comments', [])
@@ -3218,9 +3131,9 @@ async def fetch_video_comments(
                 else:
                     credits = credits_check.data.get('credits_remaining', 0)
                 if credits < credits_needed:
-                    raise HTTPException(
-                        status_code=402,
-                        detail=f"Insufficient credits. Need {credits_needed} credits (estimated {estimated_total} comments). You have {credits} credits."
+                    raise ApiError(
+                        402, INSUFFICIENT_CREDITS,
+                        f"Insufficient credits. Need {credits_needed} credits (estimated {estimated_total} comments). You have {credits} credits."
                     )
         
         # Create progress tracking record
@@ -3259,9 +3172,9 @@ async def fetch_video_comments(
                     }).eq('id', progress_id).execute()
                 )
             
-            raise HTTPException(
-                status_code=503,
-                detail=f"Failed to fetch comments: {result['error']}"
+            raise ApiError(
+                503, SERVICE_UNAVAILABLE,
+                f"Failed to fetch comments: {result['error']}"
             )
         
         comments = result.get('comments', [])
@@ -3346,7 +3259,7 @@ async def fetch_video_comments(
         raise
     except Exception as e:
         logger.error(f"Error fetching comments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch comments")
 
 
 @app.get("/api/public/comments/{task_id}", tags=["Public Transcription"])
@@ -3396,7 +3309,7 @@ async def get_video_comments(
         
     except Exception as e:
         logger.error(f"Error fetching comments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch comments")
 
 
 @app.get("/api/public/comments/{task_id}/top", tags=["Public Transcription"])
@@ -3425,7 +3338,7 @@ async def get_top_comments(
         
     except Exception as e:
         logger.error(f"Error fetching top comments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch top comments")
 
 
 @app.get("/api/public/comments/{task_id}/analytics", tags=["Public Transcription"])
@@ -3500,7 +3413,7 @@ async def get_comment_analytics(
         
     except Exception as e:
         logger.error(f"Error fetching comment analytics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch comment analytics")
 
 
 @app.get("/api/public/comments/{task_id}/export/csv", tags=["Public Transcription"])
@@ -3523,8 +3436,8 @@ async def export_comments_csv(
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="No comments found")
-        
+            raise ApiError(404, TASK_NOT_FOUND, "No comments found")
+
         # Create CSV in memory
         output = StringIO()
         writer = csv.DictWriter(output, fieldnames=[
@@ -3557,7 +3470,7 @@ async def export_comments_csv(
         raise
     except Exception as e:
         logger.error(f"Error exporting comments to CSV: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to export comments to CSV")
 
 
 @app.get("/api/public/comments/{task_id}/export/json", tags=["Public Transcription"])
@@ -3577,8 +3490,8 @@ async def export_comments_json(
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="No comments found")
-        
+            raise ApiError(404, TASK_NOT_FOUND, "No comments found")
+
         # Return as downloadable JSON file
         return Response(
             content=json.dumps(response.data, indent=2),
@@ -3592,7 +3505,7 @@ async def export_comments_json(
         raise
     except Exception as e:
         logger.error(f"Error exporting comments to JSON: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to export comments to JSON")
 
 
 @app.get("/api/public/comments/preview/{task_id}", tags=["Public Transcription"])
@@ -3620,15 +3533,15 @@ async def preview_comments(
         )
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="Task not found")
-        
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
+
         task = response.data
         video_id = task.get('video_id')
         video_url = task.get('video_url')
         stored_comment_count = task.get('comment_count')
-        
+
         if not video_id:
-            raise HTTPException(status_code=400, detail="Video ID not available for this task")
+            raise ApiError(400, VALIDATION_ERROR, "Video ID not available for this task")
         
         # Check if comments already fetched
         if task.get('comments_fetched'):
@@ -3659,9 +3572,9 @@ async def preview_comments(
         
         rapidapi_key = os.getenv('RAPIDAPI_KEY')
         if not rapidapi_key:
-            raise HTTPException(
-                status_code=500,
-                detail="Comments service not configured"
+            raise ApiError(
+                503, SERVICE_UNAVAILABLE,
+                "Comments service not configured"
             )
         
         adapter = TikTokCommentsAdapter([rapidapi_key])
@@ -3729,7 +3642,7 @@ async def preview_comments(
         raise
     except Exception as e:
         logger.error(f"Error fetching comment preview: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch comment preview")
 
 
 @app.get("/api/public/comments/fetch-status/{task_id}", tags=["Public Transcription"])
@@ -3822,7 +3735,7 @@ async def get_fetch_status(
         
     except Exception as e:
         logger.error(f"Error getting fetch status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to get fetch status")
 
 
 def calculate_simple_sentiment(comments):

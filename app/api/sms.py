@@ -7,6 +7,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Re
 from fastapi.responses import JSONResponse
 
 from ..core.auth import verify_api_key
+from ..core.errors import (
+    ApiError,
+    INSUFFICIENT_CREDITS,
+    INTERNAL_ERROR,
+    SERVICE_UNAVAILABLE,
+    TASK_NOT_FOUND,
+    TRANSCRIPT_NOT_READY,
+    VALIDATION_ERROR,
+)
 from ..database import supabase
 from .. import sms
 from ..app import init_task, process_transcription_with_sms_notification
@@ -32,7 +41,7 @@ async def link_sms_account(request: Request):
         phone = body.get('phone')
 
         if not phone:
-            raise HTTPException(status_code=400, detail="Phone number is required")
+            raise ApiError(400, VALIDATION_ERROR, "Phone number is required")
 
         phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
         if len(phone) == 10:
@@ -136,9 +145,11 @@ async def link_sms_account(request: Request):
                 content={"success": False, "error": f"Failed to link transcriptions: {str(e)}"},
             )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in link_sms_account: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise ApiError(500, INTERNAL_ERROR, "Failed to link SMS account")
 
 
 @router.post("/api/sms/inbound")
@@ -258,19 +269,19 @@ async def send_sms(
         message = body.get("message")
 
         if not to or not message:
-            raise HTTPException(status_code=400, detail="Both 'to' and 'message' are required")
+            raise ApiError(400, VALIDATION_ERROR, "Both 'to' and 'message' are required")
 
         success = await sms.SMSHandler.send_sms(to, message)
 
         if success:
             return {"status": "sent", "to": to}
-        raise HTTPException(status_code=500, detail="Failed to send SMS")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to send SMS")
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error sending SMS: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to send SMS")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to send SMS")
 
 
 @router.post("/api/sms/summary")
@@ -281,7 +292,7 @@ async def generate_sms_summary(request: Request):
         phone = body.get("phone")
 
         if not phone:
-            raise HTTPException(status_code=400, detail="Phone number is required")
+            raise ApiError(400, VALIDATION_ERROR, "Phone number is required")
 
         summary_result = await sms.SMSHandler.handle_summary_command(phone)
         return {"summary": summary_result}
@@ -290,7 +301,7 @@ async def generate_sms_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error generating SMS summary: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate summary")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to generate summary")
 
 
 @router.post("/api/sms/chat", response_model=SmsChatResponse)
@@ -298,14 +309,14 @@ async def sms_chat(request: SmsChatRequest):
     """Answer a user's question about their latest transcript with chat memory."""
     if supabase is None:
         logger.error("Cannot chat: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     phone = request.phone.strip()
     message = request.message.strip()
     if not phone:
-        raise HTTPException(status_code=400, detail="Phone number is required")
+        raise ApiError(400, VALIDATION_ERROR, "Phone number is required")
     if not message:
-        raise HTTPException(status_code=400, detail="Message is required")
+        raise ApiError(400, VALIDATION_ERROR, "Message is required")
 
     try:
         thread = None
@@ -336,7 +347,7 @@ async def sms_chat(request: SmsChatRequest):
                 .limit(1) \
                 .execute()
             if not transcript_lookup.data:
-                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
+                raise ApiError(404, TASK_NOT_FOUND, "No completed transcripts found for this number")
 
             task_id = transcript_lookup.data[0]['task_id']
             try:
@@ -379,7 +390,7 @@ async def sms_chat(request: SmsChatRequest):
                 .limit(1) \
                 .execute()
             if not transcript_lookup.data:
-                raise HTTPException(status_code=404, detail="No completed transcripts found for this number")
+                raise ApiError(404, TASK_NOT_FOUND, "No completed transcripts found for this number")
             task_id = transcript_lookup.data[0]['task_id']
             thread_id = task_id
 
@@ -388,21 +399,21 @@ async def sms_chat(request: SmsChatRequest):
         ).eq('task_id', task_id).maybe_single().execute()
 
         if not task_response.data:
-            raise HTTPException(status_code=404, detail="Transcript not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
 
         task = task_response.data
         if task.get('status') == 'failed':
             error_message = task.get('error', 'Unknown error')
-            raise HTTPException(status_code=400, detail=f"Transcription failed: {error_message}")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, f"Transcription failed: {error_message}")
         if task.get('status') != 'completed':
-            raise HTTPException(
-                status_code=409,
-                detail=f"Transcription not completed yet. Current status: {task.get('status')}",
+            raise ApiError(
+                409, TRANSCRIPT_NOT_READY,
+                f"Transcription not completed yet. Current status: {task.get('status')}",
             )
 
         transcript_text = task.get('transcript') or ''
         if not transcript_text:
-            raise HTTPException(status_code=400, detail="Transcript not ready yet")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready yet")
 
         if thread_id:
             try:
@@ -494,7 +505,7 @@ async def sms_chat(request: SmsChatRequest):
         raise
     except Exception as e:
         logger.error(f"Error generating SMS chat response: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate answer")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to generate answer")
 
 
 @router.post("/api/sms/chat/reset", response_model=SmsChatResetResponse)
@@ -502,11 +513,11 @@ async def sms_chat_reset(request: SmsChatResetRequest):
     """Reset the active chat thread for a phone number."""
     if supabase is None:
         logger.error("Cannot reset chat: Supabase client not initialized.")
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     phone = request.phone.strip()
     if not phone:
-        raise HTTPException(status_code=400, detail="Phone number is required")
+        raise ApiError(400, VALIDATION_ERROR, "Phone number is required")
 
     try:
         response = supabase.table('conversation_threads').update({
@@ -519,7 +530,7 @@ async def sms_chat_reset(request: SmsChatResetRequest):
         return SmsChatResetResponse(success=True, closed_threads=closed_threads)
     except Exception as e:
         logger.error(f"Error resetting SMS chat: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to reset chat")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to reset chat")
 
 
 @router.get("/api/analytics/sms")
@@ -529,12 +540,14 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
         jobs_response = await asyncio.to_thread(
             supabase.table('transcript_jobs')
                     .select("status, created_at, from_phone")
+                    .limit(5000)
                     .execute()
         )
 
         messages_response = await asyncio.to_thread(
             supabase.table('user_messages')
                     .select("command, created_at, from_phone")
+                    .limit(5000)
                     .execute()
         )
 
@@ -567,7 +580,7 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
 
     except Exception as e:
         logger.error(f"Error getting SMS analytics: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error retrieving analytics")
+        raise ApiError(500, INTERNAL_ERROR, "Error retrieving analytics")
 
 
 @router.get("/api/admin/stats")
@@ -621,10 +634,10 @@ async def admin_stats(
         return stats
 
     except ImportError:
-        raise HTTPException(status_code=501, detail="Cost tracking module not available")
+        raise ApiError(501, SERVICE_UNAVAILABLE, "Cost tracking module not available")
     except Exception as e:
         logger.error(f"Error getting admin stats: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error retrieving admin stats: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Error retrieving admin stats")
 
 
 @router.get("/api/admin/trends")
@@ -655,7 +668,7 @@ async def admin_trends(
         return trends
 
     except ImportError:
-        raise HTTPException(status_code=501, detail="Cost tracking module not available")
+        raise ApiError(501, SERVICE_UNAVAILABLE, "Cost tracking module not available")
     except Exception as e:
         logger.error(f"Error getting admin trends: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error retrieving trends: {str(e)}")
+        raise ApiError(500, INTERNAL_ERROR, "Error retrieving trends")

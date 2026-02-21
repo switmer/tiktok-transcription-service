@@ -9,6 +9,14 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
+from ..core.errors import (
+    ApiError,
+    INTERNAL_ERROR,
+    SERVICE_UNAVAILABLE,
+    TASK_NOT_FOUND,
+    TRANSCRIPT_NOT_READY,
+    VALIDATION_ERROR,
+)
 from ..database import supabase
 from .. import sms
 from ..models.schemas import (
@@ -44,7 +52,7 @@ async def get_chat_thread(
     and continue it in the browser.
     """
     if supabase is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         # Fetch thread
@@ -55,7 +63,7 @@ async def get_chat_thread(
             .execute()
 
         if not thread_response.data:
-            raise HTTPException(status_code=404, detail="Thread not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Thread not found")
 
         thread = thread_response.data
 
@@ -111,7 +119,7 @@ async def get_chat_thread(
         raise
     except Exception as e:
         logger.error(f"Error fetching chat thread {thread_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch thread")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to fetch thread")
 
 
 @router.post("/api/chat/thread/{thread_id}/message", response_model=WebChatResponse)
@@ -126,11 +134,11 @@ async def post_chat_message(
     about a transcript, continuing where SMS left off.
     """
     if supabase is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     message = request.message.strip()
     if not message:
-        raise HTTPException(status_code=400, detail="Message is required")
+        raise ApiError(400, VALIDATION_ERROR, "Message is required")
 
     try:
         # Fetch thread
@@ -141,12 +149,12 @@ async def post_chat_message(
             .execute()
 
         if not thread_response.data:
-            raise HTTPException(status_code=404, detail="Thread not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Thread not found")
 
         thread = thread_response.data
 
         if thread.get('status') == 'closed':
-            raise HTTPException(status_code=400, detail="This conversation has been closed. Start a new one via SMS.")
+            raise ApiError(400, VALIDATION_ERROR, "This conversation has been closed. Start a new one via SMS.")
 
         task_id = thread['task_id']
         conversation_summary = thread.get('summary') or ""
@@ -157,15 +165,15 @@ async def post_chat_message(
         ).eq('task_id', task_id).maybe_single().execute()
 
         if not task_response.data:
-            raise HTTPException(status_code=404, detail="Associated transcript not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Associated transcript not found")
 
         task = task_response.data
         if task.get('status') != 'completed':
-            raise HTTPException(status_code=400, detail=f"Transcript not ready. Status: {task.get('status')}")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, f"Transcript not ready. Status: {task.get('status')}")
 
         transcript_text = task.get('transcript') or ''
         if not transcript_text:
-            raise HTTPException(status_code=400, detail="Transcript content not available")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript content not available")
 
         # Save user message
         now = datetime.now(timezone.utc).isoformat()
@@ -270,7 +278,7 @@ async def post_chat_message(
         raise
     except Exception as e:
         logger.error(f"Error posting message to thread {thread_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to send message")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to send message")
 
 
 @router.get("/api/chat/task/{task_id}", response_model=ChatThreadResponse)
@@ -287,7 +295,7 @@ async def get_or_create_thread_by_task(
     If no thread exists, one will be created.
     """
     if supabase is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         # First verify the transcript exists
@@ -298,11 +306,11 @@ async def get_or_create_thread_by_task(
             .execute()
 
         if not transcript_response.data:
-            raise HTTPException(status_code=404, detail="Transcript not found")
+            raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
 
         transcript = transcript_response.data
         if transcript.get('status') != 'completed':
-            raise HTTPException(status_code=400, detail=f"Transcript not ready. Status: {transcript.get('status')}")
+            raise ApiError(400, TRANSCRIPT_NOT_READY, f"Transcript not ready. Status: {transcript.get('status')}")
 
         user_phone = transcript.get('user_phone')
         transcript_title = transcript.get('title')
@@ -338,7 +346,7 @@ async def get_or_create_thread_by_task(
             if thread_insert.data:
                 thread = thread_insert.data[0]
             else:
-                raise HTTPException(status_code=500, detail="Failed to create conversation thread")
+                raise ApiError(500, INTERNAL_ERROR, "Failed to create conversation thread")
 
         # Fetch messages if requested
         messages = []
@@ -379,7 +387,7 @@ async def get_or_create_thread_by_task(
         raise
     except Exception as e:
         logger.error(f"Error getting/creating thread for task {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get or create thread")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to get or create thread")
 
 
 @router.get("/api/chat/threads", response_model=ChatThreadListResponse)
@@ -396,7 +404,7 @@ async def list_chat_threads(
     or get all threads for a specific transcript.
     """
     if supabase is None:
-        raise HTTPException(status_code=500, detail="Database connection not available")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
         query = supabase.table('conversation_threads') \
@@ -435,6 +443,8 @@ async def list_chat_threads(
             total=len(threads),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing chat threads: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list threads")
+        raise ApiError(500, INTERNAL_ERROR, "Failed to list threads")

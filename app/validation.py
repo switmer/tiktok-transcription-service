@@ -6,6 +6,11 @@ import logging
 from urllib.parse import urlparse
 from typing import Optional, List, Dict, Any
 from fastapi import HTTPException
+
+try:
+    from .core.errors import ApiError, VALIDATION_ERROR
+except ImportError:
+    from core.errors import ApiError, VALIDATION_ERROR
 from pydantic import BaseModel, validator
 
 logger = logging.getLogger(__name__)
@@ -299,17 +304,17 @@ class ValidatedSMSRequest(BaseModel):
 def validate_request_size(content_length: int, max_size: int = 10 * 1024 * 1024):
     """Validate request size (10MB default)"""
     if content_length > max_size:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Request too large. Maximum size: {max_size // (1024*1024)}MB"
+        raise ApiError(
+            413, VALIDATION_ERROR,
+            f"Request too large. Maximum size: {max_size // (1024*1024)}MB"
         )
 
 def validate_content_type(content_type: str, allowed_types: List[str]):
     """Validate request content type"""
     if content_type not in allowed_types:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported content type. Allowed: {', '.join(allowed_types)}"
+        raise ApiError(
+            415, VALIDATION_ERROR,
+            f"Unsupported content type. Allowed: {', '.join(allowed_types)}"
         )
 
 # Security headers

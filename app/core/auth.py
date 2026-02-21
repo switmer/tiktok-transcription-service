@@ -5,6 +5,7 @@ import os
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import APIKeyHeader
 
+from ..core.errors import ApiError, AUTH_REQUIRED, AUTH_INVALID, SERVICE_UNAVAILABLE, INTERNAL_ERROR
 from ..database import supabase
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,11 @@ async def validate_api_key(api_key: str = Depends(api_key_header)) -> str:
 
     if not api_key:
         logger.warning("API key validation failed: Header X-API-Key is missing.")
-        raise HTTPException(status_code=403, detail="Missing API Key Header")
+        raise ApiError(401, AUTH_REQUIRED, "Missing API Key Header")
 
     if supabase is None:
         logger.error("Cannot validate API key: Supabase client not initialized")
-        raise HTTPException(status_code=500, detail="Error during API key validation")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "API key validation service unavailable")
 
     try:
         query = supabase.table('api_keys')
@@ -43,28 +44,28 @@ async def validate_api_key(api_key: str = Depends(api_key_header)) -> str:
             return "default_user"
 
         logger.warning("API key validation failed: Invalid or inactive API key.")
-        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+        raise ApiError(401, AUTH_INVALID, "Invalid or inactive API key")
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error validating API key")
+        raise ApiError(500, INTERNAL_ERROR, "Error validating API key")
 
 
 def verify_api_key(x_api_key: str = Header(None)):
     """Dependency for API key validation using environment variable fallback"""
     if x_api_key is None:
         logger.warning("API key validation failed: X-API-Key header missing.")
-        raise HTTPException(status_code=401, detail="X-API-Key header required")
+        raise ApiError(401, AUTH_REQUIRED, "X-API-Key header required")
 
     api_keys_env = (os.getenv("API_KEYS") or "").strip()
     if api_keys_env:
         valid_keys = [key.strip() for key in api_keys_env.split(",") if key.strip()]
         if x_api_key not in valid_keys:
             logger.warning("API key validation failed: Invalid API key provided.")
-            raise HTTPException(status_code=403, detail="Invalid API Key")
+            raise ApiError(401, AUTH_INVALID, "Invalid API Key")
     else:
-        logger.warning("No API_KEYS environment variable set, allowing all keys for development")
+        raise ApiError(500, SERVICE_UNAVAILABLE, "API key validation not configured")
 
     return x_api_key
