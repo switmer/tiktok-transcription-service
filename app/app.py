@@ -1792,7 +1792,8 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
 
         if quote and tldr_list:
             short_quote = _trunc(quote, 90)
-            bullets = '\n'.join([f"- {_trunc(item, 80)}" for item in tldr_list[:3]])
+            # Never truncate individual bullets — show fewer if over limit
+            bullets = '\n'.join([f"- {item}" for item in tldr_list[:3]])
 
             message = f""""{short_quote}"
 
@@ -1817,21 +1818,28 @@ See full transcript: {share_url}
                 message += f"\n\n1 credit left! 5 for $1.99: {stripe_payment_link}"
 
         # No emojis = GSM encoding (153 chars/concat segment). 600 chars is safe.
+        # If over limit, drop bullets one at a time rather than truncating them.
         SMS_SAFE_LIMIT = 600
-        if len(message) > SMS_SAFE_LIMIT:
-            logger.warning(f"SMS message too long ({len(message)} chars), truncating to {SMS_SAFE_LIMIT}")
-            if quote and tldr_list and len(tldr_list) >= 2:
+        if len(message) > SMS_SAFE_LIMIT and quote and tldr_list:
+            logger.warning(f"SMS message too long ({len(message)} chars), reducing bullets")
+            for max_bullets in (2, 1):
                 short_q = _trunc(quote, 70)
-                short_bullets = '\n'.join([f"- {_trunc(item, 60)}" for item in tldr_list[:2]])
+                fewer_bullets = '\n'.join([f"- {item}" for item in tldr_list[:max_bullets]])
                 message = f""""{short_q}"
 
+{transcript_preview}
+
 TLDR:
-{short_bullets}
+{fewer_bullets}
 
 See full transcript: {share_url}
 {credits_str} credits left"""
-            else:
-                message = message[:SMS_SAFE_LIMIT - 3] + "..."
+                if len(message) <= SMS_SAFE_LIMIT:
+                    break
+
+        if len(message) > SMS_SAFE_LIMIT:
+            logger.warning(f"SMS still too long ({len(message)} chars), hard truncating")
+            message = message[:SMS_SAFE_LIMIT - 3] + "..."
         
         logger.info(f"Sending SMS ({len(message)} chars) to {phone_number}")
         client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))

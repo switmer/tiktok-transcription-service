@@ -1105,15 +1105,15 @@ QUOTE Guidelines:
 
 TLDR Guidelines:
 - 3-4 bullet points that capture the specific, actionable content
-- Include concrete examples, methods, or unique approaches mentioned
+- EACH BULLET MUST BE UNDER 70 CHARACTERS. Be punchy, not wordy.
 - Focus on what someone could actually DO or specific perspectives they shared
-- Each bullet should teach something valuable or surprising
 - Write conversationally, like you're telling a friend the good parts
+- Think tweet-length: short, sharp, memorable
 
 Respond STRICTLY in this JSON format (no other text):
 {{
   "quote": "the most memorable, shareable line that captures their unique take",
-  "tldr": ["Specific insight #1 with concrete details", "Actionable advice #2 with examples", "Unique perspective #3 that's worth remembering", "Additional valuable point #4 if there's more gold"]
+  "tldr": ["Short punchy insight #1", "Actionable takeaway #2", "Key perspective #3", "Bonus point #4 if needed"]
 }}
 
 Title:
