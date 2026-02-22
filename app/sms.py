@@ -919,13 +919,38 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         quote: str = "",
         tldr_list: Optional[list] = None,
         conversation_summary: str = "",
-        message_history: Optional[List[Dict[str, str]]] = None
+        message_history: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         parts = []
         if title:
             parts.append(f"TITLE:\n{SMSHandler._truncate_text(title.strip(), 200)}")
         if description:
             parts.append(f"DESCRIPTION:\n{SMSHandler._truncate_text(description.strip(), 800)}")
+
+        # Include video metadata for richer context
+        if metadata:
+            meta_lines = []
+            if metadata.get('uploader'):
+                meta_lines.append(f"Creator: {metadata['uploader']}")
+            if metadata.get('channel'):
+                meta_lines.append(f"Channel: {metadata['channel']}")
+            if metadata.get('platform'):
+                meta_lines.append(f"Platform: {metadata['platform']}")
+            if metadata.get('duration'):
+                mins, secs = divmod(int(metadata['duration']), 60)
+                meta_lines.append(f"Duration: {mins}:{secs:02d}")
+            if metadata.get('view_count'):
+                meta_lines.append(f"Views: {metadata['view_count']:,}")
+            if metadata.get('like_count'):
+                meta_lines.append(f"Likes: {metadata['like_count']:,}")
+            if metadata.get('category'):
+                meta_lines.append(f"Category: {metadata['category']}")
+            if metadata.get('auto_tags') and isinstance(metadata['auto_tags'], list):
+                meta_lines.append(f"Tags: {', '.join(metadata['auto_tags'][:5])}")
+            if meta_lines:
+                parts.append(f"VIDEO INFO:\n{chr(10).join(meta_lines)}")
+
         if quote:
             parts.append(f"QUOTE:\n{SMSHandler._truncate_text(quote.strip(), 200)}")
         if tldr_list:
@@ -1006,7 +1031,8 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         tldr_list: Optional[list] = None,
         max_chars: int = 280,
         conversation_summary: str = "",
-        message_history: Optional[List[Dict[str, str]]] = None
+        message_history: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Answer a user question using transcript context."""
         question = (question or "").strip()
@@ -1019,7 +1045,8 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
             quote=quote,
             tldr_list=tldr_list,
             conversation_summary=conversation_summary,
-            message_history=message_history
+            message_history=message_history,
+            metadata=metadata,
         )
         try:
             anthropic_key = os.getenv("ANTHROPIC_API_KEY")

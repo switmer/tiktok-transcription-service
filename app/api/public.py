@@ -286,7 +286,7 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, transcript, title, description, quote, tldr, error")
+                            .select("task_id, status, transcript, title, description, quote, tldr, error, uploader, channel, duration, platform, view_count, like_count, category, auto_tags")
                             .eq('task_id', task_id)
                             .maybe_single()
                             .execute()
@@ -317,6 +317,7 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
             quote=task.get('quote') or '',
             tldr_list=tldr_list,
             max_chars=payload.max_chars or 360,
+            metadata={k: task.get(k) for k in ('uploader', 'channel', 'duration', 'platform', 'view_count', 'like_count', 'category', 'auto_tags') if task.get(k)},
         )
 
         return TranscriptChatResponse(task_id=task_id, answer=answer)

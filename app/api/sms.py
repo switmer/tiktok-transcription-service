@@ -395,7 +395,7 @@ async def sms_chat(request: SmsChatRequest):
             thread_id = task_id
 
         task_response = supabase.table('transcriptions').select(
-            'status, transcript, title, description, quote, tldr, error'
+            'status, transcript, title, description, quote, tldr, error, uploader, channel, duration, platform, view_count, like_count, category, auto_tags'
         ).eq('task_id', task_id).maybe_single().execute()
 
         if not task_response.data:
@@ -463,6 +463,7 @@ async def sms_chat(request: SmsChatRequest):
             max_chars=request.max_chars or 360,
             conversation_summary=conversation_summary,
             message_history=message_history,
+            metadata={k: task.get(k) for k in ('uploader', 'channel', 'duration', 'platform', 'view_count', 'like_count', 'category', 'auto_tags') if task.get(k)},
         )
         if not answer:
             answer = sms.SMSHandler._clip_answer("I can't tell from this video.", request.max_chars or 360)

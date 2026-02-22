@@ -161,7 +161,7 @@ async def post_chat_message(
 
         # Fetch transcript
         task_response = supabase.table('transcriptions').select(
-            'status, transcript, title, description, quote, tldr, error'
+            'status, transcript, title, description, quote, tldr, error, uploader, channel, duration, platform, view_count, like_count, category, auto_tags'
         ).eq('task_id', task_id).maybe_single().execute()
 
         if not task_response.data:
@@ -226,6 +226,7 @@ async def post_chat_message(
             max_chars=max_chars,
             conversation_summary=conversation_summary,
             message_history=message_history,
+            metadata={k: task.get(k) for k in ('uploader', 'channel', 'duration', 'platform', 'view_count', 'like_count', 'category', 'auto_tags') if task.get(k)},
         )
 
         if not answer:
