@@ -1185,7 +1185,7 @@ Content:
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Keep it to 1-2 sentences under {max_chars} characters.
+- Answer thoroughly but stay under {max_chars} characters. Use as many sentences as needed.
 - Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
@@ -1347,7 +1347,7 @@ Remember: Quote + TLDR format only, be conversational and focus on what's actual
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Keep it to 1-2 sentences under {max_chars} characters.
+- Answer thoroughly but stay under {max_chars} characters. Use as many sentences as needed.
 - Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
