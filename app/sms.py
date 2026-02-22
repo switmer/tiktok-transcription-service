@@ -1323,7 +1323,7 @@ Content:
 Remember: Quote + TLDR format only, be conversational and focus on what's actually worth saving."""
 
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0.7
@@ -1362,7 +1362,7 @@ Content:
 Answer:"""
 
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0.5
@@ -1402,7 +1402,7 @@ Recent messages:
 Updated summary:"""
 
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0.3
