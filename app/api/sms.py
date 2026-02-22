@@ -460,13 +460,13 @@ async def sms_chat(request: SmsChatRequest):
             description=task.get('description') or '',
             quote=task.get('quote') or '',
             tldr_list=tldr_list,
-            max_chars=request.max_chars or 360,
+            max_chars=request.max_chars or 800,
             conversation_summary=conversation_summary,
             message_history=message_history,
             metadata={k: task.get(k) for k in ('uploader', 'channel', 'duration', 'platform', 'view_count', 'like_count', 'category', 'auto_tags') if task.get(k)},
         )
         if not answer:
-            answer = sms.SMSHandler._clip_answer("I can't tell from this video.", request.max_chars or 360)
+            answer = sms.SMSHandler._clip_answer("I can't tell from this video.", request.max_chars or 800)
 
         if thread_id:
             try:

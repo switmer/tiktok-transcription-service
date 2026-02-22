@@ -1029,7 +1029,7 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         description: str = "",
         quote: str = "",
         tldr_list: Optional[list] = None,
-        max_chars: int = 280,
+        max_chars: int = 800,
         conversation_summary: str = "",
         message_history: Optional[List[Dict[str, str]]] = None,
         metadata: Optional[Dict[str, Any]] = None,

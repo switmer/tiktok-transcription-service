@@ -316,7 +316,7 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
             description=task.get('description') or '',
             quote=task.get('quote') or '',
             tldr_list=tldr_list,
-            max_chars=payload.max_chars or 360,
+            max_chars=payload.max_chars or 800,
             metadata={k: task.get(k) for k in ('uploader', 'channel', 'duration', 'platform', 'view_count', 'like_count', 'category', 'auto_tags') if task.get(k)},
         )
 

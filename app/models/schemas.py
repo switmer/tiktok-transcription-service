@@ -137,7 +137,7 @@ class SearchResponse(BaseModel):
 class TranscriptChatRequest(BaseModel):
     """Request model for transcript chat."""
     message: str = Field(..., min_length=1, max_length=1000, description="User question about the transcript")
-    max_chars: Optional[int] = Field(360, ge=120, le=600, description="Maximum characters for the answer")
+    max_chars: Optional[int] = Field(800, ge=120, le=1200, description="Maximum characters for the answer")
 
 
 class TranscriptChatResponse(BaseModel):
@@ -194,7 +194,7 @@ class SmsChatRequest(BaseModel):
     """SMS chat request model"""
     phone: str = Field(..., description="E.164 phone number")
     message: str = Field(..., min_length=1, max_length=1000, description="User question")
-    max_chars: Optional[int] = Field(280, ge=120, le=600, description="Maximum characters for the answer")
+    max_chars: Optional[int] = Field(800, ge=120, le=1200, description="Maximum characters for the answer")
 
 
 class SmsChatResponse(BaseModel):
