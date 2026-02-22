@@ -1766,31 +1766,48 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         except Exception as e:
             logger.warning(f"Could not fetch credits for {phone_number}: {e}")
         
-        # Use Quote + TLDR format if available, fallback to preview.
-        # Emojis force UCS-2 (70 chars/segment). Keep messages compact.
+        # Build transcript preview (first ~100 chars, break at word boundary)
+        transcript_preview = ""
+        if transcript:
+            preview_text = transcript.strip().replace('\n', ' ')
+            if len(preview_text) > 100:
+                cut = preview_text.rfind(' ', 0, 100)
+                if cut < 50:
+                    cut = 100
+                transcript_preview = preview_text[:cut] + "..."
+            else:
+                transcript_preview = preview_text
+
+        # Helper: truncate at word boundary
+        def _trunc(text, limit):
+            if len(text) <= limit:
+                return text
+            cut = text.rfind(' ', 0, limit)
+            if cut < limit // 2:
+                cut = limit
+            return text[:cut] + "..."
+
+        share_url = f"share.scribetok.com/v/{task_id}"
+        credits_str = str(credits_remaining) if credits_remaining is not None else "?"
+
         if quote and tldr_list:
-            short_tldr = tldr_list[:3]
-            tldr_bullets = '\n'.join([f"• {item[:80]}" for item in short_tldr])
-            short_quote = quote[:90] + "..." if len(quote) > 90 else quote
+            short_quote = _trunc(quote, 90)
+            bullets = '\n'.join([f"- {_trunc(item, 80)}" for item in tldr_list[:3]])
 
             message = f""""{short_quote}"
 
+{transcript_preview}
+
 TLDR:
-{tldr_bullets}
+{bullets}
 
-/full for more | /chat to ask
-share.scribetok.com/v/{task_id}
-{credits_remaining if credits_remaining is not None else "?"} credits left"""
+See full transcript: {share_url}
+{credits_str} credits left"""
         else:
-            words = transcript.split(' ')[:30]
-            preview = ' '.join(words) + ('...' if len(transcript.split(' ')) > 30 else '')
+            message = f"""{transcript_preview}
 
-            message = f""""{title[:50]}"
-
-{preview}
-
-Full transcript: share.scribetok.com/v/{task_id}
-{credits_remaining if credits_remaining is not None else "?"} credits left"""
+See full transcript: {share_url}
+{credits_str} credits left"""
 
         # Add short upsell messages
         if credits_remaining is not None:
@@ -1799,23 +1816,20 @@ Full transcript: share.scribetok.com/v/{task_id}
             elif credits_remaining == 1:
                 message += f"\n\n1 credit left! 5 for $1.99: {stripe_payment_link}"
 
-        # Emojis force UCS-2 encoding (70 chars/segment vs 160 for GSM).
-        # Carriers cap at ~10 segments, so max safe length is ~600 chars.
+        # No emojis = GSM encoding (153 chars/concat segment). 600 chars is safe.
         SMS_SAFE_LIMIT = 600
         if len(message) > SMS_SAFE_LIMIT:
             logger.warning(f"SMS message too long ({len(message)} chars), truncating to {SMS_SAFE_LIMIT}")
             if quote and tldr_list and len(tldr_list) >= 2:
-                # Rebuild with 2 shorter TLDR points
-                fallback_tldr = tldr_list[:2]
-                fallback_bullets = '\n'.join([f"• {item[:80]}" for item in fallback_tldr])
-                short_q = quote[:80] + "..." if len(quote) > 80 else quote
+                short_q = _trunc(quote, 70)
+                short_bullets = '\n'.join([f"- {_trunc(item, 60)}" for item in tldr_list[:2]])
                 message = f""""{short_q}"
 
-{fallback_bullets}
+TLDR:
+{short_bullets}
 
-/full for more | /chat to ask
-share.scribetok.com/v/{task_id}
-{credits_remaining} credits left"""
+See full transcript: {share_url}
+{credits_str} credits left"""
             else:
                 message = message[:SMS_SAFE_LIMIT - 3] + "..."
         
