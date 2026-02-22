@@ -1128,7 +1128,7 @@ Transcript:
 \"\"\""""
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600,
             temperature=0.8
@@ -1141,7 +1141,7 @@ Transcript:
         try:
             from .cost_tracker import log_gpt_cost
             _track_cost_async(log_gpt_cost(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 tokens_used=tokens_used,
                 user_phone=user_phone,
                 task_id=task_id,
@@ -1182,7 +1182,7 @@ Transcript:
         try:
             from .cost_tracker import log_gpt_cost
             _track_cost_async(log_gpt_cost(
-                model="gpt-3.5-turbo",
+                model="gpt-4.1-mini",
                 user_phone=user_phone,
                 task_id=task_id,
                 purpose="quote_tldr",
