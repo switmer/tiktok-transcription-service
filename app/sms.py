@@ -1051,34 +1051,32 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         try:
             anthropic_key = os.getenv("ANTHROPIC_API_KEY")
             if anthropic_key:
-                answer = await SMSHandler._generate_claude_answer(
+                return await SMSHandler._generate_claude_answer(
                     question,
                     context_text,
                     max_chars,
                     anthropic_key
                 )
-                return SMSHandler._clip_answer(answer, max_chars)
 
             openai_key = os.getenv("OPENAI_API_KEY")
             if openai_key:
-                answer = await SMSHandler._generate_openai_answer(
+                return await SMSHandler._generate_openai_answer(
                     question,
                     context_text,
                     max_chars,
                     openai_key
                 )
-                return SMSHandler._clip_answer(answer, max_chars)
 
             logger.warning("No AI API keys found, using fallback answer")
             fallback_source = transcript_text or description or title
             words = fallback_source.split()[:45]
-            return SMSHandler._clip_answer(" ".join(words), max_chars)
+            return " ".join(words)
 
         except Exception as e:
             logger.error(f"Error generating answer: {str(e)}")
             fallback_source = transcript_text or description or title
             words = fallback_source.split()[:45]
-            return SMSHandler._clip_answer(" ".join(words), max_chars)
+            return " ".join(words)
 
     @staticmethod
     async def generate_chat_summary(
@@ -1212,7 +1210,8 @@ Content:
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Answer thoroughly but stay under {max_chars} characters. Use as many sentences as needed.
+- Answer in 2-5 sentences. Be concise for simple questions, thorough for complex ones.
+- HARD LIMIT: Stay under {max_chars} characters. Finish your thought within this limit — never stop mid-sentence.
 - Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
@@ -1374,7 +1373,8 @@ Remember: Quote + TLDR format only, be conversational and focus on what's actual
 Rules:
 - Use the content below as the source of truth.
 - If the answer isn't in the content, say you can't tell from this video.
-- Answer thoroughly but stay under {max_chars} characters. Use as many sentences as needed.
+- Answer in 2-5 sentences. Be concise for simple questions, thorough for complex ones.
+- HARD LIMIT: Stay under {max_chars} characters. Finish your thought within this limit — never stop mid-sentence.
 - Sound like a smart, down-to-earth friend. Be conversational and direct.
 - Use plain text, no emojis.
 
