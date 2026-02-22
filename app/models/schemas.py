@@ -224,6 +224,26 @@ class FetchCommentsRequest(BaseModel):
 
 
 # =============================================================================
+# Phone OTP Auth Models
+# =============================================================================
+
+class SendOtpRequest(BaseModel):
+    """Request model for sending OTP"""
+    phone: str = Field(..., description="Phone number to send OTP to")
+
+
+class VerifyOtpRequest(BaseModel):
+    """Request model for verifying OTP"""
+    phone: str = Field(..., description="Phone number")
+    code: str = Field(..., description="6-digit OTP code")
+
+
+class CheckoutRequest(BaseModel):
+    """Request model for Stripe checkout"""
+    credits: int = Field(10, ge=1, description="Number of credits to purchase")
+
+
+# =============================================================================
 # Web Chat API Models
 # =============================================================================
 

@@ -3047,7 +3047,8 @@ async def rich_link_preview(task_id: str, request: Request):
 @app.post("/api/pro/comments/fetch", tags=["Pro Features - Comments"])
 async def fetch_video_comments(
     payload: FetchCommentsRequest,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(verify_api_key),
+    x_session_token: Optional[str] = Header(None),
 ):
     """
     Fetch and store comments for a transcribed video (Pro Feature).
@@ -3079,6 +3080,12 @@ async def fetch_video_comments(
         video_id = task.get('video_id')
         user_phone = task.get('user_phone')
         already_fetched = task.get('comments_fetched', False)
+
+        # If session token provided, validate it and use session phone for credits
+        if x_session_token:
+            from .api.auth import verify_session_token as _verify_session
+            session = await _verify_session(x_session_token)
+            user_phone = session["phone_number"]
 
         if not video_id:
             raise ApiError(
