@@ -125,9 +125,17 @@ async def send_otp(payload: SendOtpRequest):
             raise ApiError(500, INTERNAL_ERROR, "Failed to generate OTP")
 
         otp_row = otp_result.data
-        # RPC returns the plaintext code so we can send it via SMS
-        code = otp_row.get("code") if isinstance(otp_row, dict) else otp_row[0].get("code") if isinstance(otp_row, list) else None
+        if isinstance(otp_row, list):
+            otp_row = otp_row[0]
 
+        # RPC returns {success, code, expires_at, error}
+        if not otp_row.get("success"):
+            error_msg = otp_row.get("error", "Failed to generate OTP")
+            if "Too many" in error_msg:
+                raise ApiError(429, VALIDATION_ERROR, error_msg)
+            raise ApiError(400, VALIDATION_ERROR, error_msg)
+
+        code = otp_row.get("code")
         if not code:
             raise ApiError(500, INTERNAL_ERROR, "Failed to generate OTP code")
 
@@ -180,8 +188,8 @@ async def verify_otp(payload: VerifyOtpRequest):
         if isinstance(verify_data, list):
             verify_data = verify_data[0]
 
-        if not verify_data.get("valid"):
-            msg = verify_data.get("message", "Invalid or expired code")
+        if not verify_data.get("success"):
+            msg = verify_data.get("error", "Invalid or expired code")
             raise ApiError(401, AUTH_INVALID, msg)
 
         session_token = verify_data.get("session_token")

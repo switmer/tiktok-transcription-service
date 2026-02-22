@@ -227,7 +227,7 @@ class TestSendOtp:
         mock_sb.table.return_value = MockChain(response_data=[])
         # rpc call returns plaintext code
         mock_rpc_chain = Mock()
-        mock_rpc_chain.execute.return_value = MockResponse([{"code": "123456"}])
+        mock_rpc_chain.execute.return_value = MockResponse([{"success": True, "code": "123456", "error": None}])
         mock_sb.rpc.return_value = mock_rpc_chain
 
         with patch(f"{_AUTH_MOD}.supabase", mock_sb), \
@@ -245,7 +245,7 @@ class TestSendOtp:
         mock_sb = Mock()
         mock_sb.table.return_value = MockChain(response_data=[])
         mock_rpc_chain = Mock()
-        mock_rpc_chain.execute.return_value = MockResponse([{"code": "123456"}])
+        mock_rpc_chain.execute.return_value = MockResponse([{"success": True, "code": "123456", "error": None}])
         mock_sb.rpc.return_value = mock_rpc_chain
 
         with patch(f"{_AUTH_MOD}.supabase", mock_sb), \
@@ -259,6 +259,21 @@ class TestSendOtp:
         mock_sb = Mock()
         mock_sb.table.return_value = MockChain(response_data=[])
         mock_sb.rpc.side_effect = Exception("Too many OTP requests")
+
+        with patch(f"{_AUTH_MOD}.supabase", mock_sb):
+            with pytest.raises(ApiError) as exc_info:
+                await send_otp(SendOtpRequest(phone="5551234567"))
+            assert exc_info.value.status_code == 429
+
+    @pytest.mark.asyncio
+    async def test_otp_rpc_returns_rate_limit_row(self):
+        mock_sb = Mock()
+        mock_sb.table.return_value = MockChain(response_data=[])
+        mock_rpc_chain = Mock()
+        mock_rpc_chain.execute.return_value = MockResponse([{
+            "success": False, "code": None, "error": "Too many OTP requests. Try again later."
+        }])
+        mock_sb.rpc.return_value = mock_rpc_chain
 
         with patch(f"{_AUTH_MOD}.supabase", mock_sb):
             with pytest.raises(ApiError) as exc_info:
@@ -299,8 +314,8 @@ class TestVerifyOtp:
         mock_sb = Mock()
         mock_rpc_chain = Mock()
         mock_rpc_chain.execute.return_value = MockResponse([{
-            "valid": False,
-            "message": "Invalid code",
+            "success": False,
+            "error": "Invalid code",
         }])
         mock_sb.rpc.return_value = mock_rpc_chain
 
@@ -317,7 +332,7 @@ class TestVerifyOtp:
         # rpc verify_otp
         mock_rpc_chain = Mock()
         mock_rpc_chain.execute.return_value = MockResponse([{
-            "valid": True,
+            "success": True,
             "session_token": "session_abc123",
             "session_expires": future,
         }])
