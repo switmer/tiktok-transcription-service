@@ -1,8 +1,9 @@
 import os
 import re
+import json
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Conditional Twilio import with fallback
 try:
@@ -42,6 +43,53 @@ except ImportError:
     from database import supabase
 
 logger = logging.getLogger(__name__)
+
+# --- Constants for SMS routing ---
+
+IGNORE_FOR_CHAT = frozenset({
+    "ok", "okay", "k", "thanks", "thx", "ty", "lol", "haha", "cool",
+    "nice", "yes", "no", "yep", "nope",
+    "got it", "sure", "wow", "omg",
+})
+
+# Twilio typically handles STOP at the carrier level, but we explicitly
+# acknowledge opt-out keywords so the user never sees a menu hint.
+OPT_OUT_KEYWORDS = frozenset({"stop", "unsubscribe", "cancel", "quit", "end"})
+
+CHAT_INTENT_PREFIXES = frozenset({
+    "help", "draft", "reply", "respond", "what", "why", "how",
+    "who", "when", "where", "summarize", "explain", "tell",
+})
+
+KEYWORD_ALIASES = {
+    "quote": "handle_quote_command",
+    "best quote": "handle_quote_command",
+    "tldr": "handle_tldr_command",
+    "tl;dr": "handle_tldr_command",
+    "summary": "handle_tldr_command",
+    "summarize": "handle_tldr_command",
+    "takeaways": "handle_tldr_command",
+    "key takeaways": "handle_tldr_command",
+    "help": "handle_help_command",
+    "commands": "handle_help_command",
+    "menu": "handle_help_command",
+    "vault": "handle_vault_command",
+    "history": "handle_vault_command",
+    "transcripts": "handle_vault_command",
+    "upgrade": "handle_upgrade_command",
+    "buy credits": "handle_upgrade_command",
+    "more credits": "handle_upgrade_command",
+}
+
+SOFT_MENU_HINT = (
+    "\U0001f4ac Reply 1-3 about your last video, "
+    "or ask a question:\n"
+    "1 - Key takeaways\n"
+    "2 - Best quote\n"
+    "3 - Draft a reply"
+)
+
+DRAFT_REPLY_PROMPT = "Draft a short, shareable reply I could send or post about this video"
 
 # Initialize Twilio client
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -216,9 +264,13 @@ class SMSHandler:
 
 📱 Text a TikTok or YouTube link to get an instant transcript.
 
+💬 After transcribing, just text your question to chat about it!
+
 🗂️ Commands:
+• /quote - Best quote from your last transcript
+• /tldr - Key bullet points from your last transcript
+• /chat <question> - Ask anything about your last transcript
 • /vault - View your recent transcripts
-• /summary - Get a summary of your last transcript
 • /upgrade - Buy more credits ($5 for 10 credits)
 • /referral - Share with friends (both get 5 bonus credits!)
 • /myreferrals - See who you've invited
@@ -227,7 +279,7 @@ class SMSHandler:
 • /myvideos - Your top TikTok videos
 • /help - Show this message
 
-Just paste any video link and we'll transcribe it for you! 🎥✨"""
+Or just use plain English: "quote", "tldr", "vault", etc. 🎥✨"""
     
     @staticmethod
     async def handle_upgrade_command(phone_number: str) -> str:
@@ -846,12 +898,11 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
         if stored_quote and stored_tldr:
             # Parse TLDR from JSON if it's stored as string
             try:
-                import json
                 if isinstance(stored_tldr, str):
                     tldr_list = json.loads(stored_tldr)
                 else:
                     tldr_list = stored_tldr
-                    
+
                 # Format the stored data
                 tldr_bullets = '\n'.join([f"- {item}" for item in tldr_list])
                 
@@ -894,6 +945,118 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
             logger.error(f"Error generating TLDR: {str(e)}")
             return "🧠 Too long, didn't watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!"
     
+    @staticmethod
+    async def handle_quote_command(phone_number: str) -> str:
+        """Handle /quote command - return best quote from most recent transcript"""
+        transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
+        if not transcripts:
+            return "🧠 No transcripts found. Send a video link first!"
+
+        transcriptions = transcripts[0].get('transcriptions', {}) or {}
+        stored_quote = transcriptions.get('quote', '')
+
+        if stored_quote:
+            return f'🧠 "{stored_quote}"'
+
+        return "🧠 No quote available for your last transcript. Try /summary instead!"
+
+    @staticmethod
+    async def handle_tldr_command(phone_number: str) -> str:
+        """Handle /tldr command - return key bullet points from most recent transcript"""
+        transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
+        if not transcripts:
+            return "📝 No transcripts found. Send a video link first!"
+
+        transcriptions = transcripts[0].get('transcriptions', {}) or {}
+        stored_tldr = transcriptions.get('tldr', None)
+
+        if stored_tldr:
+            tldr_list = None
+            try:
+                if isinstance(stored_tldr, str):
+                    tldr_list = json.loads(stored_tldr)
+                else:
+                    tldr_list = stored_tldr
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Error parsing stored TLDR as JSON: {e}")
+
+            # Plain-text fallback: split lines if JSON parse failed or returned empty
+            if not tldr_list and isinstance(stored_tldr, str):
+                lines = [line.lstrip("-*\u2022 ").strip() for line in stored_tldr.strip().splitlines() if line.strip()]
+                if lines:
+                    tldr_list = lines
+
+            if tldr_list:
+                # Cap at 5 bullets, each max 140 chars
+                capped = [item[:140] for item in tldr_list[:5]]
+                tldr_bullets = '\n'.join([f"- {item}" for item in capped])
+                return f"📝 TLDR:\n{tldr_bullets}"
+
+        return "📝 No TLDR available for your last transcript. Try /summary instead!"
+
+    @staticmethod
+    async def handle_chat_command(phone_number: str, message: str) -> str:
+        """Handle /chat <message> command - ask a question about most recent transcript"""
+        message = message.strip()
+        if not message:
+            return "💬 Usage: /chat <your question>\nExample: /chat what were the main points?"
+
+        transcripts = await SMSHandler.get_user_transcripts(phone_number, 1)
+        if not transcripts:
+            return "Send a video link first, then ask questions about it!"
+
+        transcriptions = transcripts[0].get('transcriptions', {}) or {}
+        transcript_text = transcriptions.get('transcript', '')
+        if not transcript_text:
+            return "Transcript not ready yet. Try again in a moment!"
+
+        title = transcriptions.get('title', '')
+        description = transcriptions.get('description', '')
+        quote = transcriptions.get('quote', '')
+        stored_tldr = transcriptions.get('tldr', None)
+        tldr_list = None
+        if stored_tldr:
+            try:
+                tldr_list = json.loads(stored_tldr) if isinstance(stored_tldr, str) else stored_tldr
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Plain-text fallback for TLDR context
+            if not tldr_list and isinstance(stored_tldr, str):
+                lines = [line.lstrip("-*\u2022 ").strip() for line in stored_tldr.strip().splitlines() if line.strip()]
+                if lines:
+                    tldr_list = lines
+
+        answer = await SMSHandler.generate_answer(
+            question=message,
+            transcript_text=transcript_text,
+            title=title,
+            description=description,
+            quote=quote,
+            tldr_list=tldr_list,
+            max_chars=800,
+        )
+        return answer or "Sorry, I couldn't generate an answer. Try rephrasing your question!"
+
+    @staticmethod
+    def _prefix_answer(answer: str) -> str:
+        """Add 💬 prefix only if the answer doesn't already start with an emoji."""
+        if answer and ord(answer[0]) > 0x2600:
+            return answer
+        return f"\U0001f4ac {answer}"
+
+    @staticmethod
+    def _is_chat_worthy(message: str) -> bool:
+        """Determine if a free-form message warrants an AI chat response."""
+        text = message.strip().lower()
+        if text in IGNORE_FOR_CHAT:
+            return False
+        if "?" in text:
+            return True
+        if len(text.split()) > 3:
+            return True
+        first_word = text.split()[0] if text.split() else ""
+        return first_word in CHAT_INTENT_PREFIXES
+
     @staticmethod
     def _truncate_text(text: str, limit: int) -> str:
         if not text:
@@ -1485,44 +1648,64 @@ Updated summary:"""
         except Exception as e:
             logger.debug(f"Cost tracking error: {e}")
 
+        body_lower = body.lower()
+
+        # Opt-out: acknowledge immediately so user never gets a menu hint
+        if body_lower in OPT_OUT_KEYWORDS:
+            return SMSHandler.create_twiml_response(
+                "You've been unsubscribed and will no longer receive messages from ScribeTok. "
+                "Text START to re-subscribe anytime."
+            )
+
         # Handle commands
-        if body.lower() == '/help':
+        if body_lower == '/help':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_help_command(from_number))
-        
-        elif body.lower() == '/vault':
+
+        elif body_lower == '/vault':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_vault_command(from_number))
-        
-        elif body.lower() == '/summary':
+
+        elif body_lower == '/summary':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_summary_command(from_number))
-        
-        elif body.lower() == '/upgrade':
+
+        elif body_lower == '/quote':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_quote_command(from_number))
+
+        elif body_lower == '/tldr':
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_tldr_command(from_number))
+
+        elif body_lower.startswith('/chat'):
+            parts = body.split(' ', 1)
+            message = parts[1] if len(parts) > 1 else ""
+            return SMSHandler.create_twiml_response(await SMSHandler.handle_chat_command(from_number, message))
+
+        elif body_lower == '/upgrade':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_upgrade_command(from_number))
-        
-        elif body.lower() == '/referral':
+
+        elif body_lower == '/referral':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_referral_command(from_number))
-        
-        elif body.lower() == '/myreferrals':
+
+        elif body_lower == '/myreferrals':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_myreferrals_command(from_number))
-        
-        elif body.lower().startswith('/link'):
+
+        elif body_lower.startswith('/link'):
             # Extract handle/URL from command
             parts = body.split(' ', 1)
             handle_or_url = parts[1] if len(parts) > 1 else ""
             return SMSHandler.create_twiml_response(await SMSHandler.handle_link_command(from_number, handle_or_url))
-        
-        elif body.lower() == '/stats' or body.lower() == '/profile':
+
+        elif body_lower in ('/stats', '/profile'):
             return SMSHandler.create_twiml_response(await SMSHandler.handle_stats_command(from_number))
-        
-        elif body.lower() == '/myvideos':
+
+        elif body_lower == '/myvideos':
             return SMSHandler.create_twiml_response(await SMSHandler.handle_myvideos_command(from_number))
 
         # Admin commands
-        elif body.lower() == '/adminstats' or body.lower() == '/admin':
+        elif body_lower in ('/adminstats', '/admin'):
             return SMSHandler.create_twiml_response(await SMSHandler.handle_adminstats_command(from_number))
 
-        elif body.lower().startswith('/adminstats '):
+        elif body_lower.startswith('/adminstats '):
             # Support period parameter: /adminstats day, /adminstats week, /adminstats month
-            parts = body.lower().split(' ', 1)
+            parts = body_lower.split(' ', 1)
             period = parts[1].strip() if len(parts) > 1 else "month"
             if period not in ['day', 'week', 'month', 'all']:
                 period = 'month'
@@ -1534,32 +1717,77 @@ Updated summary:"""
             if video_url:
                 # Check if this is a new user and if there are any pending referrals
                 await SMSHandler._check_and_process_pending_referral(from_number)
-                
+
                 # Queue the transcription (this will be handled by your existing backend)
                 response_msg = "🎥 Got your link! We're transcribing now.\nYou'll get your transcript shortly. ⏱️"
                 return SMSHandler.create_twiml_response(response_msg)
             else:
                 return SMSHandler.create_twiml_response("🤔 I found a video link but couldn't process it. Try copying the full URL!")
-        
-        # Handle vault item selection (numbers 1-5)
+
+        # Numbered intents: 1-3 → TLDR/quote/draft if transcript arrived recently;
+        # otherwise fall through to vault selection.
+        # Use a 10-minute window so "1" right after completion → intent,
+        # but "1" after browsing /vault → vault item selection.
         elif body.isdigit() and 1 <= int(body) <= 5:
+            num = int(body)
+            if num <= 3:
+                transcripts = await SMSHandler.get_user_transcripts(from_number, 1)
+                is_fresh = False
+                if transcripts:
+                    created_at = transcripts[0].get('created_at', '')
+                    if created_at:
+                        try:
+                            ts = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            is_fresh = (datetime.now(timezone.utc) - ts) < timedelta(minutes=10)
+                        except (ValueError, TypeError):
+                            pass
+                if is_fresh:
+                    if num == 1:
+                        return SMSHandler.create_twiml_response(await SMSHandler.handle_tldr_command(from_number))
+                    elif num == 2:
+                        return SMSHandler.create_twiml_response(await SMSHandler.handle_quote_command(from_number))
+                    else:  # num == 3
+                        answer = await SMSHandler.handle_chat_command(from_number, DRAFT_REPLY_PROMPT)
+                        return SMSHandler.create_twiml_response(SMSHandler._prefix_answer(answer))
+            # Fall through: no fresh transcript or numbers 4-5 → vault placeholder
             transcripts = await SMSHandler.get_user_transcripts(from_number, 5)
             try:
                 index = int(body) - 1
                 if 0 <= index < len(transcripts):
                     transcript = transcripts[index]
                     title = transcript.get('title', 'Untitled')
-                    # Return a link to the transcript or abbreviated version
                     return SMSHandler.create_twiml_response(
                         f"📄 {title}\n\n[Transcript content will be sent as a follow-up message or link]"
                     )
                 else:
                     return SMSHandler.create_twiml_response(f"❌ Please choose a number between 1 and {len(transcripts)}")
-            except:
+            except Exception:
                 return SMSHandler.create_twiml_response("❌ Invalid selection. Type /vault to see your transcripts again.")
-        
-        # Default response for unrecognized input
+
+        # Keyword aliases (natural language shortcuts)
+        elif body_lower in KEYWORD_ALIASES:
+            handler = getattr(SMSHandler, KEYWORD_ALIASES[body_lower])
+            return SMSHandler.create_twiml_response(await handler(from_number))
+
+        # Free-form text with guardrail
         else:
+            transcripts = await SMSHandler.get_user_transcripts(from_number, 1)
+            if transcripts:
+                created_at = transcripts[0].get('created_at', '')
+                is_recent = False
+                if created_at:
+                    try:
+                        ts = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        is_recent = (datetime.now(timezone.utc) - ts) < timedelta(hours=24)
+                    except (ValueError, TypeError):
+                        pass
+                if is_recent:
+                    if SMSHandler._is_chat_worthy(body):
+                        answer = await SMSHandler.handle_chat_command(from_number, body)
+                        return SMSHandler.create_twiml_response(SMSHandler._prefix_answer(answer))
+                    else:
+                        return SMSHandler.create_twiml_response(SOFT_MENU_HINT)
+
             return SMSHandler.create_twiml_response(
                 "🤖 Hi there! Send me a TikTok or YouTube link to get a transcript.\n\nType /help for more options! 📱"
             )
@@ -1628,15 +1856,15 @@ async def notify_transcript_complete(phone_number: str, task_id: str, title: str
         
         # Create the complete message with transcript preview
         if transcript_preview:
-            preview = transcript_preview[:150] + "..." if len(transcript_preview) > 150 else transcript_preview
-            full_message = f"{credit_message}\n\n📄 Preview:\n{preview}{referral_bonus_msg}\n\n💬 Reply /vault to see all your transcripts!"
+            preview = transcript_preview[:100] + "..." if len(transcript_preview) > 100 else transcript_preview
+            full_message = f"{credit_message}\n\n📄 Preview:\n{preview}{referral_bonus_msg}\n\nReply:\n1 - Key takeaways\n2 - Best quote\n3 - Draft a reply\nOr just ask a question!"
         else:
-            full_message = f"{credit_message}{referral_bonus_msg}\n\n💬 Reply /vault to see all your transcripts!"
+            full_message = f"{credit_message}{referral_bonus_msg}\n\nReply:\n1 - Key takeaways\n2 - Best quote\n3 - Draft a reply\nOr just ask a question!"
         
         return await send_sms(phone_number, full_message)
         
     except Exception as e:
         logger.error(f"Failed to send completion notification: {str(e)}")
         # Fallback message
-        fallback_msg = f"✅ Transcript ready for '{title}'! Reply /vault to see it."
+        fallback_msg = f"✅ Transcript ready for '{title}'!\n\nReply:\n1 - Key takeaways\n2 - Best quote\n3 - Draft a reply\nOr just ask a question!"
         return await send_sms(phone_number, fallback_msg)

@@ -2281,7 +2281,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                     # Enhanced SMS with public link
                     public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
 
-                    success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\n💬 Reply /summary for AI summary or /vault for history!"
+                    success_message = f"✅ Transcript ready!\n\n📄 {title}\n\n{preview}\n\n🔗 View full: {public_link}\n\nReply:\n1 - Key takeaways\n2 - Best quote\n3 - Draft a reply\nOr just ask a question!"
 
                     await sms.SMSHandler.send_sms(
                         to=phone_number,
