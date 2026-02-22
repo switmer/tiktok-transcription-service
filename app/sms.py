@@ -1201,7 +1201,7 @@ Answer:"""
 
             data = {
                 "model": "claude-3-haiku-20240307",
-                "max_tokens": 200,
+                "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -1263,7 +1263,7 @@ Updated summary:"""
 
             data = {
                 "model": "claude-3-haiku-20240307",
-                "max_tokens": 200,
+                "max_tokens": 300,
                 "messages": [{"role": "user", "content": prompt}]
             }
 
@@ -1325,12 +1325,12 @@ Remember: Quote + TLDR format only, be conversational and focus on what's actual
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
+                max_tokens=400,
                 temperature=0.7
             )
-            
+
             return response.choices[0].message.content.strip()
-            
+
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
             raise e
@@ -1364,7 +1364,7 @@ Answer:"""
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
+                max_tokens=300,
                 temperature=0.5
             )
 
@@ -1404,7 +1404,7 @@ Updated summary:"""
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
+                max_tokens=300,
                 temperature=0.3
             )
 
