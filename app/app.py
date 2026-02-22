@@ -1718,12 +1718,15 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
         logger.info(f"send_completion_sms called: task_id={task_id}, phone={phone_number}, quote={bool(quote)}, tldr={bool(tldr_list)}")
 
         # Idempotency: check if we already sent a completion SMS for this task
+        # Only match messages with a real message_sid (actually sent via Twilio),
+        # not phantom records created by DB triggers.
         try:
             existing_sms = await asyncio.to_thread(
                 lambda: supabase.table('user_messages')
                         .select('id')
                         .eq('to_phone', phone_number)
                         .ilike('message_body', f'%{task_id}%')
+                        .not_('message_sid', 'is', 'null')
                         .limit(1)
                         .execute()
             )
@@ -2222,6 +2225,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                     )
                 
                 # Idempotency: check if completion SMS was already sent for this task
+                # Only match messages with a real message_sid (actually sent via Twilio).
                 already_sent = False
                 try:
                     existing_sms = await asyncio.to_thread(
@@ -2229,6 +2233,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                                 .select('id')
                                 .eq('to_phone', phone_number)
                                 .ilike('message_body', f'%{task_id}%')
+                                .not_('message_sid', 'is', 'null')
                                 .limit(1)
                                 .execute()
                     )
