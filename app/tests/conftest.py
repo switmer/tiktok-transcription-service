@@ -3,23 +3,24 @@ Test configuration and fixtures for the transcription service test suite.
 Provides database setup, mock clients, and shared test utilities.
 """
 import pytest
+import pytest_asyncio
 import asyncio
 import os
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from unittest.mock import Mock, AsyncMock
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Import app components
+# Import app as a proper package so relative imports in sub-modules work
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from database import supabase
-from app import app
+from app.database import supabase
+from app.app import app
 import httpx
 
 # Test configuration
@@ -28,12 +29,12 @@ TEST_USER_PHONE = "+15559876543"
 TEST_VIDEO_URL = "https://tiktok.com/@test/video/123456789"
 TEST_TASK_ID = "550e8400-e29b-41d4-a716-446655440000"
 
-@pytest.fixture
-def client():
-    """HTTP client for API testing - SKIPPED due to TestClient compatibility"""
-    # Skip all API tests due to FastAPI/TestClient/httpx version compatibility issues
-    # See SKIPPED_TESTS.md for details and fix plan
-    pytest.skip("API endpoint tests skipped due to TestClient compatibility - see SKIPPED_TESTS.md")
+@pytest_asyncio.fixture
+async def client():
+    """Async HTTP client for API testing (works with FastAPI 0.104+)"""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
 
 @pytest.fixture
 def mock_supabase():
@@ -136,41 +137,43 @@ def mock_openai_client():
     return mock_client
 
 @pytest.fixture
-async def clean_test_data():
+def clean_test_data():
     """Clean up test data before and after tests"""
     if supabase is None:
         pytest.skip("Supabase client not available")
-    
-    # Clean up any existing test data
-    await cleanup_test_phone_numbers()
-    
-    yield
-    
-    # Clean up after test
-    await cleanup_test_phone_numbers()
 
-async def cleanup_test_phone_numbers():
-    """Remove test phone numbers from all tables"""
+    # Clean up any existing test data
+    cleanup_test_data_rows()
+
+    yield
+
+    # Clean up after test
+    cleanup_test_data_rows()
+
+def cleanup_test_data_rows():
+    """Remove all test data from production tables"""
     if supabase is None:
         return
-        
+
     test_phones = [TEST_USER_PHONE, TEST_PHONE_NUMBER]
-    
+
     try:
+        # Delete transcriptions created by TestDataBuilder (tracked by task_id)
+        task_ids = list(TestDataBuilder._created_task_ids)
+        for tid in task_ids:
+            supabase.table('transcriptions').delete().eq('task_id', tid).execute()
+        TestDataBuilder._created_task_ids.clear()
+
+        # Also delete any transcriptions tied to test phone numbers
+        for phone in test_phones:
+            supabase.table('transcriptions').delete().eq('user_phone', phone).execute()
+
         # Clean up in reverse FK dependency order
         for phone in test_phones:
-            # Clean transcriptions (SET NULL on FK)
-            supabase.table('transcriptions').update({'user_phone': None}).eq('user_phone', phone).execute()
-            
-            # Clean user_messages (CASCADE on FK)
             supabase.table('user_messages').delete().eq('from_phone', phone).execute()
-            
-            # Clean credit_purchases (RESTRICT on FK - delete purchases first)
             supabase.table('credit_purchases').delete().eq('phone_number', phone).execute()
-            
-            # Clean SMS users (main table)
             supabase.table('sms_users').delete().eq('phone_number', phone).execute()
-            
+
     except Exception as e:
         print(f"Warning: Test cleanup failed: {e}")
 
@@ -238,11 +241,16 @@ class TestDataBuilder:
             print(f"Warning: Could not upsert user {phone}: {e}")
             return user_data
     
+    # Track all task_ids created by tests for cleanup
+    _created_task_ids: list = []
+
     @staticmethod
     def transcription(task_id: str = None, user_phone: str = TEST_USER_PHONE, status: str = "completed", **kwargs) -> Dict[str, Any]:
         """Build transcription test data"""
+        tid = task_id or str(uuid.uuid4())
+        TestDataBuilder._created_task_ids.append(tid)
         base = {
-            "task_id": task_id or str(uuid.uuid4()),
+            "task_id": tid,
             "user_phone": user_phone,
             "url": TEST_VIDEO_URL,
             "status": status,
