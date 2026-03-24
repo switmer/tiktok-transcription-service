@@ -263,6 +263,8 @@ def download_youtube_rapidapi(url: str) -> dict:
                     except Exception:
                         pass
                 title = title or "YouTube Video"
+                # YouTube thumbnails are deterministic from video_id
+                thumbnail_url = thumbnail_url or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
                 logger.info(f"YouTube RapidAPI success - video_id: {video_id}, title: {title}")
                 return {
