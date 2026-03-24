@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcribe</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1e1e1e;
+      color: #e4e4e7;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 16px;
+      border-bottom: 1px solid #3c3c3c;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #252526;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .settings-link {
+      font-size: 13px;
+      color: #a1a1aa;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .container { flex: 1; padding: 16px; display: flex; flex-direction: column; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #4a4a4f;
+      border-radius: 12px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 200px;
+    }
+    .drop-zone.drag-over {
+      border-color: #3b82f6;
+      background: #1e3a5f;
+    }
+    .drop-zone-icon { margin-bottom: 12px; color: #71717a; }
+    .drop-zone-text { font-size: 15px; color: #a1a1aa; margin-bottom: 8px; }
+    .drop-zone-hint { font-size: 12px; color: #71717a; }
+    .browse-btn {
+      margin-top: 16px;
+      padding: 8px 20px;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .browse-btn:hover { background: #2563eb; }
+
+    /* URL input */
+    .url-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 16px 0;
+      color: #71717a;
+      font-size: 13px;
+    }
+    .url-divider::before,
+    .url-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #3c3c3c;
+    }
+    .url-input-wrap {
+      display: flex;
+      gap: 8px;
+    }
+    .url-input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid #4a4a4f;
+      border-radius: 8px;
+      font-size: 14px;
+      background: #2a2a2d;
+      color: #e4e4e7;
+    }
+    .url-input:focus { outline: none; border-color: #3b82f6; }
+    .url-input::placeholder { color: #71717a; }
+    .url-submit-btn {
+      padding: 10px 16px;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .url-submit-btn:hover { background: #2563eb; }
+
+    /* Progress */
+    .progress-section {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      min-height: 200px;
+      text-align: center;
+    }
+    .progress-ring-wrap {
+      position: relative;
+      width: 120px;
+      height: 120px;
+      margin-bottom: 20px;
+    }
+    .progress-ring {
+      transform: rotate(-90deg);
+      width: 120px;
+      height: 120px;
+    }
+    .progress-ring-bg {
+      fill: none;
+      stroke: #3c3c3c;
+      stroke-width: 6;
+    }
+    .progress-ring-fill {
+      fill: none;
+      stroke: #3b82f6;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 326.7;
+      stroke-dashoffset: 326.7;
+      transition: stroke-dashoffset 0.4s ease;
+    }
+    .progress-pct {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 22px;
+      font-weight: 600;
+      color: #e4e4e7;
+    }
+    .progress-filename {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      word-break: break-all;
+      color: #a1a1aa;
+      padding: 0 12px;
+    }
+    .progress-status {
+      font-size: 13px;
+      color: #71717a;
+      margin-bottom: 20px;
+      animation: pulse-status 2s ease-in-out infinite;
+    }
+    @keyframes pulse-status {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .cancel-btn {
+      padding: 8px 20px;
+      background: #ef4444;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .cancel-btn:hover { background: #dc2626; }
+
+    /* Result — Spotify-inspired */
+    .result-section { display: none; flex-direction: column; flex: 1; }
+
+    .result-hero {
+      position: relative;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 16px;
+      background: #2a2a2d;
+      aspect-ratio: 16 / 9;
+    }
+    .result-hero-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .result-hero-overlay {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(0deg, rgba(18,18,18,0.95) 0%, rgba(18,18,18,0.4) 50%, transparent 100%);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 16px;
+    }
+    .result-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.3;
+      margin-bottom: 4px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .result-channel {
+      font-size: 12px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.6);
+      letter-spacing: 0.02em;
+    }
+    .result-hero-hidden { display: none; }
+
+    .result-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .result-platform-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(255,255,255,0.08);
+      color: #a1a1aa;
+    }
+    .result-duration {
+      font-size: 11px;
+      color: #71717a;
+    }
+
+    .transcript-box {
+      flex: 1;
+      min-height: 160px;
+      max-height: 50vh;
+      overflow-y: auto;
+      background: #2a2a2d;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 13.5px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      margin-bottom: 12px;
+      color: #d4d4d8;
+    }
+    .transcript-box::-webkit-scrollbar { width: 6px; }
+    .transcript-box::-webkit-scrollbar-track { background: transparent; }
+    .transcript-box::-webkit-scrollbar-thumb { background: #4a4a4f; border-radius: 3px; }
+    .transcript-box::-webkit-scrollbar-thumb:hover { background: #5a5a5f; }
+
+    .result-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+    .result-actions button {
+      flex: 1;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, background 0.15s;
+    }
+    .result-actions button:active { transform: scale(0.97); }
+    .result-actions .primary {
+      background: #1db954;
+      color: #000;
+    }
+    .result-actions .primary:hover { background: #1ed760; }
+    .result-actions .secondary {
+      background: rgba(255,255,255,0.08);
+      color: #e4e4e7;
+    }
+    .result-actions .secondary:hover { background: rgba(255,255,255,0.12); }
+    .new-btn {
+      padding: 10px 20px;
+      background: none;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      color: #a1a1aa;
+      transition: background 0.15s, color 0.15s;
+    }
+    .new-btn:hover { background: rgba(255,255,255,0.06); color: #e4e4e7; }
+
+    /* Warning banner */
+    .warning-banner {
+      display: none;
+      background: #3b2f00;
+      border: 1px solid #d4a017;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: #f0d060;
+      margin-bottom: 12px;
+    }
+
+    /* Error */
+    .error-msg {
+      display: none;
+      background: #3b1010;
+      border: 1px solid #7f1d1d;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      color: #fca5a5;
+      margin-bottom: 12px;
+    }
+
+    /* History */
+    .history-section {
+      border-top: 1px solid #3c3c3c;
+      padding-top: 16px;
+      margin-top: 16px;
+    }
+    .history-title { font-size: 13px; font-weight: 600; color: #71717a; margin-bottom: 8px; }
+    .history-list { list-style: none; }
+    .history-item {
+      padding: 8px 0;
+      border-bottom: 1px solid #2a2a2d;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .history-item:hover { background: #2a2a2d; }
+    .history-item-name { font-size: 13px; color: #d4d4d8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+    .history-item-date { font-size: 11px; color: #71717a; }
+    .history-empty { font-size: 13px; color: #52525b; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Transcribe</h1>
+    <span class="settings-link" id="openSettings">Settings</span>
+  </header>
+
+  <div class="container">
+    <div class="error-msg" id="errorMsg"></div>
+
+    <!-- State 1: Input -->
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg></div>
+      <div class="drop-zone-text">Drag & drop an audio or video file</div>
+      <div class="drop-zone-hint">WAV, MP3, MP4, M4A, OGG, FLAC</div>
+      <button class="browse-btn" id="browseBtn">Browse files</button>
+      <input type="file" id="fileInput" accept=".wav,.mp3,.mp4,.m4a,.ogg,.flac" hidden>
+    </div>
+
+    <!-- URL input -->
+    <div id="urlSection">
+      <div class="url-divider">or</div>
+      <div class="url-input-wrap">
+        <input type="text" class="url-input" id="urlInput" placeholder="Paste a TikTok or YouTube URL">
+        <button class="url-submit-btn" id="urlSubmitBtn">Transcribe</button>
+      </div>
+    </div>
+
+    <!-- State 2: Progress -->
+    <div class="progress-section" id="progressSection">
+      <div class="progress-ring-wrap">
+        <svg class="progress-ring" viewBox="0 0 120 120">
+          <circle class="progress-ring-bg" cx="60" cy="60" r="52"/>
+          <circle class="progress-ring-fill" id="progressRingFill" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="progress-pct" id="progressPct">0%</div>
+      </div>
+      <div class="progress-filename" id="progressFilename"></div>
+      <div class="progress-status" id="progressStatus">Preparing...</div>
+      <button class="cancel-btn" id="cancelBtn">Cancel</button>
+    </div>
+
+    <!-- State 3: Result -->
+    <div class="result-section" id="resultSection">
+      <div class="result-hero" id="resultHero">
+        <img class="result-hero-img" id="resultHeroImg" src="" alt="">
+        <div class="result-hero-overlay">
+          <div class="result-title" id="resultTitle"></div>
+          <div class="result-channel" id="resultChannel"></div>
+        </div>
+      </div>
+      <div class="result-meta-row" id="resultMetaRow">
+        <span class="result-platform-badge" id="resultPlatform"></span>
+        <span class="result-duration" id="resultDuration"></span>
+      </div>
+      <div class="result-filename" id="resultFilename" style="display:none"></div>
+      <div class="warning-banner" id="warningBanner"></div>
+      <div class="transcript-box" id="transcriptBox"></div>
+      <div class="result-actions">
+        <button class="primary" id="copyBtn">Copy</button>
+        <button class="secondary" id="downloadBtn">Download .txt</button>
+      </div>
+      <button class="new-btn" id="newBtn">New transcription</button>
+    </div>
+
+    <!-- History -->
+    <div class="history-section" id="historySection">
+      <div class="history-title">Recent transcriptions</div>
+      <ul class="history-list" id="historyList">
+        <li class="history-empty">No transcriptions yet</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="audio-utils.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
