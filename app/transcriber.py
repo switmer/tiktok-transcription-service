@@ -856,6 +856,9 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
         logger.error(f"Error downloading video via yt-dlp: {str(e)}", exc_info=True)
         return None, None, None
 
+# Alias so callers can use the platform-specific name
+download_youtube_ytdlp = download_tiktok_ytdlp
+
 def _is_tiktok_url(url: str) -> bool:
     """Check if URL is a TikTok video URL."""
     return bool(re.search(r'tiktok\.com|vm\.tiktok\.com', url, re.IGNORECASE))

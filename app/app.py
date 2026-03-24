@@ -1269,7 +1269,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     else:
                         logger.warning(f"yt-dlp fallback did not yield audio/video_id for task {task_id}")
                 except Exception as e:
-                    logger.warning(f"YouTube yt-dlp fallback error for task {task_id}: {e}")
+                    logger.error(f"YouTube yt-dlp fallback error for task {task_id}: {e}", exc_info=True)
                 logger.warning(f"Falling back to generic pipeline for task {task_id}")
         
         # Standard TikTok processing or YouTube fallback

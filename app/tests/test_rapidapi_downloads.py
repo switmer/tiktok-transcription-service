@@ -15,10 +15,7 @@ import tempfile
 from unittest.mock import patch, MagicMock
 import sys
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from transcriber import (
+from app.transcriber import (
     _is_tiktok_url,
     _is_instagram_url,
     _is_facebook_url,
@@ -177,8 +174,8 @@ class TestInstagramRapidAPIResponse:
             }
         }
 
-    @patch('transcriber.requests.get')
-    @patch('transcriber.subprocess.run')
+    @patch('app.transcriber.requests.get')
+    @patch('app.transcriber.subprocess.run')
     def test_instagram_download_success(self, mock_subprocess, mock_get, sample_instagram_response):
         """Test successful Instagram download."""
         # Mock API response
@@ -206,7 +203,7 @@ class TestInstagramRapidAPIResponse:
         assert result["video_id"] == "DJg8Hc_zkot"
         assert "Playing with the fish" in result["title"]
 
-    @patch('transcriber.requests.get')
+    @patch('app.transcriber.requests.get')
     def test_instagram_download_api_error(self, mock_get):
         """Test Instagram download with API error."""
         api_response = MagicMock()
@@ -227,7 +224,7 @@ class TestInstagramRapidAPIResponse:
 
         assert result is None
 
-    @patch('transcriber.requests.get')
+    @patch('app.transcriber.requests.get')
     def test_instagram_download_rate_limit(self, mock_get):
         """Test Instagram download with rate limit."""
         api_response = MagicMock()
@@ -301,8 +298,8 @@ class TestFacebookRapidAPIResponse:
             }
         }
 
-    @patch('transcriber.requests.get')
-    @patch('transcriber.subprocess.run')
+    @patch('app.transcriber.requests.get')
+    @patch('app.transcriber.subprocess.run')
     def test_facebook_download_primary_success(self, mock_subprocess, mock_get, sample_facebook_primary_response):
         """Test successful Facebook download with primary API."""
         # Mock API response
@@ -329,8 +326,8 @@ class TestFacebookRapidAPIResponse:
         assert result["platform"] == "facebook"
         assert result["title"] == "Amazing Video"
 
-    @patch('transcriber.requests.get')
-    @patch('transcriber.subprocess.run')
+    @patch('app.transcriber.requests.get')
+    @patch('app.transcriber.subprocess.run')
     def test_facebook_download_backup_fallback(self, mock_subprocess, mock_get, sample_facebook_backup_response):
         """Test Facebook download falling back to backup API."""
         # Primary API fails
@@ -361,7 +358,7 @@ class TestFacebookRapidAPIResponse:
         assert result is not None
         assert result["platform"] == "facebook"
 
-    @patch('transcriber.requests.get')
+    @patch('app.transcriber.requests.get')
     def test_facebook_download_both_apis_fail(self, mock_get):
         """Test Facebook download when both APIs fail."""
         # Both APIs return errors
@@ -384,8 +381,8 @@ class TestFacebookRapidAPIResponse:
 class TestDownloadFlowRouting:
     """Test that download_tiktok routes to correct platform API."""
 
-    @patch('transcriber.download_tiktok_rapidapi')
-    @patch('transcriber.download_tiktok_ytdlp')
+    @patch('app.transcriber.download_tiktok_rapidapi')
+    @patch('app.transcriber.download_tiktok_ytdlp')
     def test_tiktok_url_routes_to_tiktok_api(self, mock_ytdlp, mock_tiktok_api):
         """Test TikTok URLs are routed to TikTok API."""
         mock_tiktok_api.return_value = {"video_id": "123", "platform": "tiktok"}
@@ -400,8 +397,8 @@ class TestDownloadFlowRouting:
         mock_ytdlp.assert_not_called()
         assert result["platform"] == "tiktok"
 
-    @patch('transcriber.download_instagram_rapidapi')
-    @patch('transcriber.download_tiktok_ytdlp')
+    @patch('app.transcriber.download_instagram_rapidapi')
+    @patch('app.transcriber.download_tiktok_ytdlp')
     def test_instagram_url_routes_to_instagram_api(self, mock_ytdlp, mock_instagram_api):
         """Test Instagram URLs are routed to Instagram API."""
         mock_instagram_api.return_value = {"video_id": "ABC", "platform": "instagram"}
@@ -416,8 +413,8 @@ class TestDownloadFlowRouting:
         mock_ytdlp.assert_not_called()
         assert result["platform"] == "instagram"
 
-    @patch('transcriber.download_facebook_rapidapi')
-    @patch('transcriber.download_tiktok_ytdlp')
+    @patch('app.transcriber.download_facebook_rapidapi')
+    @patch('app.transcriber.download_tiktok_ytdlp')
     def test_facebook_url_routes_to_facebook_api(self, mock_ytdlp, mock_facebook_api):
         """Test Facebook URLs are routed to Facebook API."""
         mock_facebook_api.return_value = {"video_id": "456", "platform": "facebook"}
@@ -432,8 +429,8 @@ class TestDownloadFlowRouting:
         mock_ytdlp.assert_not_called()
         assert result["platform"] == "facebook"
 
-    @patch('transcriber.download_instagram_rapidapi')
-    @patch('transcriber.download_tiktok_ytdlp')
+    @patch('app.transcriber.download_instagram_rapidapi')
+    @patch('app.transcriber.download_tiktok_ytdlp')
     def test_instagram_fallback_to_ytdlp(self, mock_ytdlp, mock_instagram_api):
         """Test Instagram falls back to yt-dlp when API fails."""
         mock_instagram_api.return_value = None
@@ -476,6 +473,88 @@ class TestEdgeCases:
         assert _is_tiktok_url("https://WWW.TIKTOK.COM/@user/video/123")
         assert _is_instagram_url("https://INSTAGRAM.COM/reel/ABC/")
         assert _is_facebook_url("https://FB.WATCH/abc123/")
+
+
+class TestYouTubeRapidAPIResponseParsing:
+    """Test YouTube RapidAPI transcript response parsing.
+
+    The transcript endpoint returns {'data': {'text': '...', 'chunks': [...]}, 'status': 'success'}.
+    This was the format that caused a production bug when the parser only checked data['transcript'].
+    """
+
+    @patch('app.transcriber.requests.get')
+    def test_parses_data_text_format(self, mock_get):
+        """Transcript at data.data.text is extracted correctly."""
+        from app.transcriber import download_youtube_rapidapi
+
+        # Actual API response format (simplified)
+        api_response = MagicMock()
+        api_response.status_code = 200
+        api_response.json.return_value = {
+            "data": {
+                "text": "Hello world, this is a test transcript.",
+                "chunks": [{"text": "Hello world,", "timestamp": [0.0, 1.5]}],
+                "lang": "en",
+                "available_langs": ["en"]
+            },
+            "status": "success"
+        }
+
+        # oEmbed call for title
+        oembed_response = MagicMock()
+        oembed_response.json.return_value = {
+            "title": "Test Video Title",
+            "author_name": "Test Channel",
+            "thumbnail_url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+        }
+
+        mock_get.side_effect = [api_response, oembed_response]
+
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=abc123")
+
+        assert result is not None
+        assert result["transcript"] == "Hello world, this is a test transcript."
+        assert result["title"] == "Test Video Title"
+        assert result["uploader"] == "Test Channel"
+        assert result["platform"] == "youtube"
+
+    @patch('app.transcriber.requests.get')
+    def test_parses_legacy_transcript_field(self, mock_get):
+        """Transcript at data['transcript'] still works (backwards compat)."""
+        from app.transcriber import download_youtube_rapidapi
+
+        api_response = MagicMock()
+        api_response.status_code = 200
+        api_response.json.return_value = {
+            "transcript": "Legacy format transcript.",
+            "title": "Legacy Title"
+        }
+
+        mock_get.return_value = api_response
+
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=xyz789")
+
+        assert result is not None
+        assert result["transcript"] == "Legacy format transcript."
+        assert result["title"] == "Legacy Title"
+
+    @patch('app.transcriber.requests.get')
+    def test_returns_none_when_no_transcript(self, mock_get):
+        """Returns None when API response has no transcript in any known location."""
+        from app.transcriber import download_youtube_rapidapi
+
+        api_response = MagicMock()
+        api_response.status_code = 200
+        api_response.json.return_value = {
+            "data": {"lang": "en"},
+            "status": "success"
+        }
+
+        mock_get.return_value = api_response
+
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=nope")
+
+        assert result is None
 
 
 if __name__ == "__main__":
