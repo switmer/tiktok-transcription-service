@@ -247,16 +247,33 @@ def download_youtube_rapidapi(url: str) -> dict:
                 # Format transcript with simple line breaks (matching Edge Function style)
                 transcript_text = transcript.strip()
 
-                logger.info(f"YouTube RapidAPI success - video_id: {video_id}")
+                # Fetch title via YouTube oEmbed (free, no API key)
+                title = normalized_metadata.get("title") or data.get("title")
+                thumbnail_url = normalized_metadata.get("thumbnail_url")
+                uploader = normalized_metadata.get("uploader")
+                if not title:
+                    try:
+                        oembed = requests.get(
+                            f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json",
+                            timeout=5
+                        ).json()
+                        title = oembed.get("title")
+                        uploader = uploader or oembed.get("author_name")
+                        thumbnail_url = thumbnail_url or oembed.get("thumbnail_url")
+                    except Exception:
+                        pass
+                title = title or "YouTube Video"
+
+                logger.info(f"YouTube RapidAPI success - video_id: {video_id}, title: {title}")
                 return {
                     "video_id": video_id,
-                    "title": normalized_metadata.get("title") or data.get("title", "YouTube Video"),
+                    "title": title,
                     "description": normalized_metadata.get("description"),
                     "transcript": transcript_text,
                     "platform": "youtube",
-                    "thumbnail_url": normalized_metadata.get("thumbnail_url"),
-                    "uploader": normalized_metadata.get("uploader"),
-                    "channel": normalized_metadata.get("channel"),
+                    "thumbnail_url": thumbnail_url,
+                    "uploader": uploader,
+                    "channel": normalized_metadata.get("channel") or uploader,
                     "duration": normalized_metadata.get("duration"),
                     "download_method": "rapidapi_youtube_fastest",
                     "transcribed_at": datetime.now().isoformat(),
