@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 from datetime import datetime, timedelta
 import yt_dlp
 from openai import OpenAI
@@ -240,8 +241,8 @@ def download_youtube_rapidapi(url: str) -> dict:
             except ImportError:
                 pass
 
-            # Extract transcript
-            transcript = data.get("transcript", "")
+            # Extract transcript — API returns {'data': {'text': '...', 'chunks': [...]}, 'status': 'success'}
+            transcript = data.get("transcript") or (data.get("data", {}).get("text") if isinstance(data.get("data"), dict) else None) or ""
             if transcript:
                 # Format transcript with simple line breaks (matching Edge Function style)
                 transcript_text = transcript.strip()
@@ -781,7 +782,8 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
             'Upgrade-Insecure-Requests': '1'
         },
         'socket_timeout': 30,  # Longer timeout for connection issues
-        'retries': 10          # More retries for transient issues
+        'retries': 10,         # More retries for transient issues
+        'js_runtimes': 'nodejs,deno',
     }
     
     # Use cookies file if found via environment variable
@@ -800,8 +802,9 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
         
         # Extract info without downloading
         info_opts = {
-            'quiet': True, 
-            'http_headers': ydl_opts['http_headers']
+            'quiet': True,
+            'http_headers': ydl_opts['http_headers'],
+            'js_runtimes': 'nodejs,deno',
         }
         if proxy:
             info_opts['proxy'] = proxy
