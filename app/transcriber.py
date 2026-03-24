@@ -802,9 +802,8 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
         },
         'socket_timeout': 30,  # Longer timeout for connection issues
         'retries': 10,         # More retries for transient issues
-        'js_runtimes': 'nodejs,deno',
     }
-    
+
     # Use cookies file if found via environment variable
     if cookie_file_to_use:
         ydl_opts['cookiefile'] = cookie_file_to_use
@@ -823,7 +822,6 @@ def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
         info_opts = {
             'quiet': True,
             'http_headers': ydl_opts['http_headers'],
-            'js_runtimes': 'nodejs,deno',
         }
         if proxy:
             info_opts['proxy'] = proxy
@@ -873,6 +871,52 @@ def _is_facebook_url(url: str) -> bool:
     """Check if URL is a Facebook video URL."""
     return bool(re.search(r'facebook\.com/.*/videos/|facebook\.com/reel/|fb\.watch/', url, re.IGNORECASE))
 
+def _is_direct_video_url(url: str) -> bool:
+    """Check if URL points directly to a video file (e.g. LinkedIn CDN)."""
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    return any(ext in path for ext in ('.mp4', '.webm', '.mov', '/mp4-'))
+
+def download_direct_video(url: str, output_dir: str):
+    """Download a direct video URL (e.g. LinkedIn CDN mp4) and extract audio."""
+    import hashlib
+    try:
+        video_id = hashlib.md5(url.encode()).hexdigest()[:12]
+        title = "Direct Video"
+
+        logger.info(f"Downloading direct video URL: {url}")
+        response = requests.get(url, timeout=120, stream=True)
+        response.raise_for_status()
+
+        video_path = os.path.join(output_dir, f"{video_id}.mp4")
+        with open(video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        logger.info(f"Direct video downloaded: {video_path}")
+
+        # Extract audio using ffmpeg
+        audio_path = os.path.join(output_dir, f"{video_id}.mp3")
+        subprocess.run([
+            'ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame',
+            '-ab', '192k', '-ar', '44100', '-y', audio_path
+        ], check=True, capture_output=True)
+
+        logger.info(f"Audio extracted: {audio_path}")
+
+        return {
+            "video_id": video_id,
+            "title": title,
+            "audio_file": audio_path,
+            "video_file": video_path,
+            "metadata_file": None,
+            "video_url": url
+        }
+
+    except Exception as e:
+        logger.error(f"Direct video download failed: {e}")
+        return None
+
 def download_tiktok(url: str, output_dir: str, proxy=None):
     """Download video with platform-aware fallback chain.
 
@@ -918,6 +962,13 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
             logger.info("Facebook RapidAPI download successful!")
             return rapidapi_result
         logger.warning("Facebook RapidAPI failed, falling back to yt-dlp...")
+
+    elif _is_direct_video_url(clean_url):
+        logger.info("Direct video URL detected, downloading directly...")
+        direct_result = download_direct_video(clean_url, output_dir)
+        if direct_result:
+            return direct_result
+        logger.warning("Direct video download failed, falling back to yt-dlp...")
 
     else:
         logger.info(f"Unknown platform, trying yt-dlp directly...")
