@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import hashlib
 from datetime import datetime, timedelta
 import yt_dlp
 from openai import OpenAI
@@ -877,23 +878,47 @@ def _is_direct_video_url(url: str) -> bool:
     path = parsed.path.lower()
     return any(ext in path for ext in ('.mp4', '.webm', '.mov', '/mp4-'))
 
+MAX_DIRECT_VIDEO_BYTES = 500 * 1024 * 1024  # 500 MB
+
 def download_direct_video(url: str, output_dir: str):
     """Download a direct video URL (e.g. LinkedIn CDN mp4) and extract audio."""
-    import hashlib
     try:
         video_id = hashlib.md5(url.encode()).hexdigest()[:12]
         title = "Direct Video"
 
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        }
+
         logger.info(f"Downloading direct video URL: {url}")
-        response = requests.get(url, timeout=120, stream=True)
+        response = requests.get(url, timeout=120, stream=True, headers=headers)
         response.raise_for_status()
 
+        # Validate content type
+        content_type = response.headers.get('Content-Type', '')
+        if content_type and not content_type.startswith(('video/', 'application/octet-stream')):
+            logger.error(f"Direct video download got unexpected Content-Type: {content_type}")
+            return None
+
+        # Check content length if provided
+        content_length = response.headers.get('Content-Length')
+        if content_length and int(content_length) > MAX_DIRECT_VIDEO_BYTES:
+            logger.error(f"Direct video too large: {int(content_length)} bytes")
+            return None
+
         video_path = os.path.join(output_dir, f"{video_id}.mp4")
+        downloaded = 0
         with open(video_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
+                downloaded += len(chunk)
+                if downloaded > MAX_DIRECT_VIDEO_BYTES:
+                    logger.error(f"Direct video exceeded {MAX_DIRECT_VIDEO_BYTES} byte limit during download")
+                    f.close()
+                    os.remove(video_path)
+                    return None
                 f.write(chunk)
 
-        logger.info(f"Direct video downloaded: {video_path}")
+        logger.info(f"Direct video downloaded: {video_path} ({downloaded} bytes)")
 
         # Extract audio using ffmpeg
         audio_path = os.path.join(output_dir, f"{video_id}.mp3")
@@ -968,7 +993,8 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
         direct_result = download_direct_video(clean_url, output_dir)
         if direct_result:
             return direct_result
-        logger.warning("Direct video download failed, falling back to yt-dlp...")
+        logger.error("Direct video download failed — no fallback for raw CDN URLs")
+        return None
 
     else:
         logger.info(f"Unknown platform, trying yt-dlp directly...")
