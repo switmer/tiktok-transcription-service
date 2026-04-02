@@ -46,6 +46,33 @@ else:
     except Exception as e:
         logger.error(f"Failed to initialize OpenAI client: {str(e)}")
 
+def _validate_audio(audio_path: str) -> tuple:
+    """Check if an audio file is valid using ffprobe. Returns (is_valid, info_string)."""
+    if not os.path.exists(audio_path):
+        return False, "file does not exist"
+    file_size = os.path.getsize(audio_path)
+    if file_size == 0:
+        return False, "file is 0 bytes"
+    try:
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration,size',
+             '-show_entries', 'stream=codec_name,sample_rate,channels',
+             '-of', 'json', audio_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if probe.returncode != 0:
+            return False, f"ffprobe failed: {probe.stderr.strip()[:200]}"
+        import json as _json
+        info = _json.loads(probe.stdout)
+        duration = float(info.get('format', {}).get('duration', 0))
+        if duration < 0.1:
+            return False, f"duration={duration}s, size={file_size}B"
+        codec = info.get('streams', [{}])[0].get('codec_name', 'unknown')
+        return True, f"codec={codec}, duration={duration:.1f}s, size={file_size}B"
+    except Exception as e:
+        return False, f"ffprobe error: {str(e)[:200]}"
+
+
 class MyLogger(object):
     def debug(self, msg):
         if msg.startswith('[debug] '):
@@ -366,11 +393,28 @@ def download_tiktok_rapidapi(url: str, output_dir: str):
                     import subprocess
                     try:
                         subprocess.run([
-                            'ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', 
-                            '-ab', '192k', '-ar', '44100', '-y', audio_path
+                            'ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame',
+                            '-ab', '192k', '-ar', '44100', '-ac', '1', '-y', audio_path
                         ], check=True, capture_output=True)
-                        
-                        logger.info(f"Audio extracted successfully: {audio_path}")
+
+                        # Validate the extracted audio
+                        audio_valid, audio_info = _validate_audio(audio_path)
+                        if not audio_valid:
+                            logger.warning(f"MP3 extraction produced invalid audio ({audio_info}), retrying as WAV")
+                            wav_path = os.path.join(output_dir, f"{video_id}.wav")
+                            subprocess.run([
+                                'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
+                                '-ar', '16000', '-ac', '1', '-y', wav_path
+                            ], check=True, capture_output=True)
+                            wav_valid, wav_info = _validate_audio(wav_path)
+                            if wav_valid:
+                                audio_path = wav_path
+                                logger.info(f"WAV fallback succeeded: {wav_info}")
+                            else:
+                                logger.error(f"WAV fallback also invalid ({wav_info}), video may have no audio track")
+                                return None
+                        else:
+                            logger.info(f"Audio extracted successfully: {audio_path} ({audio_info})")
                         
                         # Save metadata - include full RapidAPI response for rich metadata extraction
                         metadata = {
@@ -1086,10 +1130,13 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
         return None, None
 
     try:
-        logger.info(f"Transcribing audio file: {audio_file} (Requesting verbose_json)")
-
-        # Get audio file size for cost tracking
+        # Validate audio before sending to Whisper
+        audio_valid, audio_info = _validate_audio(audio_file)
         audio_file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else None
+        logger.info(f"Transcribing audio file: {audio_file} ({audio_info})")
+        if not audio_valid:
+            logger.error(f"Audio file is not valid, skipping Whisper call: {audio_info}")
+            return None, None
 
         # Always request verbose_json for timestamped data
         openai_format = "verbose_json"

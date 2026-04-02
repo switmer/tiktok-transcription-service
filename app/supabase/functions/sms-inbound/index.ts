@@ -290,12 +290,18 @@ async function sendSMS(phoneNumber, message) {
     return null;
   }
 
+  // Safety net: truncate any message that exceeds carrier limits (error 30019)
+  if (message.length > SMS_MAX_CHARS) {
+    console.warn(`sendSMS: message too long (${message.length} chars), truncating to ${SMS_MAX_CHARS}`);
+    message = truncateForSMS(message, SMS_MAX_CHARS);
+  }
+
   const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
   const auth = btoa(`${twilioAccountSid}:${twilioAuthToken}`);
-  
+
   // Status callback URL
   const statusCallbackUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/sms-status-callback`;
-  
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {

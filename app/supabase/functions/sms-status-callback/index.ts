@@ -1,4 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.39.3';
+import { validateTwilioSignature, formDataToRecord } from '../_shared/validate-twilio.ts';
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
@@ -6,13 +7,25 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!, 
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
+    const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN');
 
     // Parse Twilio's callback data (form-encoded)
     const form = await req.formData();
+
+    // Validate Twilio signature if auth token is configured
+    if (twilioAuthToken) {
+      const params = formDataToRecord(form);
+      const valid = await validateTwilioSignature(req, params, twilioAuthToken);
+      if (!valid) {
+        console.warn('Invalid Twilio signature on sms-status-callback');
+        return new Response('Forbidden', { status: 403 });
+      }
+    }
+
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
     const messageSid = form.get('MessageSid')?.toString();
     const messageStatus = form.get('MessageStatus')?.toString();
     const errorCode = form.get('ErrorCode')?.toString();

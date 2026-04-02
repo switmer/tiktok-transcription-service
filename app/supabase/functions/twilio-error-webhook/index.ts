@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { validateTwilioSignature, formDataToRecord } from '../_shared/validate-twilio.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -23,13 +24,24 @@ serve(async (req) => {
   }
 
   try {
+    // Parse the Twilio error webhook payload (sent as form data, not JSON)
+    const formData = await req.formData()
+
+    // Validate Twilio signature if auth token is configured
+    const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN')
+    if (twilioAuthToken) {
+      const params = formDataToRecord(formData)
+      const valid = await validateTwilioSignature(req, params, twilioAuthToken)
+      if (!valid) {
+        console.warn('Invalid Twilio signature on twilio-error-webhook')
+        return new Response('Forbidden', { status: 403, headers: corsHeaders })
+      }
+    }
+
     // Initialize Supabase client
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
-
-    // Parse the Twilio error webhook payload (sent as form data, not JSON)
-    const formData = await req.formData()
     
     // Parse Payload field (might be JSON string)
     let payloadData: any = {}
