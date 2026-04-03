@@ -1097,6 +1097,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             platform_hint = "facebook"
         elif "youtube.com" in url_lower or "youtu.be" in url_lower:
             platform_hint = "youtube"
+        elif "linkedin.com" in url_lower or "licdn.com" in url_lower:
+            platform_hint = "linkedin"
         else:
             platform_hint = "tiktok"
         # -------------------------------------------------
@@ -2698,17 +2700,25 @@ async def handle_stripe_webhook(request: Request):
         raise ApiError(500, INTERNAL_ERROR, "Webhook processing failed")
 
 @app.get("/pay", tags=["Payment & Billing"])
-async def pay_redirect(p: str = Query(..., description="Phone number"), c: int = Query(5, description="Credits")):
+async def pay_redirect(p: str = Query(..., description="Base64url-encoded phone number"), c: int = Query(5, description="Credits")):
     """
     Short URL redirect to Stripe checkout.
-    Creates a checkout session and redirects to Stripe.
-    URL format: /pay?p=+16103244250&c=5
+    Creates a checkout session on click and redirects to Stripe.
+    Phone number is base64url-encoded to avoid exposing it in plaintext.
+    URL format: /pay?p=KzE2MTAzMjQ0MjUw&c=5
     """
     import stripe
+    import base64
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
     if not stripe.api_key:
         raise ApiError(503, SERVICE_UNAVAILABLE, "Payment system not configured")
+
+    # Decode phone number
+    try:
+        phone = base64.urlsafe_b64decode(p).decode('utf-8')
+    except Exception:
+        raise ApiError(400, VALIDATION_ERROR, "Invalid phone parameter")
 
     # Map credits to price IDs
     price_map = {
@@ -2729,7 +2739,7 @@ async def pay_redirect(p: str = Query(..., description="Phone number"), c: int =
             success_url=f"{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{frontend_url}/sms-payment-canceled",
             metadata={
-                'phone_number': p,
+                'phone_number': phone,
                 'credits': str(c),
                 'source': 'sms_short_url'
             }

@@ -31,7 +31,7 @@ serve(async (req) => {
     const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN')
     if (twilioAuthToken) {
       const params = formDataToRecord(formData)
-      const valid = await validateTwilioSignature(req, params, twilioAuthToken)
+      const valid = await validateTwilioSignature(req, params, twilioAuthToken, 'twilio-error-webhook')
       if (!valid) {
         console.warn('Invalid Twilio signature on twilio-error-webhook')
         return new Response('Forbidden', { status: 403, headers: corsHeaders })

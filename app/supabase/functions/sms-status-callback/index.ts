@@ -15,7 +15,7 @@ Deno.serve(async (req) => {
     // Validate Twilio signature if auth token is configured
     if (twilioAuthToken) {
       const params = formDataToRecord(form);
-      const valid = await validateTwilioSignature(req, params, twilioAuthToken);
+      const valid = await validateTwilioSignature(req, params, twilioAuthToken, 'sms-status-callback');
       if (!valid) {
         console.warn('Invalid Twilio signature on sms-status-callback');
         return new Response('Forbidden', { status: 403 });

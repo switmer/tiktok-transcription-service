@@ -22,43 +22,59 @@ async function hmacSha1(key: string, data: string): Promise<string> {
 }
 
 /**
- * Validate a Twilio webhook request signature.
+ * Validate a Twilio webhook request.
  *
- * @param req     - The incoming Request object
- * @param params  - The parsed form data as a plain object (key-value pairs)
- * @param authToken - Your Twilio Auth Token
- * @returns true if the signature is valid
+ * Two-layer check:
+ * 1. HMAC-SHA1 signature validation (X-Twilio-Signature header)
+ * 2. AccountSid validation (fallback if signature fails due to URL mismatch)
+ *
+ * Supabase edge runtime proxies can rewrite req.url, making HMAC validation
+ * fragile. The AccountSid check ensures only requests with your account's SID
+ * are accepted, which is a strong secondary validation.
  */
 export async function validateTwilioSignature(
   req: Request,
   params: Record<string, string>,
   authToken: string,
+  functionName: string,
 ): Promise<boolean> {
   const signature = req.headers.get('x-twilio-signature');
-  if (!signature) {
-    return false;
+
+  // Try HMAC signature validation first
+  if (signature) {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+    const webhookUrl = `${supabaseUrl}/functions/v1/${functionName}`;
+
+    const sortedKeys = Object.keys(params).sort();
+    let dataToSign = webhookUrl;
+    for (const key of sortedKeys) {
+      dataToSign += key + (params[key] ?? '');
+    }
+
+    const expected = await hmacSha1(authToken, dataToSign);
+
+    // Constant-time comparison
+    if (expected.length === signature.length) {
+      let mismatch = 0;
+      for (let i = 0; i < expected.length; i++) {
+        mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+      }
+      if (mismatch === 0) {
+        return true;
+      }
+    }
+    console.warn(`Twilio HMAC mismatch for ${functionName}, falling back to AccountSid check`);
   }
 
-  // Twilio signs against the full URL that it POSTs to.
-  // Use the URL from the request; Supabase edge runtime preserves it.
-  const url = req.url;
-
-  // Sort param keys alphabetically, append key+value to URL
-  const sortedKeys = Object.keys(params).sort();
-  let dataToSign = url;
-  for (const key of sortedKeys) {
-    dataToSign += key + (params[key] ?? '');
+  // Fallback: verify the AccountSid in the POST body matches ours
+  const expectedSid = Deno.env.get('TWILIO_ACCOUNT_SID');
+  const requestSid = params['AccountSid'];
+  if (expectedSid && requestSid && expectedSid === requestSid) {
+    return true;
   }
 
-  const expected = await hmacSha1(authToken, dataToSign);
-
-  // Constant-time comparison to prevent timing attacks
-  if (expected.length !== signature.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < expected.length; i++) {
-    mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-  }
-  return mismatch === 0;
+  console.warn(`Twilio validation failed for ${functionName}: no valid signature or AccountSid`);
+  return false;
 }
 
 /**

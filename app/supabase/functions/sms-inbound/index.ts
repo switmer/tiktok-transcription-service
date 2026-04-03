@@ -1342,25 +1342,13 @@ Reply /help for more commands!`);
     // Skip credit check for free retries of failed tasks
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0 && !isFreeRetry) {
-      // Generate unique checkout URLs with phone number in metadata
-      const fiveCreditsPrice = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || '';
-      const unlimitedPrice = Deno.env.get('STRIPE_UNLIMITED_PRICE_ID') || '';
+      // Use /pay redirect on our domain — creates Stripe session on click.
+      // Phone is base64url-encoded to keep URL short and avoid plaintext exposure.
+      // Result: ~55 chars vs ~200+ for a raw Stripe checkout URL.
+      const phoneb64 = btoa(From).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const buyLink = `https://share.scribetok.com/pay?p=${phoneb64}&c=5`;
 
-      // Create unique checkout links for this user
-      const fiveCreditsUrl = await createStripeCheckoutUrl(From, fiveCreditsPrice, 5);
-      const unlimitedUrl = await createStripeSubscriptionUrl(From, unlimitedPrice);
-
-      // Fallback to static links if Stripe checkout creation fails
-      const buyLink = fiveCreditsUrl || 'https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01';
-      const unlimitedLink = unlimitedUrl || 'https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02';
-
-      return sendTwilioResponse(`💳 You've used all your free transcripts!
-
-Get 5 more for just $1.99 - cheaper than 1 jukebox song!
-🚀 Buy now: ${buyLink}
-
-🎁 Or invite friends for 3 free credits each: /referral
-💻 Go unlimited for $6.75/month: ${unlimitedLink}`);
+      return sendTwilioResponse(`You've used all your free transcripts! Get 5 more for just $1.99:\n${buyLink}\n\nOr reply /referral for 3 free credits.`);
     }
 
     // We only deduct credits AFTER the backend successfully queues the job.
