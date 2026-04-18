@@ -971,7 +971,7 @@ def download_spotify_rapidapi(url: str, output_dir: str):
     content_type = audio_resp.headers.get('Content-Type', '')
     is_mp3 = 'mp3' in content_type or 'mpeg' in content_type
     raw_ext = '.mp3' if is_mp3 else '.mp4'
-    raw_path = os.path.join(output_dir, f"{episode_id}{raw_ext}")
+    raw_path = os.path.join(output_dir, f"{episode_id}_raw{raw_ext}")
 
     downloaded = 0
     with open(raw_path, 'wb') as f:
@@ -980,17 +980,16 @@ def download_spotify_rapidapi(url: str, output_dir: str):
             f.write(chunk)
     logger.info(f"Downloaded Spotify audio: {downloaded:,} bytes")
 
-    # If already MP3, use directly; otherwise convert with ffmpeg
-    if is_mp3:
-        audio_path = raw_path
-    else:
-        audio_path = os.path.join(output_dir, f"{episode_id}.mp3")
-        logger.info(f"Converting {raw_ext} to MP3...")
-        subprocess.run([
-            'ffmpeg', '-i', raw_path, '-vn', '-acodec', 'libmp3lame',
-            '-ab', '192k', '-ar', '44100', '-ac', '1', '-y', audio_path
-        ], check=True, capture_output=True)
-        os.remove(raw_path)
+    # Always re-encode to low-bitrate mono for Whisper's 25MB upload limit.
+    # 64kbps mono 16kHz is fine for podcast speech and handles ~60min in one shot.
+    audio_path = os.path.join(output_dir, f"{episode_id}.mp3")
+    logger.info("Re-encoding audio to 64kbps mono 16kHz for Whisper size limit...")
+    subprocess.run([
+        'ffmpeg', '-i', raw_path, '-vn', '-acodec', 'libmp3lame',
+        '-ab', '64k', '-ar', '16000', '-ac', '1', '-y', audio_path
+    ], check=True, capture_output=True)
+    os.remove(raw_path)
+    logger.info(f"Re-encoded size: {os.path.getsize(audio_path):,} bytes")
 
     # Validate audio
     is_valid, info = _validate_audio(audio_path)
