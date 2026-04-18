@@ -1099,6 +1099,8 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             platform_hint = "youtube"
         elif "linkedin.com" in url_lower or "licdn.com" in url_lower:
             platform_hint = "linkedin"
+        elif "spotify.com" in url_lower:
+            platform_hint = "spotify"
         else:
             platform_hint = "tiktok"
         # -------------------------------------------------
@@ -1285,9 +1287,10 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         
         # Handle dict return format with video_url (transcriber now always returns dict)
         audio_file = download_result.get("audio_file") if download_result else None
-        video_id = download_result.get("video_id") if download_result else None  
+        video_id = download_result.get("video_id") if download_result else None
         title = download_result.get("title") if download_result else None
         direct_video_url = download_result.get("video_url") if download_result else None
+        download_thumbnail_url = download_result.get("thumbnail_url") if download_result else None
         
         if not audio_file or not video_id:
             logger.error(f"Download failed for task {task_id} using URL: {original_video_url}")
@@ -1315,7 +1318,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             logger.warning(f"Processing status update returned no data for task {task_id}: {result}")
         
         # Extract rich metadata from .info.json files
-        thumbnail_url = None
+        thumbnail_url = download_thumbnail_url  # May come from Spotify download result
         thumbnail_local_path = None
         rich_metadata = {}
         
@@ -1336,8 +1339,29 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                         logger.info(f"Found thumbnail URL in metadata: {thumbnail_url}")
                     
                     # Extract comprehensive metadata for database storage
-                    # Handle both RapidAPI and yt-dlp metadata formats
-                    if 'data' in metadata:  # RapidAPI format
+                    # Handle RapidAPI, Spotify, and yt-dlp metadata formats
+                    if 'podcast' in metadata:  # Spotify format
+                        podcast = metadata.get('podcast', {})
+                        author = metadata.get('author', {})
+                        audio = metadata.get('audio', {})
+                        thumbnail_url = thumbnail_url or audio.get('cover')
+                        rich_metadata = {
+                            'description': metadata.get('description'),
+                            'duration': audio.get('duration'),
+                            'upload_date': podcast.get('release_date'),
+                            'channel': podcast.get('show_name'),
+                            'channel_id': podcast.get('show_id'),
+                            'uploader': podcast.get('publisher') or podcast.get('show_name'),
+                            'uploader_url': metadata.get('original_url'),
+                            'like_count': None,
+                            'comment_count': None,
+                            'repost_count': None,
+                            'view_count': None,
+                            'acodec': 'mp3',
+                            'language': podcast.get('language') or 'english',
+                            'platform': 'spotify'
+                        }
+                    elif 'data' in metadata:  # RapidAPI format
                         data = metadata['data']
                         author = data.get('author', {})
                         rich_metadata = {

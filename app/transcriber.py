@@ -916,11 +916,105 @@ def _is_facebook_url(url: str) -> bool:
     """Check if URL is a Facebook video URL."""
     return bool(re.search(r'facebook\.com/.*/videos/|facebook\.com/reel/|fb\.watch/', url, re.IGNORECASE))
 
+def _is_spotify_url(url: str) -> bool:
+    """Check if URL is a Spotify podcast episode URL."""
+    return bool(re.search(r'open\.spotify\.com/episode/', url, re.IGNORECASE))
+
+def _extract_spotify_episode_id(url: str):
+    """Extract Spotify episode ID from URL."""
+    match = re.search(r'open\.spotify\.com/episode/([a-zA-Z0-9]+)', url)
+    return match.group(1) if match else None
+
 def _is_direct_video_url(url: str) -> bool:
     """Check if URL points directly to a video file (e.g. LinkedIn CDN)."""
     parsed = urlparse(url)
     path = parsed.path.lower()
     return any(ext in path for ext in ('.mp4', '.webm', '.mov', '/mp4-'))
+
+def download_spotify_rapidapi(url: str, output_dir: str):
+    """Download Spotify podcast episode audio using RapidAPI service."""
+    try:
+        from spotify_service import spotify_service
+    except ImportError:
+        logger.warning("spotify_service not available, skipping Spotify download")
+        return None
+
+    episode_id = _extract_spotify_episode_id(url)
+    if not episode_id:
+        logger.error(f"Could not extract Spotify episode ID from: {url}")
+        return None
+
+    logger.info(f"Attempting Spotify RapidAPI download for episode: {episode_id}")
+    result = spotify_service.get_episode_info(url)
+
+    if not result.get('success') or not result.get('data'):
+        logger.error(f"Spotify API failed: {result.get('error', 'unknown error')}")
+        return None
+
+    data = result['data']
+    audio_info = data.get('audio', {})
+    play_url = audio_info.get('play_url')
+    if not play_url:
+        logger.error("No playable audio URL in Spotify response")
+        return None
+
+    title = data.get('title', 'Spotify Episode')
+    cover_url = audio_info.get('cover')
+
+    # Download audio file directly
+    logger.info(f"Downloading Spotify audio: {play_url[:80]}...")
+    audio_resp = requests.get(play_url, stream=True, timeout=300, headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+    })
+    audio_resp.raise_for_status()
+
+    content_type = audio_resp.headers.get('Content-Type', '')
+    is_mp3 = 'mp3' in content_type or 'mpeg' in content_type
+    raw_ext = '.mp3' if is_mp3 else '.mp4'
+    raw_path = os.path.join(output_dir, f"{episode_id}{raw_ext}")
+
+    downloaded = 0
+    with open(raw_path, 'wb') as f:
+        for chunk in audio_resp.iter_content(chunk_size=8192):
+            downloaded += len(chunk)
+            f.write(chunk)
+    logger.info(f"Downloaded Spotify audio: {downloaded:,} bytes")
+
+    # If already MP3, use directly; otherwise convert with ffmpeg
+    if is_mp3:
+        audio_path = raw_path
+    else:
+        audio_path = os.path.join(output_dir, f"{episode_id}.mp3")
+        logger.info(f"Converting {raw_ext} to MP3...")
+        subprocess.run([
+            'ffmpeg', '-i', raw_path, '-vn', '-acodec', 'libmp3lame',
+            '-ab', '192k', '-ar', '44100', '-ac', '1', '-y', audio_path
+        ], check=True, capture_output=True)
+        os.remove(raw_path)
+
+    # Validate audio
+    is_valid, info = _validate_audio(audio_path)
+    if not is_valid:
+        logger.error(f"Spotify audio validation failed: {info}")
+        return None
+
+    logger.info(f"Spotify audio validated: {info}")
+
+    # Save metadata as .info.json
+    metadata_path = os.path.join(output_dir, f"{episode_id}.info.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(data, f, indent=2, default=str)
+
+    return {
+        "video_id": episode_id,
+        "title": title,
+        "audio_file": audio_path,
+        "video_file": None,
+        "metadata_file": metadata_path,
+        "video_url": play_url,
+        "thumbnail_url": cover_url,
+    }
+
 
 MAX_DIRECT_VIDEO_BYTES = 500 * 1024 * 1024  # 500 MB
 
@@ -992,6 +1086,7 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     - TikTok: TikTok RapidAPI -> yt-dlp
     - Instagram: Instagram RapidAPI -> yt-dlp
     - Facebook: Facebook RapidAPI -> yt-dlp
+    - Spotify: Spotify RapidAPI -> yt-dlp
     """
 
     # Clean URL before processing
@@ -1001,14 +1096,23 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     is_tiktok = _is_tiktok_url(clean_url)
     is_instagram = _is_instagram_url(clean_url)
     is_facebook = _is_facebook_url(clean_url)
+    is_spotify = _is_spotify_url(clean_url)
 
-    platform = "tiktok" if is_tiktok else "instagram" if is_instagram else "facebook" if is_facebook else "unknown"
+    platform = "spotify" if is_spotify else "tiktok" if is_tiktok else "instagram" if is_instagram else "facebook" if is_facebook else "unknown"
     logger.info(f"Detected platform: {platform} for URL: {clean_url}")
 
     # Method 1: Try platform-specific RapidAPI first
     rapidapi_result = None
 
-    if is_tiktok:
+    if is_spotify:
+        logger.info("Attempting Spotify RapidAPI download...")
+        rapidapi_result = download_spotify_rapidapi(url, output_dir)
+        if rapidapi_result:
+            logger.info("Spotify RapidAPI download successful!")
+            return rapidapi_result
+        logger.warning("Spotify RapidAPI failed, falling back to yt-dlp...")
+
+    elif is_tiktok:
         logger.info("Attempting TikTok RapidAPI download...")
         rapidapi_result = download_tiktok_rapidapi(url, output_dir)
         if rapidapi_result:

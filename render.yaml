@@ -15,4 +15,6 @@ services:
         sync: false
       - key: RAPIDAPI_KEY
         sync: false
+      - key: RAPIDAPI_SPOTIFY_KEYS
+        sync: false
     healthCheckPath: /api/public/discover/categories

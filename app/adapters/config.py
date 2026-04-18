@@ -169,11 +169,21 @@ def get_adapter_config_info() -> Dict[str, Any]:
     
     enable_tikwm = os.getenv("ENABLE_TIKWM", "true").lower() == "true"
     
+    # Spotify adapter keys
+    spotify_keys_env = os.getenv("RAPIDAPI_SPOTIFY_KEYS", "").strip()
+    if spotify_keys_env:
+        spotify_keys = [k.strip() for k in spotify_keys_env.split(",") if k.strip()]
+    elif primary_key:
+        spotify_keys = [primary_key]
+    else:
+        spotify_keys = []
+
     return {
         "primary_key_set": bool(primary_key),
         "total_adapters_configured": (
-            len(v1_keys) + len(v2_keys) + len(api6_keys) + 
-            len(downloadvideo_keys) + (1 if enable_tikwm else 0)
+            len(v1_keys) + len(v2_keys) + len(api6_keys) +
+            len(downloadvideo_keys) + (1 if enable_tikwm else 0) +
+            len(spotify_keys)
         ),
         "adapters": {
             "rapidapi_v1": len(v1_keys),
@@ -181,6 +191,7 @@ def get_adapter_config_info() -> Dict[str, Any]:
             "rapidapi_api6": len(api6_keys),
             "rapidapi_downloadvideo": len(downloadvideo_keys),
             "tikwm": 1 if enable_tikwm else 0,
+            "spotify": len(spotify_keys),
         },
         "configuration_method": (
             "PRIMARY_KEY" if primary_key else
@@ -198,6 +209,7 @@ def get_adapter_config_info() -> Dict[str, Any]:
             "RAPIDAPI_V2_KEYS": "SET" if os.getenv("RAPIDAPI_V2_KEYS") else "NOT_SET",
             "RAPIDAPI_API6_KEYS": "SET" if os.getenv("RAPIDAPI_API6_KEYS") else "NOT_SET",
             "RAPIDAPI_DOWNLOADVIDEO_KEYS": "SET" if os.getenv("RAPIDAPI_DOWNLOADVIDEO_KEYS") else "NOT_SET",
-            "ENABLE_TIKWM": os.getenv("ENABLE_TIKWM", "true")
+            "ENABLE_TIKWM": os.getenv("ENABLE_TIKWM", "true"),
+            "RAPIDAPI_SPOTIFY_KEYS": "SET" if spotify_keys_env else "NOT_SET",
         }
     }

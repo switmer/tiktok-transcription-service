@@ -237,7 +237,8 @@ function stopFakeProgress() {
 }
 
 // URL handling
-const URL_PATTERN = /^https?:\/\/(www\.)?(tiktok\.com|youtube\.com|youtu\.be|vm\.tiktok\.com)\/.+/i;
+const URL_PATTERN = /^https?:\/\/([a-z0-9-]+\.)*(tiktok\.com|youtube\.com|youtu\.be|vm\.tiktok\.com|instagram\.com|facebook\.com|fb\.watch|linkedin\.com|licdn\.com|open\.spotify\.com)\/.+/i;
+const DIRECT_VIDEO_PATTERN = /^https?:\/\/.+\.(mp4|webm|mov)(\?.*)?$/i;
 
 async function getBackendUrl() {
   const { backendUrl } = await chrome.storage.sync.get('backendUrl');
@@ -258,8 +259,8 @@ function bgFetch(url, options = {}) {
 }
 
 async function handleUrl(url) {
-  if (!URL_PATTERN.test(url)) {
-    showError('Enter a valid TikTok or YouTube URL.');
+  if (!URL_PATTERN.test(url) && !DIRECT_VIDEO_PATTERN.test(url)) {
+    showError('Enter a valid video or podcast URL.');
     return;
   }
 
@@ -294,7 +295,7 @@ async function handleUrl(url) {
     // Poll for completion
     stopFakeProgress();
     jumpFakeProgress(10);
-    startFakeProgress(30);
+    startFakeProgress(70);
     progressStatus.textContent = 'Downloading...';
 
     await new Promise((resolve, reject) => {

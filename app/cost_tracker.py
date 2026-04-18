@@ -61,6 +61,9 @@ COST_RATES = {
     # RapidAPI Facebook: ~$0.001 per request
     "rapidapi_facebook_per_call": 0.1,
 
+    # RapidAPI Spotify: ~$0.0015 per request (2 API calls per episode)
+    "rapidapi_spotify_per_call": 0.15,
+
     # Twilio SMS outbound: ~$0.0079 per segment = 0.79 cents
     "twilio_sms_outbound_per_segment": 0.79,
 
