@@ -1345,9 +1345,10 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                         author = metadata.get('author', {})
                         audio = metadata.get('audio', {})
                         thumbnail_url = thumbnail_url or audio.get('cover')
+                        duration_sec = audio.get('duration')
                         rich_metadata = {
                             'description': metadata.get('description'),
-                            'duration': audio.get('duration'),
+                            'duration': int(duration_sec) if duration_sec else None,
                             'upload_date': podcast.get('release_date'),
                             'channel': podcast.get('show_name'),
                             'channel_id': podcast.get('show_id'),
