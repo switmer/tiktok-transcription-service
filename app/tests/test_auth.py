@@ -423,7 +423,7 @@ class TestCreateCheckout:
         assert result["checkout_url"] == "https://checkout.stripe.com/session_xyz"
 
     @pytest.mark.asyncio
-    async def test_checkout_with_custom_credits(self):
+    async def test_checkout_rejects_credits_that_do_not_match_price(self):
         session = {"phone_number": "+15551234567", "credits_remaining": 0}
 
         mock_checkout_session = Mock()
@@ -437,16 +437,11 @@ class TestCreateCheckout:
             "STRIPE_SMS_CREDITS_PRICE_ID": "price_xxx",
         }, clear=False):
             with patch.dict("sys.modules", {"stripe": mock_stripe}):
-                result = await create_checkout(
-                    payload=CheckoutRequest(credits=20), session=session
-                )
+                with pytest.raises(ApiError) as exc_info:
+                    await create_checkout(payload=CheckoutRequest(credits=20), session=session)
 
-        assert result["checkout_url"] == "https://checkout.stripe.com/session_xyz"
-        # Verify metadata included custom credits
-        create_call = mock_stripe.checkout.Session.create
-        if create_call.called:
-            metadata = create_call.call_args[1].get("metadata", {})
-            assert metadata.get("credits") == "20"
+        assert exc_info.value.status_code == 400
+        mock_stripe.checkout.Session.create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

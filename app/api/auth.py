@@ -260,6 +260,8 @@ async def create_checkout(
         raise ApiError(503, SERVICE_UNAVAILABLE, "Stripe not configured")
 
     credits = payload.credits if payload else 10
+    if credits != 10:
+        raise ApiError(400, VALIDATION_ERROR, "This checkout sells 10 credits")
     phone = session["phone_number"]
     frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
 

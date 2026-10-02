@@ -285,66 +285,16 @@ Or just use plain English: "quote", "tldr", "vault", etc. 🎥✨"""
     async def handle_upgrade_command(phone_number: str) -> str:
         """Handle /upgrade command for purchasing credits"""
         try:
-            import stripe
+            from payment_checkout import create_sms_checkout_url
 
             # Check current credit balance
-            result = supabase.table("sms_users").select("credits_remaining, free_credits_used").eq("phone_number", phone_number).execute()
+            result = supabase.table("sms_users").select("credits_remaining").eq("phone_number", phone_number).execute()
+            if not result.data:
+                return "We couldn't find your SMS account. Text a video link first, then try /upgrade again."
 
-            current_credits = 0
-            free_used = 0
-            if result.data:
-                current_credits = result.data[0].get("credits_remaining", 0)
-                free_used = result.data[0].get("free_credits_used", 0)
-
-            # Calculate free credits remaining
-            free_remaining = max(0, 5 - free_used)
-
-            # Create a unique Stripe Checkout Session with phone_number in metadata
-            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-            stripe_price_id = os.getenv("STRIPE_SMS_CREDITS_PRICE_ID")  # Price ID for 10 credits
-
-            if not stripe.api_key or not stripe_price_id:
-                # Fallback to static link if Stripe not configured
-                stripe_payment_link = os.getenv("STRIPE_PAYMENT_LINK", "https://buy.stripe.com/test_your_payment_link_here")
-                logger.warning("Stripe not fully configured, using static payment link")
-            else:
-                # Create unique checkout session with phone_number baked in
-                frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
-
-                checkout_session = stripe.checkout.Session.create(
-                    payment_method_types=['card'],
-                    line_items=[{
-                        'price': stripe_price_id,
-                        'quantity': 1,
-                    }],
-                    mode='payment',
-                    success_url=f'{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}',
-                    cancel_url=f'{frontend_url}/sms-payment-canceled',
-                    metadata={
-                        'phone_number': phone_number,  # This is the key - phone number is now in the session
-                        'credits': '10',
-                        'package_name': '10 SMS Credits',
-                        'source': 'sms_upgrade'
-                    },
-                    # Pre-fill customer phone if possible
-                    phone_number_collection={'enabled': True},
-                )
-
-                stripe_payment_link = checkout_session.url
-                logger.info(f"Created unique checkout session {checkout_session.id} for phone {phone_number}")
-
-            status_text = f"💳 Current Credits: {current_credits}"
-            if free_remaining > 0:
-                status_text += f" ({free_remaining} free remaining)"
-
-            return (
-                f"{status_text}\n\n"
-                f"🎯 Buy 10 SMS Credits for $5:\n"
-                f"{stripe_payment_link}\n\n"
-                f"✨ Credits are instantly added to your phone after purchase!\n"
-                f"💬 No account required - credits never expire.\n\n"
-                f"Questions? Reply HELP"
-            )
+            current_credits = result.data[0].get("credits_remaining", 0)
+            checkout_url = create_sms_checkout_url(phone_number, 10, "sms_upgrade")
+            return f"Credits: {current_credits}\nBuy 10 for $4.75: {checkout_url}\nCredits are added after payment."
 
         except Exception as e:
             logger.error(f"Error in upgrade command: {str(e)}")

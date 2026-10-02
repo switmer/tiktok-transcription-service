@@ -1,5 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.39.3';
 
+const FIVE_CREDIT_PRICE_ID = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || 'price_1RnBh3BaZtBtpc8wC4aXxkCx';
+
 // XML escape function for TwiML responses - prevents XML parsing errors from & and < characters
 function escapeXml(str: string): string {
   if (!str) return '';
@@ -215,7 +217,7 @@ async function sendTranscriptSMS(phoneNumber, title, transcript, taskId) {
     const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
 
     // Get user's current credits
-    const { data: smsUser } = await supabase.from('sms_users').select('credits_remaining').eq('phone_number', normalizePhoneNumber(phoneNumber)).single();
+    const { data: smsUser } = await supabase.from('sms_users').select('phone_number, credits_remaining').eq('phone_number', normalizePhoneNumber(phoneNumber)).single();
     const creditsRemaining = smsUser?.credits_remaining || 0;
 
     // Truncate title to prevent bloat
@@ -233,12 +235,11 @@ async function sendTranscriptSMS(phoneNumber, title, transcript, taskId) {
 
     let message = `${header}${shortTranscript}${footer}`;
 
-    // Only add upsell for 0 credits (keep it short!)
-    if (creditsRemaining === 0) {
-      message += `\n\nOut of credits! 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
-    }
-
     await sendSMS(phoneNumber, message);
+    if (smsUser && creditsRemaining === 0) {
+      const checkoutUrl = await createStripeCheckoutUrl(normalizePhoneNumber(phoneNumber), FIVE_CREDIT_PRICE_ID, 5);
+      if (checkoutUrl) await sendSMS(phoneNumber, `Out of credits! Get 5 for $1.99: ${checkoutUrl}`);
+    }
     console.log('Transcript SMS sent successfully to:', phoneNumber);
   } catch (error) {
     console.error('Error sending transcript SMS:', error);
@@ -370,7 +371,8 @@ function extractYouTubeVideoId(url) {
 // Create unique Stripe checkout session with phone number in metadata (one-time payment)
 async function createStripeCheckoutUrl(phoneNumber: string, priceId: string, credits: number): Promise<string | null> {
   const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY');
-  if (!stripeSecretKey || !priceId) {
+  const smsPhone = normalizePhoneNumber(phoneNumber);
+  if (!stripeSecretKey || !priceId || !smsPhone) {
     console.log('Stripe not configured, cannot create checkout session');
     return null;
   }
@@ -385,7 +387,7 @@ async function createStripeCheckoutUrl(phoneNumber: string, priceId: string, cre
     params.append('mode', 'payment');
     params.append('success_url', `${frontendUrl}/sms-payment-success?session_id={CHECKOUT_SESSION_ID}`);
     params.append('cancel_url', `${frontendUrl}/sms-payment-canceled`);
-    params.append('metadata[phone_number]', phoneNumber);
+    params.append('metadata[phone_number]', smsPhone);
     params.append('metadata[credits]', String(credits));
     params.append('metadata[source]', 'sms_out_of_credits');
 
@@ -633,6 +635,7 @@ Just text any TikTok/YouTube/Instagram/Facebook link!`);
   if (Body.trim().toLowerCase() === '/upgrade') {
     // Get user's current credits
     let currentCredits = 0;
+    let userFound = false;
     try {
       const { data: userData } = await supabase
         .from('sms_users')
@@ -640,13 +643,14 @@ Just text any TikTok/YouTube/Instagram/Facebook link!`);
         .eq('phone_number', From)
         .single();
       currentCredits = userData?.credits_remaining || 0;
+      userFound = Boolean(userData);
     } catch (e) {
       console.log('Could not fetch user credits for upgrade command');
     }
+    if (!userFound) return sendTwilioResponse('We could not find your SMS account. Text a video link first, then try /upgrade.');
 
-    // Use short URL that redirects to Stripe checkout (keeps SMS under carrier limit)
-    const apiBaseUrl = Deno.env.get('RENDER_SERVICE_URL') || 'https://api.scribetok.com';
-    const shortPayUrl = `${apiBaseUrl}/pay?p=${encodeURIComponent(From)}&c=5`;
+    const shortPayUrl = await createStripeCheckoutUrl(normalizePhoneNumber(From), FIVE_CREDIT_PRICE_ID, 5);
+    if (!shortPayUrl) return sendTwilioResponse('Payments are temporarily unavailable. Please try /upgrade later.');
 
     const message = `💳 Credits: ${currentCredits}\n\n🎯 Get 5 for $1.99:\n${shortPayUrl}\n\n✨ Instant!\n🎁 /referral = free`;
 
@@ -905,22 +909,12 @@ Success: ${usage.success_rate || 0}%`;
       const creditsRemaining = user.credits_remaining || 0;
       const referralLink = `https://scribetok.com/?ref=${referralCode}`;
 
-      return sendTwilioResponse(`🎁 Get 3 bonus credits for each friend you invite!
+      const checkoutUrl = await createStripeCheckoutUrl(normalizePhoneNumber(From), FIVE_CREDIT_PRICE_ID, 5);
+      return sendTwilioResponse(`🎁 Invite friends for 3 bonus credits each:
+${referralLink}
 
-📱 Your sharing link: ${referralLink}
-
-💡 Easy ways to share:
-• "Found this cool TikTok transcriber! Try it: ${referralLink}"
-• Post in group chats, Discord, Slack
-• Share on social: "Transcribe any video instantly!"
-
-📊 Friends you've helped: ${referralsCount}
-💳 Your credits: ${creditsRemaining}
-
-💡 TIP: When friends use your link, you both get 3 free credits!
-
-💰 Or buy credits: 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01
-🚀 Go unlimited: $6.75/month: https://buy.stripe.com/6oUeVcgEIfib3x84WG6Vq02`);
+Friends helped: ${referralsCount} | Your credits: ${creditsRemaining}
+${checkoutUrl ? `Buy 5 credits for $1.99: ${checkoutUrl}` : 'Reply /upgrade to buy credits.'}`);
     } catch (error) {
       console.error('Referral error:', error);
       return sendTwilioResponse('❌ Error loading referral info. Try again later.');
@@ -1342,11 +1336,8 @@ Reply /help for more commands!`);
     // Skip credit check for free retries of failed tasks
     const creditsRemaining = smsUser.credits_remaining || 0;
     if (creditsRemaining <= 0 && !isFreeRetry) {
-      // Use /pay redirect on our domain — creates Stripe session on click.
-      // Phone is base64url-encoded to keep URL short and avoid plaintext exposure.
-      // Result: ~55 chars vs ~200+ for a raw Stripe checkout URL.
-      const phoneb64 = btoa(From).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      const buyLink = `https://share.scribetok.com/pay?p=${phoneb64}&c=5`;
+      const buyLink = await createStripeCheckoutUrl(normalizePhoneNumber(From), FIVE_CREDIT_PRICE_ID, 5);
+      if (!buyLink) return sendTwilioResponse('You are out of credits. Payments are temporarily unavailable; try /upgrade later.');
 
       return sendTwilioResponse(`You've used all your free transcripts! Get 5 more for just $1.99:\n${buyLink}\n\nOr reply /referral for 3 free credits.`);
     }
@@ -1424,12 +1415,11 @@ Reply /help for more commands!`);
 
         let message = `${header}${shortTranscript}${footer}`;
 
-        // Only add upsell for 0 credits
-        if (newCreditsRemaining === 0) {
-          message += `\n\nOut of credits! 5 for $1.99: https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01`;
-        }
-
         await sendSMS(From, message);
+        if (newCreditsRemaining === 0) {
+          const checkoutUrl = await createStripeCheckoutUrl(normalizePhoneNumber(From), FIVE_CREDIT_PRICE_ID, 5);
+          if (checkoutUrl) await sendSMS(From, `Out of credits! Get 5 for $1.99: ${checkoutUrl}`);
+        }
         return sendTwilioResponse('✅ YouTube transcript complete! Check your texts for details.');
       } catch (err) {
         console.error('YouTube RapidAPI error:', err);

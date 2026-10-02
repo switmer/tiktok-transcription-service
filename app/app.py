@@ -1768,10 +1768,7 @@ async def send_completion_sms(task_id: str, phone_number: str, title: str, trans
             return
             
         from twilio.rest import Client
-        stripe_payment_link = os.getenv(
-            "STRIPE_PAYMENT_LINK",
-            "https://buy.stripe.com/4gMcN42NS6LFc3Ebl46Vq01",
-        )
+        stripe_payment_link = None
         
         # Get user's current credits from SMS users table
         normalized_phone = phone_number.replace('+1', '').replace('+', '') if phone_number.startswith('+1') else phone_number.replace('+', '')
@@ -1837,12 +1834,16 @@ See full transcript: {share_url}
 See full transcript: {share_url}
 {credits_str} credits left"""
 
-        # Add short upsell messages
-        if credits_remaining is not None:
-            if credits_remaining == 0:
-                message += f"\n\n0 credits! 5 for $1.99: {stripe_payment_link}"
-            elif credits_remaining == 1:
-                message += f"\n\n1 credit left! 5 for $1.99: {stripe_payment_link}"
+        # Make a fresh Checkout Session for this SMS user. Keep the link intact.
+        if credits_remaining is not None and credits_remaining <= 1:
+            try:
+                from payment_checkout import create_sms_checkout_url
+                stripe_payment_link = await asyncio.to_thread(
+                    create_sms_checkout_url, normalized_phone, 5, "completion_sms"
+                )
+            except Exception:
+                logger.exception("Could not create SMS payment link")
+
 
         # No emojis = GSM encoding (153 chars/concat segment). 600 chars is safe.
         # If over limit, drop bullets one at a time rather than truncating them.
@@ -1867,7 +1868,13 @@ See full transcript: {share_url}
         if len(message) > SMS_SAFE_LIMIT:
             logger.warning(f"SMS still too long ({len(message)} chars), hard truncating")
             message = message[:SMS_SAFE_LIMIT - 3] + "..."
-        
+
+        if stripe_payment_link:
+            upsell = f"\n\nGet 5 credits for $1.99: {stripe_payment_link}"
+            if len(message) + len(upsell) > SMS_SAFE_LIMIT:
+                message = f"Your transcript is ready.\n{share_url}\n{credits_str} credits left"
+            message += upsell
+
         logger.info(f"Sending SMS ({len(message)} chars) to {phone_number}")
         client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))
         
@@ -2598,77 +2605,10 @@ async def refresh_tiktok_adapters():
 @app.post("/api/payments/create-checkout-session", tags=["Payment & Billing"])
 async def create_checkout_session(
     price_id: str = Query(..., description="Stripe Price ID for the credit package"),
-    request: Request = None
+    request: Request = None,
 ):
-    """Create a Stripe Checkout session for credit purchases"""
-    try:
-        import stripe
-        import json
-        
-        # Initialize Stripe
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-        if not stripe.api_key:
-            raise ApiError(503, SERVICE_UNAVAILABLE, "Stripe not configured")
-        
-        # Get verified user ID from Supabase auth token
-        auth_header = request.headers.get("authorization") if request else None
-        user_id = None
-
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.replace("Bearer ", "")
-            try:
-                user_response = supabase.auth.get_user(token)
-                if user_response and user_response.user:
-                    user_id = user_response.user.id
-            except Exception:
-                logger.warning("Failed to verify auth token for checkout, proceeding as anonymous")
-                pass
-        
-        # Get frontend URL for redirects
-        frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
-        
-        # Map price IDs to credit amounts (UPDATE THESE WITH YOUR ACTUAL STRIPE PRICE IDs)
-        CREDIT_PACKAGES = {
-            "price_123": {"credits": 10, "name": "Starter Pack"},
-            "price_456": {"credits": 50, "name": "Pro Pack"},
-            "price_789": {"credits": 200, "name": "Business Pack"}
-        }
-        
-        package_info = CREDIT_PACKAGES.get(price_id)
-        if not package_info:
-            raise ApiError(400, VALIDATION_ERROR, "Invalid price ID")
-        
-        # Create metadata for webhook
-        metadata = {
-            'credits': str(package_info['credits']),
-            'package_name': package_info['name'],
-        }
-        
-        # Add user_id to metadata if available
-        if user_id:
-            metadata['user_id'] = user_id
-        
-        # Create checkout session
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price': price_id,
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f'{frontend_url}/app/settings?success=true&session_id={{CHECKOUT_SESSION_ID}}',
-            cancel_url=f'{frontend_url}/app/settings?canceled=true',
-            metadata=metadata,
-            client_reference_id=user_id if user_id else "anonymous"
-        )
-        
-        return {"sessionId": checkout_session.id, "url": checkout_session.url}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating checkout session: {str(e)}")
-        raise ApiError(500, INTERNAL_ERROR, "Failed to create checkout session")
+    """Old anonymous checkout cannot link a purchase to an SMS user."""
+    raise ApiError(410, VALIDATION_ERROR, "Use the verified phone checkout endpoint")
 
 @app.get("/api/users/credits", tags=["Payment & Billing"])
 async def get_user_credits(
@@ -2725,54 +2665,9 @@ async def handle_stripe_webhook(request: Request):
         raise ApiError(500, INTERNAL_ERROR, "Webhook processing failed")
 
 @app.get("/pay", tags=["Payment & Billing"])
-async def pay_redirect(p: str = Query(..., description="Base64url-encoded phone number"), c: int = Query(5, description="Credits")):
-    """
-    Short URL redirect to Stripe checkout.
-    Creates a checkout session on click and redirects to Stripe.
-    Phone number is base64url-encoded to avoid exposing it in plaintext.
-    URL format: /pay?p=KzE2MTAzMjQ0MjUw&c=5
-    """
-    import stripe
-    import base64
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-
-    if not stripe.api_key:
-        raise ApiError(503, SERVICE_UNAVAILABLE, "Payment system not configured")
-
-    # Decode phone number
-    try:
-        phone = base64.urlsafe_b64decode(p).decode('utf-8')
-    except Exception:
-        raise ApiError(400, VALIDATION_ERROR, "Invalid phone parameter")
-
-    # Map credits to price IDs
-    price_map = {
-        5: os.getenv("STRIPE_5_CREDITS_PRICE_ID"),
-        10: os.getenv("STRIPE_SMS_CREDITS_PRICE_ID"),
-    }
-
-    price_id = price_map.get(c)
-    if not price_id:
-        raise ApiError(400, VALIDATION_ERROR, "Invalid credit amount")
-
-    try:
-        frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{'price': price_id, 'quantity': 1}],
-            mode='payment',
-            success_url=f"{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/sms-payment-canceled",
-            metadata={
-                'phone_number': phone,
-                'credits': str(c),
-                'source': 'sms_short_url'
-            }
-        )
-        return RedirectResponse(url=session.url, status_code=303)
-    except Exception as e:
-        logger.error(f"Error creating checkout session: {str(e)}")
-        raise ApiError(500, INTERNAL_ERROR, "Failed to create payment session")
+async def pay_redirect(p: str = Query(...), c: int = Query(5)):
+    """Old unsigned SMS links cannot prove which phone should receive credits."""
+    raise ApiError(410, VALIDATION_ERROR, "Payment link expired. Text /upgrade for a new link")
 
 @app.post("/api/webhook/supabase", tags=["System & Health"])
 async def handle_supabase_webhook(
