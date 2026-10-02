@@ -2849,7 +2849,7 @@ async def rich_link_preview(task_id: str, request: Request):
                            .execute()
         )
         
-        if not response.data:
+        if not response or not response.data:
             raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
 
         task = response.data
@@ -3049,31 +3049,33 @@ async def rich_link_preview(task_id: str, request: Request):
         }
         
         # Use template rendering instead of inline HTML
-        return templates.TemplateResponse("transcript.html", {"request": request, **template_data})
+        return templates.TemplateResponse(request, "transcript.html", template_data)
         
     except Exception as e:
         logger.error(f"Error generating rich link preview for {task_id}: {str(e)}", exc_info=True)
         
         # Fallback HTML for errors
+        status_code = e.status_code if isinstance(e, ApiError) else 500
+        title = "Transcript Not Found" if status_code == 404 else "Transcript Unavailable"
         fallback_html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta property="og:title" content="ScribeTok - TikTok Transcripts">
     <meta property="og:description" content="Read TikTok video transcripts without sound">
     <meta property="og:site_name" content="ScribeTok">
-    <title>ScribeTok - Transcript Not Found</title>
+    <title>ScribeTok - {title}</title>
     <script>
         setTimeout(function() {{
-            window.location.href = 'https://www.scribetok.com';
+            window.location.href = 'https://scribetok.com';
         }}, 100);
     </script>
 </head>
 <body>
-    <h1>Transcript not found</h1>
+    <h1>{title}</h1>
     <p>Redirecting to ScribeTok...</p>
 </body>
 </html>"""
-        return Response(content=fallback_html, media_type="text/html")
+        return Response(content=fallback_html, media_type="text/html", status_code=status_code)
 
 # ====================================================================================
 # COMMENT EXTRACTION API (PRO FEATURE)
