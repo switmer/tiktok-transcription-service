@@ -10,8 +10,12 @@ import os
 import logging
 import stripe
 from fastapi import Request, HTTPException
-from core.errors import ApiError, VALIDATION_ERROR, INTERNAL_ERROR
-from database import supabase as supabase_client
+try:
+    from .core.errors import ApiError, VALIDATION_ERROR, INTERNAL_ERROR
+    from .database import supabase as supabase_client
+except ImportError:
+    from core.errors import ApiError, VALIDATION_ERROR, INTERNAL_ERROR
+    from database import supabase as supabase_client
 from typing import Dict, Any, Optional
 import re
 
@@ -186,7 +190,10 @@ async def send_purchase_confirmation_sms(phone_number: str, credits_added: int, 
     """
     try:
         # Import here to avoid circular imports
-        from sms import send_sms
+        try:
+            from .sms import send_sms
+        except ImportError:
+            from sms import send_sms
         
         message = f"🎉 Purchase confirmed! You now have {total_credits} credits ({credits_added} added). Send any TikTok/YouTube link to transcribe!"
         

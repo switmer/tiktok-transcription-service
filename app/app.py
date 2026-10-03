@@ -1837,7 +1837,10 @@ See full transcript: {share_url}
         # Make a fresh Checkout Session for this SMS user. Keep the link intact.
         if credits_remaining is not None and credits_remaining <= 1:
             try:
-                from payment_checkout import create_sms_checkout_url
+                try:
+                    from .payment_checkout import create_sms_checkout_url
+                except ImportError:
+                    from payment_checkout import create_sms_checkout_url
                 stripe_payment_link = await asyncio.to_thread(
                     create_sms_checkout_url, normalized_phone, 5, "completion_sms"
                 )
@@ -2655,7 +2658,10 @@ async def get_user_credits(
 async def handle_stripe_webhook(request: Request):
     """Handle Stripe webhooks for credit purchases"""
     try:
-        from stripe_webhook import handle_stripe_webhook
+        try:
+            from .stripe_webhook import handle_stripe_webhook
+        except ImportError:
+            from stripe_webhook import handle_stripe_webhook
         result = await handle_stripe_webhook(request)
         return result
     except HTTPException:

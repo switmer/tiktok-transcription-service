@@ -285,7 +285,10 @@ Or just use plain English: "quote", "tldr", "vault", etc. 🎥✨"""
     async def handle_upgrade_command(phone_number: str) -> str:
         """Handle /upgrade command for purchasing credits"""
         try:
-            from payment_checkout import create_sms_checkout_url
+            try:
+                from .payment_checkout import create_sms_checkout_url
+            except ImportError:
+                from payment_checkout import create_sms_checkout_url
 
             # Check current credit balance
             result = supabase.table("sms_users").select("credits_remaining").eq("phone_number", phone_number).execute()
