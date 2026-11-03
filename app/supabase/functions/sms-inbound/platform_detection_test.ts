@@ -19,8 +19,12 @@ import {
   isThreadsUrl,
   isLoomUrl,
   isSpotifyUrl,
+  isInstagramStoriesUrl,
+  isWebPageUrl,
   extractYouTubeVideoId,
   isSupportedUrl,
+  isKnownPlatformUrl,
+  getInstagramStoriesMessage,
   type Platform,
 } from "./platform_detection.ts";
 
@@ -283,6 +287,89 @@ Deno.test("isSupportedUrl - supported platform", () => {
   assertEquals(isSupportedUrl("https://tiktok.com/@user/video/123"), true);
 });
 
-Deno.test("isSupportedUrl - unsupported URL", () => {
-  assertEquals(isSupportedUrl("https://example.com"), false);
+Deno.test("isSupportedUrl - generic web page is now supported", () => {
+  assertEquals(isSupportedUrl("https://example.com"), true);
+});
+
+Deno.test("isSupportedUrl - non-URL returns false", () => {
+  assertEquals(isSupportedUrl("not a url"), false);
+});
+
+// Instagram Stories tests (not supported)
+Deno.test("isInstagramStoriesUrl - detects stories URL", () => {
+  assertEquals(isInstagramStoriesUrl("https://www.instagram.com/stories/username/"), true);
+});
+
+Deno.test("isInstagramStoriesUrl - detects stories URL without www", () => {
+  assertEquals(isInstagramStoriesUrl("https://instagram.com/stories/username/"), true);
+});
+
+Deno.test("isInstagramStoriesUrl - rejects reel URL", () => {
+  assertEquals(isInstagramStoriesUrl("https://instagram.com/reel/ABC123/"), false);
+});
+
+Deno.test("isInstagramStoriesUrl - rejects post URL", () => {
+  assertEquals(isInstagramStoriesUrl("https://instagram.com/p/ABC123/"), false);
+});
+
+// Web page URL tests
+Deno.test("isWebPageUrl - accepts https URL", () => {
+  assertEquals(isWebPageUrl("https://example.com/page"), true);
+});
+
+Deno.test("isWebPageUrl - accepts http URL", () => {
+  assertEquals(isWebPageUrl("http://example.com/page"), true);
+});
+
+Deno.test("isWebPageUrl - rejects non-URL", () => {
+  assertEquals(isWebPageUrl("not a url"), false);
+});
+
+Deno.test("isWebPageUrl - rejects empty string", () => {
+  assertEquals(isWebPageUrl(""), false);
+});
+
+Deno.test("isWebPageUrl - accepts URL with query params", () => {
+  assertEquals(isWebPageUrl("https://example.com/page?id=123"), true);
+});
+
+// detectPlatform - webpage tests
+Deno.test("detectPlatform - generic web page returns 'webpage'", () => {
+  assertEquals(detectPlatform("https://example.com/page"), "webpage");
+});
+
+Deno.test("detectPlatform - Shopify product page returns 'webpage'", () => {
+  assertEquals(detectPlatform("https://mystore.myshopify.com/products/item"), "webpage");
+});
+
+Deno.test("detectPlatform - blog post returns 'webpage'", () => {
+  assertEquals(detectPlatform("https://ed.codes/blog/how-to-embed-video"), "webpage");
+});
+
+Deno.test("detectPlatform - w3schools returns 'webpage'", () => {
+  assertEquals(detectPlatform("https://www.w3schools.com/html/html5_video.asp"), "webpage");
+});
+
+// isKnownPlatformUrl tests
+Deno.test("isKnownPlatformUrl - TikTok returns true", () => {
+  assertEquals(isKnownPlatformUrl("https://tiktok.com/@user/video/123"), true);
+});
+
+Deno.test("isKnownPlatformUrl - YouTube returns true", () => {
+  assertEquals(isKnownPlatformUrl("https://youtu.be/abc123"), true);
+});
+
+Deno.test("isKnownPlatformUrl - generic web page returns false", () => {
+  assertEquals(isKnownPlatformUrl("https://example.com/page"), false);
+});
+
+Deno.test("isKnownPlatformUrl - non-URL returns false", () => {
+  assertEquals(isKnownPlatformUrl("not a url"), false);
+});
+
+// getInstagramStoriesMessage tests
+Deno.test("getInstagramStoriesMessage - returns helpful message", () => {
+  const message = getInstagramStoriesMessage();
+  assertEquals(message.includes("Stories"), true);
+  assertEquals(message.includes("Reel"), true);
 });

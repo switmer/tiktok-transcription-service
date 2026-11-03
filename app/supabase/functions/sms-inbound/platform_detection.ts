@@ -30,6 +30,7 @@ export type Platform =
   | 'threads'
   | 'loom'
   | 'spotify'
+  | 'webpage'  // Generic web page with video
   | null;
 
 /**
@@ -214,8 +215,29 @@ export function isSpotifyUrl(url: string): boolean {
 }
 
 /**
+ * Check if URL is an Instagram Stories URL (NOT supported - stories disappear).
+ * Patterns:
+ * - https://www.instagram.com/stories/username/
+ * - https://instagram.com/stories/username/
+ */
+export function isInstagramStoriesUrl(url: string): boolean {
+  return /instagram\.com\/stories\//i.test(url);
+}
+
+/**
+ * Check if URL is a generic web page URL (http/https, not a known platform).
+ * This should be called AFTER checking all known platforms.
+ */
+export function isWebPageUrl(url: string): boolean {
+  if (!url) return false;
+  const cleanUrl = cleanUrlTrailingPunctuation(url);
+  return /^https?:\/\//i.test(cleanUrl);
+}
+
+/**
  * Detect the platform from a URL.
- * Returns null if the URL is not from a supported platform.
+ * Returns null if the URL is not from a supported platform and not a generic web page.
+ * Returns 'webpage' for generic http/https URLs that might contain a video.
  */
 export function detectPlatform(url: string): Platform {
   if (!url) return null;
@@ -236,14 +258,25 @@ export function detectPlatform(url: string): Platform {
   if (isLoomUrl(cleanUrl)) return 'loom';
   if (isSpotifyUrl(cleanUrl)) return 'spotify';
   
+  // Check if it's a generic web page URL (not a known platform but valid http/https)
+  if (isWebPageUrl(cleanUrl)) return 'webpage';
+  
   return null;
 }
 
 /**
- * Check if a URL is from any supported platform.
+ * Check if a URL is from any supported platform (including generic web pages).
  */
 export function isSupportedUrl(url: string): boolean {
   return detectPlatform(url) !== null;
+}
+
+/**
+ * Check if a URL is from a known video platform (not generic web pages).
+ */
+export function isKnownPlatformUrl(url: string): boolean {
+  const platform = detectPlatform(url);
+  return platform !== null && platform !== 'webpage';
 }
 
 /**
@@ -279,4 +312,12 @@ export function getSupportedPlatformsList(): string {
  */
 export function getUnsupportedUrlMessage(): string {
   return `⚠️ We support ${getSupportedPlatformsList()}. Send a link from one of those platforms and I'll transcribe it!`;
+}
+
+/**
+ * Get the message to send when an Instagram Stories URL is detected.
+ * Instagram Stories can't be supported because they disappear after 24 hours.
+ */
+export function getInstagramStoriesMessage(): string {
+  return `⚠️ Sorry, Instagram Stories can't be transcribed because they disappear after 24 hours. Send me a Reel or post link instead!`;
 }

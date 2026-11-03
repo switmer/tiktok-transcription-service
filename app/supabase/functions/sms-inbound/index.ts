@@ -5,6 +5,8 @@ import {
   isSupportedUrl,
   extractYouTubeVideoId,
   getUnsupportedUrlMessage,
+  getInstagramStoriesMessage,
+  isInstagramStoriesUrl,
   type Platform
 } from './platform_detection.ts';
 
@@ -1253,7 +1255,12 @@ Reply /help for more commands!`);
   // Use the first matched URL, cleaned of trailing punctuation
   const url = cleanUrlTrailingPunctuation(match[0]);
   
-  // Detect platform - returns null for unsupported URLs
+  // Check for Instagram Stories first - these can't be supported (disappear after 24h)
+  if (isInstagramStoriesUrl(url)) {
+    return sendTwilioResponse(getInstagramStoriesMessage());
+  }
+  
+  // Detect platform - returns null for non-URLs, 'webpage' for generic http(s) URLs
   const platform: Platform = detectPlatform(url);
   if (!platform) {
     return sendTwilioResponse(getUnsupportedUrlMessage());
