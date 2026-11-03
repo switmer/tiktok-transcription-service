@@ -143,7 +143,7 @@ Perfect for building viral social media tools and content analysis applications.
         "name": "API License",
         "url": "https://scribetok.com/terms",
     },
-    tags_metadata=[
+    openapi_tags=[
         {
             "name": "Public Transcription",
             "description": "Start transcription tasks and access results. No authentication required.",
