@@ -1090,19 +1090,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         user_phone = task_response.data.get('user_phone')  # Get user phone for SMS notifications
         logger.info(f"Processing task {task_id} with original URL from DB: {original_video_url}, SMS phone: {user_phone or 'none'}")
 
-        url_lower = (original_video_url or "").lower()
-        if "instagram.com" in url_lower:
-            platform_hint = "instagram"
-        elif "facebook.com" in url_lower or "fb.watch" in url_lower:
-            platform_hint = "facebook"
-        elif "youtube.com" in url_lower or "youtu.be" in url_lower:
-            platform_hint = "youtube"
-        elif "linkedin.com" in url_lower or "licdn.com" in url_lower:
-            platform_hint = "linkedin"
-        elif "spotify.com" in url_lower:
-            platform_hint = "spotify"
-        else:
-            platform_hint = "tiktok"
+        # Use shared platform detector from transcriber module for consistent detection
+        # This correctly identifies X/Twitter URLs as 'twitter', Reddit as 'reddit', etc.
+        platform_hint = transcriber._detect_platform(original_video_url)
+        if platform_hint == 'unknown':
+            platform_hint = 'tiktok'  # Fallback for unrecognized URLs
+        logger.info(f"Detected platform: {platform_hint} for URL: {original_video_url}")
         # -------------------------------------------------
         
         # Check if this is a YouTube URL for instant transcription
@@ -1362,9 +1355,9 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             'language': podcast.get('language') or 'english',
                             'platform': 'spotify'
                         }
-                    elif 'data' in metadata:  # RapidAPI format
+                    elif 'data' in metadata and isinstance(metadata['data'], dict):  # RapidAPI format
                         data = metadata['data']
-                        author = data.get('author', {})
+                        author = data.get('author', {}) if isinstance(data.get('author'), dict) else {}
                         rich_metadata = {
                             'description': data.get('title'),  # RapidAPI puts description in title
                             'duration': data.get('duration'),
@@ -1718,6 +1711,17 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         else:
             await update_task_status(task_id, "failed", "Transcription failed")
             logger.error(f"Failed to transcribe audio for task {task_id}")
+            # Send failure SMS notification if user_phone is available
+            if user_phone:
+                try:
+                    await sms.send_sms(
+                        user_phone,
+                        "❌ Sorry, we couldn't transcribe that video. The audio may be too long or corrupted. "
+                        "Reply with the same link to retry for free, or text /help for assistance."
+                    )
+                    logger.info(f"Sent transcription failure SMS for task {task_id}")
+                except Exception as sms_error:
+                    logger.error(f"Failed to send failure SMS for task {task_id}: {sms_error}")
             
         # Clean up temporary files to prevent disk space issues
         try:

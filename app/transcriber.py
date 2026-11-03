@@ -1364,8 +1364,243 @@ def format_timestamped_transcript(transcript_data, max_duration_seconds=None):
         
     return '\n'.join(formatted_lines)
 
+WHISPER_MAX_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB OpenAI limit
+WHISPER_REENCODE_THRESHOLD = 24 * 1024 * 1024  # Re-encode if over 24 MB
+CHUNK_DURATION_SECONDS = 600  # 10-minute chunks for splitting
+
+
+def _get_audio_duration(audio_path: str) -> float:
+    """Get audio duration in seconds using ffprobe."""
+    try:
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', audio_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if probe.returncode == 0 and probe.stdout.strip():
+            return float(probe.stdout.strip())
+    except Exception as e:
+        logger.warning(f"Could not get audio duration: {e}")
+    return 0.0
+
+
+def _prepare_audio_for_whisper(audio_path: str, output_dir: str, video_id: str) -> str:
+    """Re-encode audio to 64kbps mono 16kHz mp3 if needed for Whisper size limit.
+    
+    Uses the same encoding settings as Spotify audio preparation.
+    Returns path to the prepared audio file (may be same as input if already small enough).
+    """
+    if not os.path.exists(audio_path):
+        return audio_path
+    
+    file_size = os.path.getsize(audio_path)
+    if file_size <= WHISPER_REENCODE_THRESHOLD:
+        logger.info(f"Audio file under re-encode threshold: {file_size:,} bytes")
+        return audio_path
+    
+    logger.info(f"Audio file over {WHISPER_REENCODE_THRESHOLD:,} bytes ({file_size:,}), re-encoding to 64kbps mono 16kHz...")
+    
+    prepared_path = os.path.join(output_dir, f"{video_id}_whisper.mp3")
+    
+    try:
+        subprocess.run([
+            'ffmpeg', '-i', audio_path, '-vn',
+            '-acodec', 'libmp3lame',
+            '-ab', '64k',
+            '-ar', '16000',
+            '-ac', '1',
+            '-y', prepared_path
+        ], check=True, capture_output=True, timeout=300)
+        
+        new_size = os.path.getsize(prepared_path)
+        logger.info(f"Re-encoded audio: {file_size:,} -> {new_size:,} bytes (64kbps mono 16kHz)")
+        
+        if new_size <= WHISPER_MAX_SIZE_BYTES:
+            return prepared_path
+        else:
+            logger.warning(f"Re-encoded file still too large ({new_size:,} bytes), will need to chunk")
+            return prepared_path
+            
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to re-encode audio: {e.stderr.decode() if e.stderr else e}")
+        return audio_path
+
+
+def _split_audio_into_chunks(audio_path: str, output_dir: str, video_id: str, 
+                             chunk_duration: int = CHUNK_DURATION_SECONDS) -> list:
+    """Split audio file into chunks for transcription.
+    
+    If any chunk exceeds the size limit, recursively tries with 10% smaller chunks
+    (matching the approach in local_scripts/downloader.py).
+    
+    Returns list of (chunk_path, start_time_seconds) tuples.
+    """
+    duration = _get_audio_duration(audio_path)
+    
+    if duration <= 0:
+        logger.warning("Could not determine audio duration, returning single file")
+        return [(audio_path, 0.0)]
+    
+    num_chunks = max(1, int(duration / chunk_duration) + (1 if duration % chunk_duration > 0 else 0))
+    
+    if num_chunks == 1:
+        return [(audio_path, 0.0)]
+    
+    logger.info(f"Splitting {duration:.1f}s audio into {num_chunks} chunks of ~{chunk_duration}s each")
+    
+    chunks = []
+    for i in range(num_chunks):
+        start_time = i * chunk_duration
+        chunk_path = os.path.join(output_dir, f"{video_id}_chunk_{i:03d}.mp3")
+        
+        try:
+            cmd = [
+                'ffmpeg', '-i', audio_path,
+                '-ss', str(start_time),
+                '-t', str(chunk_duration),
+                '-vn', '-acodec', 'libmp3lame',
+                '-ab', '64k', '-ar', '16000', '-ac', '1',
+                '-y', chunk_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+            
+            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 100:
+                chunk_size = os.path.getsize(chunk_path)
+                
+                # If chunk is still too large, reduce chunk duration by 10% and retry
+                if chunk_size > WHISPER_MAX_SIZE_BYTES:
+                    logger.warning(f"Chunk {i} too large ({chunk_size:,} bytes), reducing chunk duration by 10%")
+                    # Clean up oversized chunks
+                    for cp, _ in chunks:
+                        if cp != audio_path:
+                            try:
+                                os.remove(cp)
+                            except:
+                                pass
+                    try:
+                        os.remove(chunk_path)
+                    except:
+                        pass
+                    # Retry with smaller chunks
+                    new_duration = int(chunk_duration * 0.9)
+                    if new_duration < 60:  # Don't go below 1 minute
+                        logger.error("Chunk duration too small, cannot split further")
+                        return [(audio_path, 0.0)]
+                    return _split_audio_into_chunks(audio_path, output_dir, video_id, new_duration)
+                
+                logger.info(f"Created chunk {i}: {chunk_size:,} bytes, starts at {start_time}s")
+                chunks.append((chunk_path, float(start_time)))
+            else:
+                logger.warning(f"Chunk {i} was empty or too small, skipping")
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to create chunk {i}: {e}")
+    
+    if not chunks:
+        logger.warning("No chunks created, falling back to original file")
+        return [(audio_path, 0.0)]
+    
+    return chunks
+
+
+def _transcribe_single_chunk(audio_path: str, time_offset: float = 0.0) -> tuple:
+    """Transcribe a single audio chunk and return (response, duration) with adjusted timestamps.
+    
+    Offsets segment timestamps by cumulative duration (matching downloader.py approach).
+    """
+    if client is None:
+        return None, 0
+    
+    try:
+        with open(audio_path, "rb") as audio:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio,
+                response_format="verbose_json"
+            )
+        
+        # Get chunk duration for cumulative offset tracking
+        chunk_duration = 0
+        if hasattr(response, 'duration'):
+            chunk_duration = response.duration
+        elif isinstance(response, dict) and 'duration' in response:
+            chunk_duration = response['duration']
+        
+        # Offset timestamps by time_offset (cumulative duration of previous chunks)
+        if time_offset > 0:
+            if hasattr(response, 'segments') and response.segments:
+                for segment in response.segments:
+                    if hasattr(segment, 'start'):
+                        segment.start += time_offset
+                        segment.end += time_offset
+                    elif isinstance(segment, dict):
+                        segment['start'] = segment.get('start', 0) + time_offset
+                        segment['end'] = segment.get('end', 0) + time_offset
+            elif isinstance(response, dict) and 'segments' in response:
+                for segment in response['segments']:
+                    segment['start'] = segment.get('start', 0) + time_offset
+                    segment['end'] = segment.get('end', 0) + time_offset
+        
+        return response, chunk_duration
+    except Exception as e:
+        logger.error(f"Error transcribing chunk: {e}")
+        return None, 0
+
+
+def _stitch_transcriptions(chunk_responses: list) -> dict:
+    """Combine multiple chunk transcription responses into a single response."""
+    if not chunk_responses:
+        return None
+    
+    if len(chunk_responses) == 1:
+        return chunk_responses[0]
+    
+    all_segments = []
+    all_text_parts = []
+    total_duration = 0
+    
+    for response in chunk_responses:
+        if response is None:
+            continue
+            
+        if hasattr(response, 'segments') and response.segments:
+            # Convert segment objects to dicts for consistency
+            for seg in response.segments:
+                if hasattr(seg, 'start'):
+                    all_segments.append({
+                        'start': seg.start,
+                        'end': seg.end,
+                        'text': seg.text
+                    })
+                else:
+                    all_segments.append(seg)
+            all_text_parts.append(response.text or "")
+            if hasattr(response, 'duration'):
+                total_duration += response.duration
+        elif isinstance(response, dict):
+            all_segments.extend(response.get('segments', []))
+            all_text_parts.append(response.get('text', ''))
+            if 'duration' in response:
+                total_duration += response['duration']
+    
+    combined = {
+        'text': ' '.join(all_text_parts),
+        'segments': all_segments,
+        'duration': total_duration,
+        'language': 'en'
+    }
+    
+    logger.info(f"Stitched {len(chunk_responses)} chunks: {len(all_segments)} segments, {len(combined['text'])} chars, {total_duration:.1f}s")
+    return combined
+
+
 def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone: str = None, task_id: str = None):
-    """Transcribe audio file using OpenAI Whisper, always requesting verbose_json."""
+    """Transcribe audio file using OpenAI Whisper, always requesting verbose_json.
+    
+    Handles files larger than 25MB by:
+    1. Re-encoding to 64kbps mono 16kHz mp3 (same as Spotify handling)
+    2. If still too large, splitting into 10-minute chunks with timestamp offsets
+    """
     if client is None:
         logger.error("Cannot transcribe audio: OpenAI client not initialized")
         return None, None
@@ -1379,15 +1614,65 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
             logger.error(f"Audio file is not valid, skipping Whisper call: {audio_info}")
             return None, None
 
-        # Always request verbose_json for timestamped data
-        openai_format = "verbose_json"
-
-        with open(audio_file, "rb") as audio:
-            transcript_response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio,
-                response_format=openai_format
-            )
+        # Prepare audio for Whisper size limit (re-encode to 64kbps mono 16kHz if needed)
+        prepared_audio = _prepare_audio_for_whisper(audio_file, output_dir, video_id)
+        prepared_size = os.path.getsize(prepared_audio) if os.path.exists(prepared_audio) else 0
+        
+        # If still too large after re-encoding, split into chunks
+        if prepared_size > WHISPER_MAX_SIZE_BYTES:
+            logger.info(f"Audio still too large after re-encoding ({prepared_size:,} bytes), splitting into chunks...")
+            chunks = _split_audio_into_chunks(prepared_audio, output_dir, video_id)
+            
+            chunk_responses = []
+            cumulative_duration = 0.0
+            for chunk_path, _ in chunks:
+                chunk_size = os.path.getsize(chunk_path) if os.path.exists(chunk_path) else 0
+                logger.info(f"Transcribing chunk at cumulative offset {cumulative_duration:.1f}s ({chunk_size:,} bytes)")
+                
+                # Use cumulative duration for offset (matching downloader.py approach)
+                response, chunk_duration = _transcribe_single_chunk(chunk_path, cumulative_duration)
+                if response:
+                    chunk_responses.append(response)
+                    cumulative_duration += chunk_duration
+                
+                # Clean up chunk file
+                if chunk_path != prepared_audio and chunk_path != audio_file:
+                    try:
+                        os.remove(chunk_path)
+                    except:
+                        pass
+            
+            if not chunk_responses:
+                logger.error("All chunk transcriptions failed")
+                return None, None
+            
+            transcript_response = _stitch_transcriptions(chunk_responses)
+            duration_seconds = cumulative_duration
+            logger.info(f"Chunked transcription complete: {len(chunk_responses)} chunks, {duration_seconds:.1f}s total")
+        else:
+            # Normal path: single transcription
+            openai_format = "verbose_json"
+            
+            with open(prepared_audio, "rb") as audio:
+                transcript_response = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio,
+                    response_format=openai_format
+                )
+            
+            # Extract duration for cost tracking
+            duration_seconds = 0
+            if hasattr(transcript_response, 'duration'):
+                duration_seconds = transcript_response.duration
+            elif isinstance(transcript_response, dict) and 'duration' in transcript_response:
+                duration_seconds = transcript_response['duration']
+        
+        # Clean up prepared audio if different from original
+        if prepared_audio != audio_file and os.path.exists(prepared_audio):
+            try:
+                os.remove(prepared_audio)
+            except:
+                pass
 
         # Extract duration for cost tracking (from verbose_json response)
         duration_seconds = 0
