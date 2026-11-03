@@ -90,27 +90,55 @@ class MyLogger(object):
         print(f"Error: {msg}")
 
 def _get_referer_for_url(url: str) -> str:
+    """Get appropriate Referer header for the URL's platform."""
     domain = urlparse(url).netloc.lower()
-    if "instagram.com" in domain:
+    if "instagram.com" in domain or "instagr.am" in domain:
         return "https://www.instagram.com/"
-    if "facebook.com" in domain or "fb.watch" in domain:
+    if "facebook.com" in domain or "fb.watch" in domain or "fb.gg" in domain:
         return "https://www.facebook.com/"
     if "tiktok.com" in domain:
         return "https://www.tiktok.com/"
     if "youtube.com" in domain or "youtu.be" in domain:
         return "https://www.youtube.com/"
+    if "x.com" in domain or "twitter.com" in domain:
+        return "https://x.com/"
+    if "reddit.com" in domain or "redd.it" in domain:
+        return "https://www.reddit.com/"
+    if "vimeo.com" in domain:
+        return "https://vimeo.com/"
+    if "twitch.tv" in domain:
+        return "https://www.twitch.tv/"
+    if "linkedin.com" in domain:
+        return "https://www.linkedin.com/"
+    if "threads.net" in domain:
+        return "https://www.threads.net/"
+    if "loom.com" in domain:
+        return "https://www.loom.com/"
+    if "spotify.com" in domain:
+        return "https://open.spotify.com/"
     return "https://www.tiktok.com/"
 
 def _get_cookie_file_for_url(url: str) -> str | None:
+    """Get cookie file path for the URL's platform. Cookie env vars are optional."""
     domain = urlparse(url).netloc.lower()
-    if "instagram.com" in domain:
-        env_vars = ["INSTAGRAM_COOKIE_PATH", "YTDLP_COOKIE_PATH", "TIKTOK_COOKIE_PATH"]
-    elif "facebook.com" in domain or "fb.watch" in domain:
-        env_vars = ["FACEBOOK_COOKIE_PATH", "YTDLP_COOKIE_PATH", "TIKTOK_COOKIE_PATH"]
+    
+    # Platform-specific cookie env vars, with fallbacks
+    if "instagram.com" in domain or "instagr.am" in domain:
+        env_vars = ["INSTAGRAM_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
+    elif "facebook.com" in domain or "fb.watch" in domain or "fb.gg" in domain:
+        env_vars = ["FACEBOOK_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
     elif "tiktok.com" in domain:
         env_vars = ["TIKTOK_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
+    elif "x.com" in domain or "twitter.com" in domain:
+        env_vars = ["X_COOKIE_PATH", "TWITTER_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
+    elif "youtube.com" in domain or "youtu.be" in domain:
+        env_vars = ["YOUTUBE_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
+    elif "reddit.com" in domain or "redd.it" in domain:
+        env_vars = ["REDDIT_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
+    elif "twitch.tv" in domain:
+        env_vars = ["TWITCH_COOKIE_PATH", "YTDLP_COOKIE_PATH"]
     else:
-        env_vars = ["YTDLP_COOKIE_PATH", "TIKTOK_COOKIE_PATH"]
+        env_vars = ["YTDLP_COOKIE_PATH"]
 
     for env_var in env_vars:
         cookie_path = os.environ.get(env_var)
@@ -118,9 +146,9 @@ def _get_cookie_file_for_url(url: str) -> str | None:
             logger.info(f"Found cookie file via {env_var}: {cookie_path}")
             return cookie_path
         if cookie_path:
-            logger.warning(f"{env_var} is set to '{cookie_path}', but the file was not found.")
+            logger.debug(f"{env_var} is set to '{cookie_path}', but the file was not found.")
 
-    logger.info("No cookie file configured for this URL. Proceeding without cookies.")
+    logger.debug("No cookie file configured for this URL. Proceeding without cookies.")
     return None
 
 def _pick_first_value(data: dict, keys: list):
@@ -909,16 +937,112 @@ def _is_tiktok_url(url: str) -> bool:
     return bool(re.search(r'tiktok\.com|vm\.tiktok\.com', url, re.IGNORECASE))
 
 def _is_instagram_url(url: str) -> bool:
-    """Check if URL is an Instagram video URL."""
-    return bool(re.search(r'instagram\.com/(?:reel|p|tv)/', url, re.IGNORECASE))
+    """Check if URL is an Instagram video URL.
+    Supports: /reel/, /reels/, /p/, /tv/, username-prefixed paths,
+    share links (/share/reel/), and instagr.am short URLs.
+    """
+    # Match instagr.am short URLs
+    if re.search(r'instagr\.am/', url, re.IGNORECASE):
+        return True
+    # Match instagram.com with various path patterns
+    # Direct: /reel/, /reels/, /p/, /tv/
+    # Username-prefixed: /@username/reel/, /username/reel/
+    # Share links: /share/reel/
+    return bool(re.search(
+        r'instagram\.com/(?:(?:reel|reels|p|tv)/|[^/]+/(?:reel|reels|p|tv)/|share/(?:reel|p|video)/)',
+        url, re.IGNORECASE
+    ))
 
 def _is_facebook_url(url: str) -> bool:
     """Check if URL is a Facebook video URL."""
-    return bool(re.search(r'facebook\.com/.*/videos/|facebook\.com/reel/|fb\.watch/', url, re.IGNORECASE))
+    return bool(re.search(r'facebook\.com/(?:.*/videos/|watch\?v=|reel/)|fb\.watch/|fb\.gg/v/', url, re.IGNORECASE))
 
 def _is_spotify_url(url: str) -> bool:
     """Check if URL is a Spotify podcast episode URL."""
     return bool(re.search(r'open\.spotify\.com/episode/', url, re.IGNORECASE))
+
+def _is_youtube_url(url: str) -> bool:
+    """Check if URL is a YouTube video URL.
+    Supports: watch?v=, youtu.be/, shorts/, live/, embed/, m.youtube.com, music.youtube.com,
+    and v= anywhere in query string.
+    """
+    # Standard patterns
+    if re.search(r'(?:youtube\.com/(?:watch|shorts|live|embed)|youtu\.be/)', url, re.IGNORECASE):
+        return True
+    # v= anywhere in youtube.com URL query string
+    if re.search(r'youtube\.com.*[?&]v=[\w-]{11}', url, re.IGNORECASE):
+        return True
+    # m.youtube.com or music.youtube.com
+    if re.search(r'(?:m\.youtube\.com|music\.youtube\.com)/watch', url, re.IGNORECASE):
+        return True
+    return False
+
+def _is_x_twitter_url(url: str) -> bool:
+    """Check if URL is an X/Twitter status URL."""
+    return bool(re.search(r'(?:x\.com|(?:www\.|mobile\.)?twitter\.com)/[^/]+/status/\d+', url, re.IGNORECASE))
+
+def _is_reddit_url(url: str) -> bool:
+    """Check if URL is a Reddit video URL."""
+    return bool(re.search(r'(?:reddit\.com/r/[^/]+/(?:comments|s)/|redd\.it/|v\.redd\.it/)', url, re.IGNORECASE))
+
+def _is_vimeo_url(url: str) -> bool:
+    """Check if URL is a Vimeo video URL."""
+    return bool(re.search(
+        r'(?:vimeo\.com/(?:\d+|channels/[^/]+/\d+|groups/[^/]+/videos/\d+)|player\.vimeo\.com/video/\d+)',
+        url, re.IGNORECASE
+    ))
+
+def _is_twitch_url(url: str) -> bool:
+    """Check if URL is a Twitch clip or VOD URL."""
+    return bool(re.search(r'(?:clips\.twitch\.tv/|twitch\.tv/(?:[^/]+/clip/|videos/))', url, re.IGNORECASE))
+
+def _is_linkedin_url(url: str) -> bool:
+    """Check if URL is a LinkedIn post URL (may contain video)."""
+    return bool(re.search(r'linkedin\.com/(?:posts/|feed/update/|video/)', url, re.IGNORECASE))
+
+def _is_threads_url(url: str) -> bool:
+    """Check if URL is a Threads post URL."""
+    return bool(re.search(r'threads\.net/@[^/]+/post/', url, re.IGNORECASE))
+
+def _is_loom_url(url: str) -> bool:
+    """Check if URL is a Loom video URL."""
+    return bool(re.search(r'loom\.com/share/', url, re.IGNORECASE))
+
+def _detect_platform(url: str) -> str:
+    """Detect the platform from a URL. Returns platform name or 'unknown'."""
+    if not url:
+        return 'unknown'
+    if _is_tiktok_url(url):
+        return 'tiktok'
+    if _is_youtube_url(url):
+        return 'youtube'
+    if _is_instagram_url(url):
+        return 'instagram'
+    if _is_facebook_url(url):
+        return 'facebook'
+    if _is_x_twitter_url(url):
+        return 'twitter'
+    if _is_reddit_url(url):
+        return 'reddit'
+    if _is_vimeo_url(url):
+        return 'vimeo'
+    if _is_twitch_url(url):
+        return 'twitch'
+    if _is_linkedin_url(url):
+        return 'linkedin'
+    if _is_threads_url(url):
+        return 'threads'
+    if _is_loom_url(url):
+        return 'loom'
+    if _is_spotify_url(url):
+        return 'spotify'
+    return 'unknown'
+
+def clean_url_trailing_punctuation(url: str) -> str:
+    """Clean trailing punctuation from URLs that may be added by users or SMS clients."""
+    if not url:
+        return url
+    return re.sub(r'[).\,!?;:]+$', '', url)
 
 def _extract_spotify_episode_id(url: str):
     """Extract Spotify episode ID from URL."""
@@ -1082,55 +1206,66 @@ def download_direct_video(url: str, output_dir: str):
 def download_tiktok(url: str, output_dir: str, proxy=None):
     """Download video with platform-aware fallback chain.
 
+    Supported platforms:
     - TikTok: TikTok RapidAPI -> yt-dlp
+    - YouTube: YouTube RapidAPI -> yt-dlp
     - Instagram: Instagram RapidAPI -> yt-dlp
     - Facebook: Facebook RapidAPI -> yt-dlp
-    - Spotify: Spotify RapidAPI -> yt-dlp
+    - Spotify: Spotify RapidAPI (no yt-dlp fallback for podcasts)
+    - X/Twitter, Reddit, Vimeo, Twitch, LinkedIn, Threads, Loom: yt-dlp
     """
 
-    # Clean URL before processing
-    clean_url = clean_url_for_api(url)
+    # Clean URL before processing (tracking params and trailing punctuation)
+    clean_url = clean_url_trailing_punctuation(clean_url_for_api(url))
 
-    # Detect platform
-    is_tiktok = _is_tiktok_url(clean_url)
-    is_instagram = _is_instagram_url(clean_url)
-    is_facebook = _is_facebook_url(clean_url)
-    is_spotify = _is_spotify_url(clean_url)
-
-    platform = "spotify" if is_spotify else "tiktok" if is_tiktok else "instagram" if is_instagram else "facebook" if is_facebook else "unknown"
+    # Detect platform using comprehensive detection
+    platform = _detect_platform(clean_url)
     logger.info(f"Detected platform: {platform} for URL: {clean_url}")
 
     # Method 1: Try platform-specific RapidAPI first
     rapidapi_result = None
 
-    if is_spotify:
+    if platform == 'spotify':
         logger.info("Attempting Spotify RapidAPI download...")
         rapidapi_result = download_spotify_rapidapi(url, output_dir)
         if rapidapi_result:
+            rapidapi_result['platform'] = 'spotify'
             logger.info("Spotify RapidAPI download successful!")
             return rapidapi_result
         logger.warning("Spotify RapidAPI failed, falling back to yt-dlp...")
 
-    elif is_tiktok:
+    elif platform == 'youtube':
+        logger.info("Attempting YouTube RapidAPI download...")
+        rapidapi_result = download_youtube_rapidapi(url)
+        if rapidapi_result:
+            rapidapi_result['platform'] = 'youtube'
+            logger.info("YouTube RapidAPI download successful!")
+            return rapidapi_result
+        logger.warning("YouTube RapidAPI failed, falling back to yt-dlp...")
+
+    elif platform == 'tiktok':
         logger.info("Attempting TikTok RapidAPI download...")
         rapidapi_result = download_tiktok_rapidapi(url, output_dir)
         if rapidapi_result:
+            rapidapi_result['platform'] = 'tiktok'
             logger.info("TikTok RapidAPI download successful!")
             return rapidapi_result
         logger.warning("TikTok RapidAPI failed, falling back to yt-dlp...")
 
-    elif is_instagram:
+    elif platform == 'instagram':
         logger.info("Attempting Instagram RapidAPI download...")
         rapidapi_result = download_instagram_rapidapi(url, output_dir)
         if rapidapi_result:
+            rapidapi_result['platform'] = 'instagram'
             logger.info("Instagram RapidAPI download successful!")
             return rapidapi_result
         logger.warning("Instagram RapidAPI failed, falling back to yt-dlp...")
 
-    elif is_facebook:
+    elif platform == 'facebook':
         logger.info("Attempting Facebook RapidAPI download...")
         rapidapi_result = download_facebook_rapidapi(url, output_dir)
         if rapidapi_result:
+            rapidapi_result['platform'] = 'facebook'
             logger.info("Facebook RapidAPI download successful!")
             return rapidapi_result
         logger.warning("Facebook RapidAPI failed, falling back to yt-dlp...")
@@ -1139,12 +1274,14 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
         logger.info("Direct video URL detected, downloading directly...")
         direct_result = download_direct_video(clean_url, output_dir)
         if direct_result:
+            direct_result['platform'] = platform or 'unknown'
             return direct_result
         logger.error("Direct video download failed — no fallback for raw CDN URLs")
         return None
 
     else:
-        logger.info(f"Unknown platform, trying yt-dlp directly...")
+        # For X/Twitter, Reddit, Vimeo, Twitch, LinkedIn, Threads, Loom - go straight to yt-dlp
+        logger.info(f"Platform '{platform}' uses yt-dlp directly...")
 
     # Method 2: yt-dlp fallback (works for all platforms with proper cookies)
     logger.info(f"Attempting yt-dlp download for {platform}...")
@@ -1160,7 +1297,8 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
             "title": title,
             "video_file": None,  # yt-dlp doesn't provide video file
             "metadata_file": None,  # yt-dlp doesn't provide metadata file  
-            "video_url": None  # yt-dlp doesn't provide direct video URL
+            "video_url": None,  # yt-dlp doesn't provide direct video URL
+            "platform": platform  # Pass through the detected platform
         }
     
     # Both methods failed
