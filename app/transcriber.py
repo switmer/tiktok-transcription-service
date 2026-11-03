@@ -1368,6 +1368,25 @@ WHISPER_MAX_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB OpenAI limit
 WHISPER_REENCODE_THRESHOLD = 24 * 1024 * 1024  # Re-encode if over 24 MB
 CHUNK_DURATION_SECONDS = 600  # 10-minute chunks for splitting
 
+# Language detection settings
+DEFAULT_LANGUAGE = os.environ.get("TRANSCRIBE_DEFAULT_LANGUAGE", "en")
+LANGUAGE_DETECTION_SAMPLE_SECONDS = 30  # ~30s sample for language detection
+LANGUAGE_DETECTION_SKIP_SECONDS = 60  # Skip first minute if audio is long enough
+LANGUAGE_DETECTION_MIN_CONFIDENCE = 0.5  # Minimum confidence to trust detected language
+
+# ISO 639-1 language codes Whisper supports (subset of most common)
+WHISPER_SUPPORTED_LANGUAGES = {
+    'en', 'zh', 'de', 'es', 'ru', 'ko', 'fr', 'ja', 'pt', 'tr', 'pl', 'ca',
+    'nl', 'ar', 'sv', 'it', 'id', 'hi', 'fi', 'vi', 'he', 'uk', 'el', 'ms',
+    'cs', 'ro', 'da', 'hu', 'ta', 'no', 'th', 'ur', 'hr', 'bg', 'lt', 'la',
+    'mi', 'ml', 'cy', 'sk', 'te', 'fa', 'lv', 'bn', 'sr', 'az', 'sl', 'kn',
+    'et', 'mk', 'br', 'eu', 'is', 'hy', 'ne', 'mn', 'bs', 'kk', 'sq', 'sw',
+    'gl', 'mr', 'pa', 'si', 'km', 'sn', 'yo', 'so', 'af', 'oc', 'ka', 'be',
+    'tg', 'sd', 'gu', 'am', 'yi', 'lo', 'uz', 'fo', 'ht', 'ps', 'tk', 'nn',
+    'mt', 'sa', 'lb', 'my', 'bo', 'tl', 'mg', 'as', 'tt', 'haw', 'ln', 'ha',
+    'ba', 'jw', 'su',
+}
+
 
 def _get_audio_duration(audio_path: str) -> float:
     """Get audio duration in seconds using ffprobe."""
@@ -1382,6 +1401,219 @@ def _get_audio_duration(audio_path: str) -> float:
     except Exception as e:
         logger.warning(f"Could not get audio duration: {e}")
     return 0.0
+
+
+def _extract_language_from_metadata(metadata_file: str) -> str | None:
+    """Extract language code from yt-dlp or RapidAPI metadata file.
+    
+    Returns ISO 639-1 language code if found, None otherwise.
+    Handles various metadata formats from different platforms.
+    """
+    if not metadata_file or not os.path.exists(metadata_file):
+        return None
+    
+    try:
+        with open(metadata_file, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        # Try various fields where language might be stored
+        # yt-dlp format
+        lang = metadata.get('language')
+        if lang and isinstance(lang, str):
+            code = lang[:2].lower()
+            if code in WHISPER_SUPPORTED_LANGUAGES:
+                logger.info(f"Found language in metadata: {lang} -> {code}")
+                return code
+        
+        # Spotify format (in nested 'data' or directly)
+        data = metadata.get('data', metadata)
+        if isinstance(data, dict):
+            # Spotify languages array
+            languages = data.get('languages', [])
+            if languages and isinstance(languages, list) and len(languages) > 0:
+                code = languages[0][:2].lower() if isinstance(languages[0], str) else None
+                if code and code in WHISPER_SUPPORTED_LANGUAGES:
+                    logger.info(f"Found language in Spotify metadata: {code}")
+                    return code
+            
+            # Direct language field
+            lang = data.get('language')
+            if lang and isinstance(lang, str):
+                code = lang[:2].lower()
+                if code in WHISPER_SUPPORTED_LANGUAGES:
+                    logger.info(f"Found language in data.language: {code}")
+                    return code
+        
+        # YouTube RapidAPI format
+        if 'lang' in metadata:
+            code = metadata['lang'][:2].lower() if isinstance(metadata['lang'], str) else None
+            if code and code in WHISPER_SUPPORTED_LANGUAGES:
+                logger.info(f"Found language from RapidAPI lang field: {code}")
+                return code
+        
+    except Exception as e:
+        logger.warning(f"Error reading metadata for language extraction: {e}")
+    
+    return None
+
+
+def _extract_audio_sample(audio_path: str, output_dir: str, video_id: str) -> str | None:
+    """Extract a ~30s sample from the middle of audio for language detection.
+    
+    For longer audio (>2 min), skips the first minute to avoid music/silence intros.
+    Returns path to sample file, or None if extraction fails.
+    """
+    duration = _get_audio_duration(audio_path)
+    
+    if duration <= 0:
+        logger.warning("Cannot extract sample: unknown duration")
+        return None
+    
+    # For short audio (<90s), just use the whole thing
+    if duration < 90:
+        logger.info(f"Audio is short ({duration:.1f}s), using full file for language detection")
+        return audio_path
+    
+    # Calculate sample start position - skip intro if possible
+    if duration > 120:  # Longer than 2 minutes
+        start_time = min(LANGUAGE_DETECTION_SKIP_SECONDS, duration / 3)
+    else:
+        start_time = duration / 4  # Start at 25% for shorter audio
+    
+    # Ensure we don't exceed audio duration
+    sample_duration = min(LANGUAGE_DETECTION_SAMPLE_SECONDS, duration - start_time)
+    
+    sample_path = os.path.join(output_dir, f"{video_id}_lang_sample.mp3")
+    
+    try:
+        cmd = [
+            'ffmpeg', '-i', audio_path,
+            '-ss', str(start_time),
+            '-t', str(sample_duration),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ab', '64k', '-ar', '16000', '-ac', '1',
+            '-y', sample_path
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+        
+        if os.path.exists(sample_path) and os.path.getsize(sample_path) > 100:
+            logger.info(f"Extracted {sample_duration:.1f}s sample starting at {start_time:.1f}s for language detection")
+            return sample_path
+    except Exception as e:
+        logger.warning(f"Failed to extract audio sample: {e}")
+    
+    return None
+
+
+def _detect_language_from_sample(audio_path: str, output_dir: str, video_id: str) -> tuple[str | None, float]:
+    """Detect language from an audio sample using Whisper verbose_json.
+    
+    Returns (language_code, confidence) tuple.
+    Confidence is 0.0-1.0 based on how consistent the detected language is.
+    """
+    if client is None:
+        logger.warning("Cannot detect language: OpenAI client not initialized")
+        return None, 0.0
+    
+    # Extract a representative sample from the middle of the audio
+    sample_path = _extract_audio_sample(audio_path, output_dir, video_id)
+    if not sample_path:
+        return None, 0.0
+    
+    is_sample_file = sample_path != audio_path
+    
+    try:
+        with open(sample_path, "rb") as audio:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio,
+                response_format="verbose_json"
+            )
+        
+        # Extract detected language
+        detected_lang = None
+        if hasattr(response, 'language'):
+            detected_lang = response.language
+        elif isinstance(response, dict) and 'language' in response:
+            detected_lang = response['language']
+        
+        if not detected_lang:
+            logger.warning("Whisper did not return language in response")
+            return None, 0.0
+        
+        # Normalize to ISO 639-1 (Whisper returns full names sometimes)
+        lang_code = detected_lang[:2].lower() if len(detected_lang) >= 2 else detected_lang.lower()
+        
+        # Validate it's a supported language
+        if lang_code not in WHISPER_SUPPORTED_LANGUAGES:
+            logger.warning(f"Detected language '{detected_lang}' not in supported list")
+            return None, 0.0
+        
+        # Calculate confidence based on transcript content
+        confidence = 1.0
+        text = ""
+        if hasattr(response, 'text'):
+            text = response.text or ""
+        elif isinstance(response, dict):
+            text = response.get('text', '')
+        
+        # Low confidence if transcript is very short or empty
+        if len(text.strip()) < 50:
+            confidence = 0.3
+            logger.info(f"Low confidence ({confidence}) due to short transcript ({len(text.strip())} chars)")
+        elif len(text.strip()) < 200:
+            confidence = 0.6
+        
+        logger.info(f"Detected language from sample: {lang_code} (confidence: {confidence:.2f})")
+        return lang_code, confidence
+        
+    except Exception as e:
+        logger.warning(f"Language detection failed: {e}")
+        return None, 0.0
+    finally:
+        # Clean up sample file
+        if is_sample_file and os.path.exists(sample_path):
+            try:
+                os.remove(sample_path)
+            except:
+                pass
+
+
+def _get_language_for_transcription(
+    audio_path: str, 
+    output_dir: str, 
+    video_id: str, 
+    metadata_file: str | None = None
+) -> str:
+    """Determine the language to use for transcription.
+    
+    Priority order:
+    1. Language from metadata (yt-dlp/RapidAPI) if available
+    2. Language detected from audio sample (if confidence >= threshold)
+    3. Default language (TRANSCRIBE_DEFAULT_LANGUAGE env var, defaults to 'en')
+    
+    Returns ISO 639-1 language code to pass to Whisper.
+    """
+    # Try metadata first
+    metadata_lang = _extract_language_from_metadata(metadata_file)
+    if metadata_lang:
+        logger.info(f"Using language from metadata: {metadata_lang}")
+        return metadata_lang
+    
+    # Try detecting from audio sample
+    detected_lang, confidence = _detect_language_from_sample(audio_path, output_dir, video_id)
+    
+    if detected_lang and confidence >= LANGUAGE_DETECTION_MIN_CONFIDENCE:
+        logger.info(f"Using detected language: {detected_lang} (confidence: {confidence:.2f})")
+        return detected_lang
+    
+    # Fall back to default
+    if detected_lang:
+        logger.info(f"Detected language {detected_lang} has low confidence ({confidence:.2f}), falling back to default: {DEFAULT_LANGUAGE}")
+    else:
+        logger.info(f"No language detected, using default: {DEFAULT_LANGUAGE}")
+    
+    return DEFAULT_LANGUAGE
 
 
 def _prepare_audio_for_whisper(audio_path: str, output_dir: str, video_id: str) -> str:
@@ -1503,8 +1735,13 @@ def _split_audio_into_chunks(audio_path: str, output_dir: str, video_id: str,
     return chunks
 
 
-def _transcribe_single_chunk(audio_path: str, time_offset: float = 0.0) -> tuple:
+def _transcribe_single_chunk(audio_path: str, time_offset: float = 0.0, language: str | None = None) -> tuple:
     """Transcribe a single audio chunk and return (response, duration) with adjusted timestamps.
+    
+    Args:
+        audio_path: Path to audio chunk file
+        time_offset: Cumulative duration offset for timestamp adjustment
+        language: ISO 639-1 language code to pass to Whisper (avoids auto-detection per chunk)
     
     Offsets segment timestamps by cumulative duration (matching downloader.py approach).
     """
@@ -1513,11 +1750,18 @@ def _transcribe_single_chunk(audio_path: str, time_offset: float = 0.0) -> tuple
     
     try:
         with open(audio_path, "rb") as audio:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio,
-                response_format="verbose_json"
-            )
+            # Build transcription kwargs
+            transcribe_kwargs = {
+                "model": "whisper-1",
+                "file": audio,
+                "response_format": "verbose_json"
+            }
+            # Pass language if provided to ensure consistent language across chunks
+            if language:
+                transcribe_kwargs["language"] = language
+                logger.debug(f"Transcribing chunk with language hint: {language}")
+            
+            response = client.audio.transcriptions.create(**transcribe_kwargs)
         
         # Get chunk duration for cumulative offset tracking
         chunk_duration = 0
@@ -1547,13 +1791,22 @@ def _transcribe_single_chunk(audio_path: str, time_offset: float = 0.0) -> tuple
         return None, 0
 
 
-def _stitch_transcriptions(chunk_responses: list) -> dict:
-    """Combine multiple chunk transcription responses into a single response."""
+def _stitch_transcriptions(chunk_responses: list, language: str | None = None) -> dict:
+    """Combine multiple chunk transcription responses into a single response.
+    
+    Args:
+        chunk_responses: List of transcription responses from individual chunks
+        language: The language code that was used for transcription (reported in output)
+    """
     if not chunk_responses:
         return None
     
     if len(chunk_responses) == 1:
-        return chunk_responses[0]
+        response = chunk_responses[0]
+        # Ensure language is set in single-response case (use provided or default)
+        if isinstance(response, dict):
+            response['language'] = language or DEFAULT_LANGUAGE
+        return response
     
     all_segments = []
     all_text_parts = []
@@ -1583,23 +1836,40 @@ def _stitch_transcriptions(chunk_responses: list) -> dict:
             if 'duration' in response:
                 total_duration += response['duration']
     
+    # Use the provided language, or fall back to default
+    final_language = language or DEFAULT_LANGUAGE
+    
     combined = {
         'text': ' '.join(all_text_parts),
         'segments': all_segments,
         'duration': total_duration,
-        'language': 'en'
+        'language': final_language
     }
     
-    logger.info(f"Stitched {len(chunk_responses)} chunks: {len(all_segments)} segments, {len(combined['text'])} chars, {total_duration:.1f}s")
+    logger.info(f"Stitched {len(chunk_responses)} chunks: {len(all_segments)} segments, {len(combined['text'])} chars, {total_duration:.1f}s, language: {final_language}")
     return combined
 
 
-def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone: str = None, task_id: str = None):
+def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone: str = None, task_id: str = None, metadata_file: str = None):
     """Transcribe audio file using OpenAI Whisper, always requesting verbose_json.
     
     Handles files larger than 25MB by:
     1. Re-encoding to 64kbps mono 16kHz mp3 (same as Spotify handling)
     2. If still too large, splitting into 10-minute chunks with timestamp offsets
+    
+    Language detection:
+    - Uses language from metadata (yt-dlp/RapidAPI) if available
+    - Otherwise detects language ONCE from a representative sample
+    - Falls back to TRANSCRIBE_DEFAULT_LANGUAGE env var (default 'en') if detection fails
+    - The same language is passed to all chunks to ensure consistency
+    
+    Args:
+        audio_file: Path to the audio file to transcribe
+        output_dir: Directory for temporary files and output
+        video_id: Unique identifier for the video
+        user_phone: Optional user phone for cost tracking
+        task_id: Optional task ID for cost tracking
+        metadata_file: Optional path to metadata JSON file for language extraction
     """
     if client is None:
         logger.error("Cannot transcribe audio: OpenAI client not initialized")
@@ -1613,6 +1883,13 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
         if not audio_valid:
             logger.error(f"Audio file is not valid, skipping Whisper call: {audio_info}")
             return None, None
+
+        # Detect language ONCE before any transcription
+        # Priority: metadata language > detected from sample > default (env var or 'en')
+        transcription_language = _get_language_for_transcription(
+            audio_file, output_dir, video_id, metadata_file
+        )
+        logger.info(f"Using language for transcription: {transcription_language}")
 
         # Prepare audio for Whisper size limit (re-encode to 64kbps mono 16kHz if needed)
         prepared_audio = _prepare_audio_for_whisper(audio_file, output_dir, video_id)
@@ -1629,8 +1906,10 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
                 chunk_size = os.path.getsize(chunk_path) if os.path.exists(chunk_path) else 0
                 logger.info(f"Transcribing chunk at cumulative offset {cumulative_duration:.1f}s ({chunk_size:,} bytes)")
                 
-                # Use cumulative duration for offset (matching downloader.py approach)
-                response, chunk_duration = _transcribe_single_chunk(chunk_path, cumulative_duration)
+                # Use cumulative duration for offset and pass consistent language to all chunks
+                response, chunk_duration = _transcribe_single_chunk(
+                    chunk_path, cumulative_duration, language=transcription_language
+                )
                 if response:
                     chunk_responses.append(response)
                     cumulative_duration += chunk_duration
@@ -1646,18 +1925,20 @@ def transcribe_audio(audio_file: str, output_dir: str, video_id: str, user_phone
                 logger.error("All chunk transcriptions failed")
                 return None, None
             
-            transcript_response = _stitch_transcriptions(chunk_responses)
+            # Pass the detected language to stitching so it's reported correctly
+            transcript_response = _stitch_transcriptions(chunk_responses, language=transcription_language)
             duration_seconds = cumulative_duration
-            logger.info(f"Chunked transcription complete: {len(chunk_responses)} chunks, {duration_seconds:.1f}s total")
+            logger.info(f"Chunked transcription complete: {len(chunk_responses)} chunks, {duration_seconds:.1f}s total, language: {transcription_language}")
         else:
-            # Normal path: single transcription
+            # Normal path: single transcription with language hint
             openai_format = "verbose_json"
             
             with open(prepared_audio, "rb") as audio:
                 transcript_response = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio,
-                    response_format=openai_format
+                    response_format=openai_format,
+                    language=transcription_language
                 )
             
             # Extract duration for cost tracking
