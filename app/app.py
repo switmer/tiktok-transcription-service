@@ -682,8 +682,14 @@ async def fallback_download(
 async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, video_id: str):
     """Transcribe an audio file and save the transcript"""
     try:
+        # Find metadata file for language detection
+        metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
+        metadata_file = metadata_files[0] if metadata_files else None
+        
         # Transcribe the audio file (audio_file parameter is already the correct path)
-        transcript_response, transcript_file_path_abs = transcriber.transcribe_audio(audio_file, output_dir, video_id)
+        transcript_response, transcript_file_path_abs = transcriber.transcribe_audio(
+            audio_file, output_dir, video_id, metadata_file=metadata_file
+        )
         
         if transcript_response:
             final_status = "completed"
@@ -808,10 +814,16 @@ async def process_video_enhanced(task_id: str, url: str, output_dir: str, callba
         # Transcribe audio
         audio_file = result["audio_file"]
         video_id = result["video_id"]
+        # Get metadata file for language detection (may be in result or output_dir)
+        metadata_file = result.get("metadata_file")
+        if not metadata_file:
+            metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
+            metadata_file = metadata_files[0] if metadata_files else None
         transcript, transcript_file = transcriber.transcribe_audio(
             audio_file,
             output_dir,
-            video_id
+            video_id,
+            metadata_file=metadata_file
         )
         
         if not transcript:
@@ -1201,7 +1213,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     if ytdlp_audio and ytdlp_video_id:
                         # Proceed with transcription using downloaded audio
                         await update_task_status(task_id, "transcribing")
-                        transcript_response, transcript_file_path = transcriber.transcribe_audio(ytdlp_audio, output_dir, ytdlp_video_id)
+                        # Find metadata file for language detection (yt-dlp creates .info.json files)
+                        ytdlp_metadata_files = glob.glob(os.path.join(output_dir, "*.info.json"))
+                        ytdlp_metadata_file = ytdlp_metadata_files[0] if ytdlp_metadata_files else None
+                        transcript_response, transcript_file_path = transcriber.transcribe_audio(
+                            ytdlp_audio, output_dir, ytdlp_video_id,
+                            metadata_file=ytdlp_metadata_file
+                        )
                         if transcript_response:
                             await update_task_status(task_id, "generating")
                             # Load transcript text
@@ -1499,8 +1517,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
             except Exception as e:
                 logger.warning(f"Failed to extract thumbnail from video: {str(e)}")
         
-        # Transcribe the audio
-        transcript_response, transcript_file_path = transcriber.transcribe_audio(audio_file, output_dir, video_id)
+        # Transcribe the audio (pass metadata file for language detection)
+        # Use first metadata file found for language extraction
+        metadata_file_for_transcription = metadata_files[0] if metadata_files else None
+        transcript_response, transcript_file_path = transcriber.transcribe_audio(
+            audio_file, output_dir, video_id, 
+            metadata_file=metadata_file_for_transcription
+        )
         
         if transcript_response:
             # Extract tags and guess category
@@ -1542,6 +1565,14 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 logger.error(f"Failed to generate quote/TLDR for task {task_id}: {str(e)}")
                 # Continue without quote/TLDR rather than failing the entire enrichment
             
+            # Extract actual language from transcription response (set by language detection)
+            detected_language = 'english'  # Default fallback
+            if hasattr(transcript_response, 'language') and transcript_response.language:
+                detected_language = transcript_response.language
+            elif isinstance(transcript_response, dict) and transcript_response.get('language'):
+                detected_language = transcript_response['language']
+            logger.info(f"Transcription language: {detected_language}")
+            
             # Update Supabase with transcript, tags, category, thumbnail, and rich metadata
             update_data = {
                 'status': 'completed',
@@ -1553,7 +1584,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'view_count': 1,  # Initialize view count for new videos
                 'visibility': 'public',  # Default visibility
                 'platform': platform_hint,  # Default platform for this path
-                'language': 'english'  # Default language
+                'language': detected_language  # Use actual detected/configured language
             }
             
             # Add quote and TLDR if generated successfully
