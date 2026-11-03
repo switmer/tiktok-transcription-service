@@ -1,4 +1,12 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.39.3';
+import {
+  cleanUrlTrailingPunctuation,
+  detectPlatform,
+  isSupportedUrl,
+  extractYouTubeVideoId,
+  getUnsupportedUrlMessage,
+  type Platform
+} from './platform_detection.ts';
 
 const FIVE_CREDIT_PRICE_ID = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || 'price_1RnBh3BaZtBtpc8wC4aXxkCx';
 
@@ -350,24 +358,11 @@ async function sendSMS(phoneNumber, message) {
     return null;
   }
 }
-// --- YouTube helpers ---
-function isYouTubeUrl(url) {
-  return /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/i.test(url);
-}
-function isTikTokUrl(url) {
-  return /(?:tiktok\.com\/@[^/]+\/video\/|tiktok\.com\/t\/|vm\.tiktok\.com\/)/i.test(url);
-}
-function isInstagramUrl(url) {
-  return /(?:instagram\.com\/(?:reel|p|tv)\/)/i.test(url);
-}
-function isFacebookUrl(url) {
-  return /(?:facebook\.com\/.*\/videos\/|facebook\.com\/reel\/|fb\.watch\/)/i.test(url);
-}
-function extractYouTubeVideoId(url) {
-  // Handles watch?v=, youtu.be/, shorts/
-  const match = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/);
-  return match ? match[1] : null;
-}
+// --- Platform detection helpers are imported from platform_detection.ts ---
+// See platform_detection.ts for: isTikTokUrl, isYouTubeUrl, isInstagramUrl,
+// isFacebookUrl, isXTwitterUrl, isRedditUrl, isVimeoUrl, isTwitchUrl,
+// isLinkedInUrl, isThreadsUrl, isLoomUrl, isSpotifyUrl, detectPlatform,
+// extractYouTubeVideoId, cleanUrlTrailingPunctuation
 // Create unique Stripe checkout session with phone number in metadata (one-time payment)
 async function createStripeCheckoutUrl(phoneNumber: string, priceId: string, credits: number): Promise<string | null> {
   const stripeSecretKey = Deno.env.get('STRIPE_SECRET_KEY');
@@ -461,23 +456,8 @@ async function createStripeSubscriptionUrl(phoneNumber: string, priceId: string)
   }
 }
 
-async function fetchYouTubeTranscript(youtubeUrl, videoId, lang = "en") {
-  const apiUrl = "https://youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com/transcript";
-  const headers = {
-    "x-rapidapi-key": Deno.env.get("RAPIDAPI_KEY"),
-    "x-rapidapi-host": "youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com"
-  };
-  const params = new URLSearchParams({
-    lang,
-    url: youtubeUrl,
-    video_id: videoId
-  });
-  const response = await fetch(`${apiUrl}?${params.toString()}`, {
-    headers
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return await response.json();
-}
+// YouTube transcription is now handled by the backend for consistency.
+// The fetchYouTubeTranscript function has been removed.
 Deno.serve(async (req)=>{
   // Escape XML special characters to avoid breaking TwiML
   const escapeXml = (str: string) => str
@@ -599,7 +579,7 @@ Deno.serve(async (req)=>{
           });
 
         console.log(`Secret code used: Created new user ${From} with 10 credits`);
-        return sendTwilioResponse(`🎉 Welcome! 10 credits added to your new account!\n\n💳 Balance: 10 credits\n\nText any TikTok/YouTube link to get started! 🚀`);
+        return sendTwilioResponse(`🎉 Welcome! 10 credits added to your new account!\n\n💳 Balance: 10 credits\n\nText any video link to get started! 🚀`);
       }
     } catch (error) {
       console.error('Error applying secret code:', error);
@@ -628,7 +608,7 @@ Deno.serve(async (req)=>{
 • New users get 3 free transcripts
 • Refer friends: Both get 3 bonus credits!
 
-Just text any TikTok/YouTube/Instagram/Facebook link!`);
+Just text a video link (TikTok, YouTube, Instagram, Facebook, X/Twitter, Reddit, Vimeo, Twitch, LinkedIn, Threads, Loom, Spotify)!`);
   }
 
   // Upgrade command - generate unique payment links
@@ -1270,12 +1250,13 @@ Reply /help for more commands!`);
       return sendTwilioResponse('👀 That doesn\'t look like a link. Try again or type /help.');
     }
   }
-  // Use the first matched URL
-  const url = match[0];
-  if (!isYouTubeUrl(url) && !isTikTokUrl(url) && !isInstagramUrl(url) && !isFacebookUrl(url)) {
-    return sendTwilioResponse(
-      "⚠️ We currently support TikTok, YouTube, Instagram, and Facebook links. Send one of those and I’ll transcribe it!"
-    );
+  // Use the first matched URL, cleaned of trailing punctuation
+  const url = cleanUrlTrailingPunctuation(match[0]);
+  
+  // Detect platform - returns null for unsupported URLs
+  const platform: Platform = detectPlatform(url);
+  if (!platform) {
+    return sendTwilioResponse(getUnsupportedUrlMessage());
   }
   try {
     // Get or create SMS user and check credits
@@ -1345,87 +1326,9 @@ Reply /help for more commands!`);
     // We only deduct credits AFTER the backend successfully queues the job.
     // This avoids charging if the downstream call fails.
     let newCreditsRemaining = creditsRemaining;
-    if (isYouTubeUrl(url)) {
-      const videoId = extractYouTubeVideoId(url);
-      try {
-        const transcriptData = await fetchYouTubeTranscript(url, videoId);
-        const transcript = transcriptData?.transcript || '';
-        const title = transcriptData?.title || '';
-        const description = transcriptData?.description || '';
-
-        // Validate we got meaningful data back
-        // Priority: transcript > substantial description > fail
-        const hasTranscript = transcript && transcript.trim().length > 0;
-        const hasTitle = title && title.trim().length > 0;
-        // Consider description "substantial" if it's at least 100 chars (not just "Check out my links!")
-        const hasSubstantialDescription = description && description.trim().length >= 100;
-
-        // Determine what content to use
-        let finalTranscript = transcript;
-        let contentSource = 'transcript';
-
-        if (!hasTranscript) {
-          if (hasSubstantialDescription) {
-            // Use description as the content - video may have no audio but good description
-            console.log('No transcript but has substantial description, using that:', videoId);
-            finalTranscript = `[Video Description]\n\n${description.trim()}`;
-            contentSource = 'description';
-          } else if (!hasTitle) {
-            // Got nothing - complete API failure
-            console.error('YouTube API returned no data for video:', videoId, transcriptData);
-            throw new Error('Failed to fetch video data - API returned empty response');
-          } else {
-            // Has title but no transcript and no substantial description
-            console.error('YouTube video has no usable content:', videoId);
-            throw new Error('No transcript or description available for this video');
-          }
-        }
-
-        // Store in Supabase as completed
-        const tags = ['sms-inbound', 'youtube'];
-        if (contentSource === 'description') {
-          tags.push('from-description'); // Flag that content came from description, not audio
-        }
-
-        const { data: insertedTask, error } = await supabase.from('transcriptions').insert({
-          url: url,
-          status: 'completed',
-          tags: tags,
-          category: 'youtube-transcription',
-          title: title || null,
-          description: description || null,
-          user_phone: From,
-          user_id: null,
-          transcript: finalTranscript
-        }).select('task_id').single();
-        if (error) {
-          console.error('Supabase insert error:', error);
-          return sendTwilioResponse('⚠️ Error saving your YouTube transcript. Try again.');
-        }
-        // Send SMS with transcript preview - keep compact to avoid error 30019
-        const shortTitle = truncateTitle(title || 'Video', 50);
-        const shareUrl = `https://share.scribetok.com/v/${insertedTask.task_id}`;
-
-        const contentLabel = contentSource === 'description' ? 'Description' : 'YouTube ready';
-        const header = `${contentLabel}: "${shortTitle}"\n\n`;
-        const footer = `\n\n${shareUrl}\n/full for more | /tldr to regenerate\n${newCreditsRemaining} credits left`;
-
-        const availableChars = SMS_SAFE_CHARS - header.length - footer.length;
-        const shortTranscript = truncateForSMS(finalTranscript, Math.max(availableChars, 150));
-
-        let message = `${header}${shortTranscript}${footer}`;
-
-        await sendSMS(From, message);
-        if (newCreditsRemaining === 0) {
-          const checkoutUrl = await createStripeCheckoutUrl(normalizePhoneNumber(From), FIVE_CREDIT_PRICE_ID, 5);
-          if (checkoutUrl) await sendSMS(From, `Out of credits! Get 5 for $1.99: ${checkoutUrl}`);
-        }
-        return sendTwilioResponse('✅ YouTube transcript complete! Check your texts for details.');
-      } catch (err) {
-        console.error('YouTube RapidAPI error:', err);
-        return sendTwilioResponse('❌ Failed to transcribe YouTube video. Try again later.');
-      }
-    }
+    
+    // NOTE: All platforms (including YouTube) are now routed through the backend
+    // for consistent handling, credit deduction, and error management.
     // Call Render service to start processing (synchronously, with timeout).
     // Runtimes may freeze after response; setTimeout fire-and-forget is risky.
     try {
@@ -1452,6 +1355,7 @@ Reply /help for more commands!`);
         body: JSON.stringify({
           url,
           user_phone: normalizedFrom,
+          platform,  // Pass detected platform to backend
         }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timeout));

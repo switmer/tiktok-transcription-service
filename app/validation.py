@@ -1,5 +1,12 @@
 """
-Input validation middleware and utilities for secure API operations
+Input validation middleware and utilities for secure API operations.
+
+NOTE: This module is NOT currently wired into the main API routes.
+Platform detection is handled by:
+  - Edge function: app/supabase/functions/sms-inbound/platform_detection.ts
+  - Backend: app/transcriber.py (_detect_platform, _is_*_url functions)
+
+This module could be integrated for additional API-level validation if needed.
 """
 import re
 import logging
@@ -29,6 +36,53 @@ ALLOWED_VIDEO_DOMAINS = {
         'm.youtube.com',
         'youtu.be',
         'music.youtube.com'
+    ],
+    'instagram': [
+        'instagram.com',
+        'www.instagram.com',
+        'instagr.am'
+    ],
+    'facebook': [
+        'facebook.com',
+        'www.facebook.com',
+        'fb.watch',
+        'fb.gg'
+    ],
+    'twitter': [
+        'twitter.com',
+        'www.twitter.com',
+        'mobile.twitter.com',
+        'x.com'
+    ],
+    'reddit': [
+        'reddit.com',
+        'www.reddit.com',
+        'redd.it',
+        'v.redd.it'
+    ],
+    'vimeo': [
+        'vimeo.com',
+        'player.vimeo.com'
+    ],
+    'twitch': [
+        'twitch.tv',
+        'www.twitch.tv',
+        'clips.twitch.tv'
+    ],
+    'linkedin': [
+        'linkedin.com',
+        'www.linkedin.com'
+    ],
+    'threads': [
+        'threads.net',
+        'www.threads.net'
+    ],
+    'loom': [
+        'loom.com',
+        'www.loom.com'
+    ],
+    'spotify': [
+        'open.spotify.com'
     ]
 }
 
