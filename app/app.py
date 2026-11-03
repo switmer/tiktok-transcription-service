@@ -52,6 +52,7 @@ try:
     from . import discovery
     from . import transcriber
     from . import sms
+    from . import video_finder
     from .tiktok_service import tiktok_service
     from . import health_check
     from .storage_utils import upload_thumbnail_to_supabase
@@ -70,6 +71,7 @@ except ImportError:
     import discovery
     import transcriber
     import sms
+    import video_finder
     import health_check
     from database import supabase
     from tiktok_service import tiktok_service
@@ -1110,6 +1112,76 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         logger.info(f"Detected platform: {platform_hint} for URL: {original_video_url}")
         # -------------------------------------------------
         
+        # Handle generic web page URLs - find the video first
+        alternate_video_urls: list = []
+        if platform_hint == 'unknown':
+            logger.info(f"Unknown platform, attempting video discovery on: {original_video_url}")
+            try:
+                finder_result = video_finder.find_videos(original_video_url)
+                logger.info(f"Video finder result: status={finder_result.get('status')}, top={finder_result.get('top')}")
+                
+                if finder_result.get('status') == 'found' and finder_result.get('top'):
+                    found_video = finder_result['top']
+                    video_url_from_finder = found_video.get('url')
+                    logger.info(f"Found video on page: {video_url_from_finder} (source: {found_video.get('source')}, score: {found_video.get('score')})")
+                    
+                    # Store alternates for SMS completion message
+                    alternate_video_urls = [alt.get('url') for alt in finder_result.get('alternates', [])[:3] if alt.get('url')]
+                    if alternate_video_urls:
+                        logger.info(f"Also found {len(alternate_video_urls)} alternate video(s): {alternate_video_urls}")
+                    
+                    # Re-detect platform of the found video URL
+                    original_video_url = video_url_from_finder
+                    platform_hint = transcriber._detect_platform(original_video_url)
+                    if platform_hint == 'unknown':
+                        platform_hint = None  # Will use NULL in DB or 'web' if we add migration
+                    logger.info(f"Found video platform: {platform_hint}")
+                    
+                    # Update task with found video URL
+                    supabase.table('transcriptions').update({
+                        'url': video_url_from_finder,
+                    }).eq('task_id', task_id).execute()
+                    
+                elif finder_result.get('status') == 'not_found':
+                    # No video found on page - fail gracefully
+                    logger.warning(f"No video found on page: {original_video_url}")
+                    await update_task_status(task_id, "failed", "No video found on page")
+                    if user_phone:
+                        try:
+                            await sms.send_sms(
+                                user_phone,
+                                "❌ I couldn't find a video on that page. Send me the direct video link instead!"
+                            )
+                        except Exception as sms_error:
+                            logger.error(f"Failed to send SMS 'no video' notice for task {task_id}: {sms_error}")
+                    return
+                    
+                else:  # status == 'unavailable' or other
+                    logger.warning(f"Could not fetch page: {original_video_url} - {finder_result.get('message', 'unknown error')}")
+                    await update_task_status(task_id, "failed", finder_result.get('message', 'Could not fetch page'))
+                    if user_phone:
+                        try:
+                            await sms.send_sms(
+                                user_phone,
+                                "❌ Sorry, I couldn't access that page. Check the URL and try again."
+                            )
+                        except Exception as sms_error:
+                            logger.error(f"Failed to send SMS 'unavailable' notice for task {task_id}: {sms_error}")
+                    return
+                    
+            except Exception as finder_error:
+                logger.error(f"Video finder error for {original_video_url}: {finder_error}", exc_info=True)
+                await update_task_status(task_id, "failed", "Failed to analyze page for videos")
+                if user_phone:
+                    try:
+                        await sms.send_sms(
+                            user_phone,
+                            "❌ Sorry, something went wrong analyzing that page. Try sending a direct video link."
+                        )
+                    except Exception as sms_error:
+                        logger.error(f"Failed to send SMS error notice for task {task_id}: {sms_error}")
+                return
+        
         # Check if this is a YouTube URL for instant transcription
         if is_youtube_url(original_video_url):
             logger.info(f"Detected YouTube URL, attempting instant transcription: {original_video_url}")
@@ -1734,7 +1806,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     logger.info(f"Sending SMS completion notification to {update_data['user_phone']} for task {task_id}")
                     quote = quote_tldr_result.get("quote", "")
                     tldr_list = quote_tldr_result.get("tldr", [])
-                    await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text, quote, tldr_list)
+                    await send_completion_sms(task_id, update_data['user_phone'], title or 'Video', transcript_text, quote, tldr_list, alternate_video_urls)
                 except Exception as sms_error:
                     logger.error(f"Failed to send SMS notification for task {task_id}: {sms_error}")
             else:
@@ -1774,8 +1846,12 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         except Exception as cleanup_error:
             logger.warning(f"Failed to cleanup files for failed task {task_id}: {str(cleanup_error)}")
 
-async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str, quote: str = "", tldr_list: list = None):
-    """Send SMS notification when transcription completes with modern credit/upsell logic."""
+async def send_completion_sms(task_id: str, phone_number: str, title: str, transcript: str, quote: str = "", tldr_list: list = None, alternate_video_urls: list = None):
+    """Send SMS notification when transcription completes with modern credit/upsell logic.
+    
+    Args:
+        alternate_video_urls: Optional list of other video URLs found on the same page (for web page discovery)
+    """
     try:
         logger.info(f"send_completion_sms called: task_id={task_id}, phone={phone_number}, quote={bool(quote)}, tldr={bool(tldr_list)}")
 
@@ -1906,6 +1982,18 @@ See full transcript: {share_url}
         if len(message) > SMS_SAFE_LIMIT:
             logger.warning(f"SMS still too long ({len(message)} chars), hard truncating")
             message = message[:SMS_SAFE_LIMIT - 3] + "..."
+
+        # Add alternate video URLs if present (from web page discovery)
+        if alternate_video_urls:
+            num_alts = len(alternate_video_urls)
+            alt_section = f"\n\nFound {num_alts} other video(s):"
+            for alt_url in alternate_video_urls[:3]:
+                alt_section += f"\n{alt_url}"
+            # Only add if it fits within limit
+            if len(message) + len(alt_section) <= SMS_SAFE_LIMIT:
+                message += alt_section
+            else:
+                logger.info(f"Skipping alternate URLs in SMS (would exceed limit)")
 
         if stripe_payment_link:
             upsell = f"\n\nGet 5 credits for $1.99: {stripe_payment_link}"
