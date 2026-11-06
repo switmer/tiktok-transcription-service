@@ -12,14 +12,12 @@ Deno.serve(async (req) => {
     // Parse Twilio's callback data (form-encoded)
     const form = await req.formData();
 
-    // Validate Twilio signature if auth token is configured
-    if (twilioAuthToken) {
-      const params = formDataToRecord(form);
-      const valid = await validateTwilioSignature(req, params, twilioAuthToken, 'sms-status-callback');
-      if (!valid) {
-        console.warn('Invalid Twilio signature on sms-status-callback');
-        return new Response('Forbidden', { status: 403 });
-      }
+    // Fail closed: missing token or invalid signature is a 403
+    const params = formDataToRecord(form);
+    const valid = await validateTwilioSignature(req, params, twilioAuthToken || '', 'sms-status-callback');
+    if (!valid) {
+      console.warn('Invalid Twilio signature on sms-status-callback');
+      return new Response('Forbidden', { status: 403 });
     }
 
     const supabase = createClient(

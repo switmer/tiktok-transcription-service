@@ -27,15 +27,13 @@ serve(async (req) => {
     // Parse the Twilio error webhook payload (sent as form data, not JSON)
     const formData = await req.formData()
 
-    // Validate Twilio signature if auth token is configured
+    // Fail closed: missing token or invalid signature is a 403
     const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN')
-    if (twilioAuthToken) {
-      const params = formDataToRecord(formData)
-      const valid = await validateTwilioSignature(req, params, twilioAuthToken, 'twilio-error-webhook')
-      if (!valid) {
-        console.warn('Invalid Twilio signature on twilio-error-webhook')
-        return new Response('Forbidden', { status: 403, headers: corsHeaders })
-      }
+    const params = formDataToRecord(formData)
+    const valid = await validateTwilioSignature(req, params, twilioAuthToken || '', 'twilio-error-webhook')
+    if (!valid) {
+      console.warn('Invalid Twilio signature on twilio-error-webhook')
+      return new Response('Forbidden', { status: 403, headers: corsHeaders })
     }
 
     // Initialize Supabase client

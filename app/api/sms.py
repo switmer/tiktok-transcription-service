@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Re
 from fastapi.responses import JSONResponse
 
 from ..core.auth import verify_api_key
+from ..core.twilio_signature import verify_twilio_request
 from ..core.errors import (
     ApiError,
     INSUFFICIENT_CREDITS,
@@ -154,14 +155,21 @@ async def link_sms_account(request: Request):
 
 @router.post("/api/sms/inbound")
 async def handle_inbound_sms(
+    request: Request,
     background_tasks: BackgroundTasks,
     From: str = Form(...),
     Body: str = Form(...),
     MessageSid: str = Form(None),
     To: str = Form(None),
 ):
-    """Handle incoming SMS from Twilio webhook"""
+    """Handle incoming SMS from Twilio webhook.
+
+    Live production traffic uses the sms-inbound edge function, which then
+    calls /api/public/transcribe. This FastAPI webhook is a backup path and
+    still requires a valid Twilio signature (skipped when TESTING=true).
+    """
     try:
+        await verify_twilio_request(request)
         logger.info(f"Received SMS from {From}: {Body[:50]}...")
 
         command = None
@@ -250,6 +258,7 @@ async def handle_sms_status(
 ):
     """Handle SMS delivery status updates from Twilio"""
     try:
+        await verify_twilio_request(request)
         logger.info(f"SMS status update - SID: {MessageSid}, Status: {MessageStatus}, To: {To}")
         return {"status": "received"}
     except Exception as e:
