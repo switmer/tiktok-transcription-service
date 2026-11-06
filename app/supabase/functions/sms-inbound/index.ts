@@ -1,4 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.39.3';
+import { validateTwilioSignature, formDataToRecord } from '../_shared/validate-twilio.ts';
 import {
   cleanUrlTrailingPunctuation,
   detectPlatform,
@@ -483,15 +484,32 @@ Deno.serve(async (req)=>{
   }
   // Parse Twilio's x-www-form-urlencoded or JSON
   let From, Body, MessageSid, To;
+  let twilioParams: Record<string, string> = {};
   const contentType = req.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
-    ({ From, Body, MessageSid, To } = await req.json().catch(()=>({})));
+    const jsonBody = await req.json().catch(()=>({}));
+    ({ From, Body, MessageSid, To } = jsonBody);
+    twilioParams = Object.fromEntries(
+      Object.entries(jsonBody).map(([key, value]) => [key, value == null ? '' : String(value)])
+    );
   } else {
     const form = await req.formData();
-    From = form.get('From');
-    Body = form.get('Body');
-    MessageSid = form.get('MessageSid');
-    To = form.get('To');
+    twilioParams = formDataToRecord(form);
+    From = twilioParams['From'];
+    Body = twilioParams['Body'];
+    MessageSid = twilioParams['MessageSid'];
+    To = twilioParams['To'];
+  }
+
+  // Verify the request came from Twilio before any DB/credit work.
+  // HMAC is tried against several URL candidates (incl. TWILIO_WEBHOOK_URL).
+  // AccountSid fallback stays on by default so proxy URL rewrites cannot
+  // break the live sms-inbound → FastAPI path. See _shared/validate-twilio.ts.
+  const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN') || '';
+  const twilioValid = await validateTwilioSignature(req, twilioParams, twilioAuthToken, 'sms-inbound');
+  if (!twilioValid) {
+    console.warn('Rejected inbound SMS: invalid Twilio signature');
+    return new Response('Forbidden', { status: 403 });
   }
   // Robust logging for debugging
   console.log('Received Body:', JSON.stringify(Body));
@@ -1260,7 +1278,7 @@ Reply /help for more commands!`);
     return sendTwilioResponse(getInstagramStoriesMessage());
   }
   
-  // Detect platform - returns null for non-URLs, 'webpage' for generic http(s) URLs
+  // Detect platform - returns null for non-URLs, 'web' for generic http(s) URLs
   const platform: Platform = detectPlatform(url);
   if (!platform) {
     return sendTwilioResponse(getUnsupportedUrlMessage());

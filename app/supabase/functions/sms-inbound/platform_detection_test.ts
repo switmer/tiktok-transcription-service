@@ -274,8 +274,12 @@ Deno.test("detectPlatform - X/Twitter returns 'twitter'", () => {
   assertEquals(detectPlatform("https://x.com/user/status/123"), "twitter");
 });
 
-Deno.test("detectPlatform - unsupported URL returns null", () => {
-  assertEquals(detectPlatform("https://example.com/video"), null);
+Deno.test("detectPlatform - generic http URL returns 'web'", () => {
+  assertEquals(detectPlatform("https://example.com/video"), "web");
+});
+
+Deno.test("detectPlatform - Instagram reel shortcode", () => {
+  assertEquals(detectPlatform("https://www.instagram.com/reel/DfVWPIwFJz_/"), "instagram");
 });
 
 Deno.test("detectPlatform - cleans trailing punctuation", () => {
@@ -333,21 +337,21 @@ Deno.test("isWebPageUrl - accepts URL with query params", () => {
   assertEquals(isWebPageUrl("https://example.com/page?id=123"), true);
 });
 
-// detectPlatform - webpage tests
-Deno.test("detectPlatform - generic web page returns 'webpage'", () => {
-  assertEquals(detectPlatform("https://example.com/page"), "webpage");
+// detectPlatform - web page tests (stored as 'web' in DB)
+Deno.test("detectPlatform - generic web page returns 'web'", () => {
+  assertEquals(detectPlatform("https://example.com/page"), "web");
 });
 
-Deno.test("detectPlatform - Shopify product page returns 'webpage'", () => {
-  assertEquals(detectPlatform("https://mystore.myshopify.com/products/item"), "webpage");
+Deno.test("detectPlatform - Shopify product page returns 'web'", () => {
+  assertEquals(detectPlatform("https://mystore.myshopify.com/products/item"), "web");
 });
 
-Deno.test("detectPlatform - blog post returns 'webpage'", () => {
-  assertEquals(detectPlatform("https://ed.codes/blog/how-to-embed-video"), "webpage");
+Deno.test("detectPlatform - blog post returns 'web'", () => {
+  assertEquals(detectPlatform("https://ed.codes/blog/how-to-embed-video"), "web");
 });
 
-Deno.test("detectPlatform - w3schools returns 'webpage'", () => {
-  assertEquals(detectPlatform("https://www.w3schools.com/html/html5_video.asp"), "webpage");
+Deno.test("detectPlatform - w3schools returns 'web'", () => {
+  assertEquals(detectPlatform("https://www.w3schools.com/html/html5_video.asp"), "web");
 });
 
 // isKnownPlatformUrl tests

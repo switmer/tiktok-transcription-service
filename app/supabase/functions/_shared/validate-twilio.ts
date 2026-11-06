@@ -5,6 +5,18 @@
  * the request genuinely came from Twilio, not a random caller.
  *
  * Algorithm: https://www.twilio.com/docs/usage/security#validating-requests
+ *
+ * Env vars
+ * --------
+ * TWILIO_AUTH_TOKEN              Required. HMAC key.
+ * TWILIO_ACCOUNT_SID             Used for the proxy-URL fallback.
+ * TWILIO_WEBHOOK_URL             Optional. Exact URL configured in Twilio
+ *                                (recommended so HMAC succeeds despite proxy rewrites).
+ * TWILIO_ALLOW_ACCOUNTSID_FALLBACK
+ *                                Default true. When HMAC fails because the public
+ *                                URL does not match what Twilio signed, accept the
+ *                                request if AccountSid matches AND a signature
+ *                                header is present. Set "false" to require HMAC.
  */
 
 const encoder = new TextEncoder();
@@ -21,16 +33,54 @@ async function hmacSha1(key: string, data: string): Promise<string> {
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+function addUrl(urls: string[], url: string | undefined | null): void {
+  if (!url) return;
+  const noHash = url.split('#')[0];
+  const trimmed = noHash.replace(/\/$/, '');
+  if (trimmed && !urls.includes(trimmed)) urls.push(trimmed);
+  if (noHash && !urls.includes(noHash)) urls.push(noHash);
+}
+
+/**
+ * URLs Twilio may have signed. Supabase edge proxies often rewrite req.url,
+ * so HMAC is tried against several candidates including TWILIO_WEBHOOK_URL.
+ */
+export function candidateWebhookUrls(req: Request, functionName: string): string[] {
+  const urls: string[] = [];
+  addUrl(urls, Deno.env.get('TWILIO_WEBHOOK_URL'));
+
+  const supabaseUrl = (Deno.env.get('SUPABASE_URL') || '').replace(/\/$/, '');
+  if (supabaseUrl) {
+    addUrl(urls, `${supabaseUrl}/functions/v1/${functionName}`);
+  }
+
+  try {
+    const parsed = new URL(req.url);
+    addUrl(urls, parsed.toString());
+    parsed.search = '';
+    addUrl(urls, parsed.toString());
+  } catch {
+    // ignore unparseable req.url
+  }
+
+  return urls;
+}
+
 /**
  * Validate a Twilio webhook request.
  *
- * Two-layer check:
- * 1. HMAC-SHA1 signature validation (X-Twilio-Signature header)
- * 2. AccountSid validation (fallback if signature fails due to URL mismatch)
- *
- * Supabase edge runtime proxies can rewrite req.url, making HMAC validation
- * fragile. The AccountSid check ensures only requests with your account's SID
- * are accepted, which is a strong secondary validation.
+ * 1. Require X-Twilio-Signature
+ * 2. HMAC-SHA1 against every candidate webhook URL
+ * 3. Optional AccountSid fallback (signature header still required)
  */
 export async function validateTwilioSignature(
   req: Request,
@@ -38,38 +88,37 @@ export async function validateTwilioSignature(
   authToken: string,
   functionName: string,
 ): Promise<boolean> {
-  const signature = req.headers.get('x-twilio-signature');
-
-  // Try HMAC signature validation first
-  if (signature) {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
-    const webhookUrl = `${supabaseUrl}/functions/v1/${functionName}`;
-
-    const sortedKeys = Object.keys(params).sort();
-    let dataToSign = webhookUrl;
-    for (const key of sortedKeys) {
-      dataToSign += key + (params[key] ?? '');
-    }
-
-    const expected = await hmacSha1(authToken, dataToSign);
-
-    // Constant-time comparison
-    if (expected.length === signature.length) {
-      let mismatch = 0;
-      for (let i = 0; i < expected.length; i++) {
-        mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-      }
-      if (mismatch === 0) {
-        return true;
-      }
-    }
-    console.warn(`Twilio HMAC mismatch for ${functionName}, falling back to AccountSid check`);
+  if (!authToken) {
+    console.error(`Twilio validation failed for ${functionName}: TWILIO_AUTH_TOKEN is not set`);
+    return false;
   }
 
-  // Fallback: verify the AccountSid in the POST body matches ours
-  const expectedSid = Deno.env.get('TWILIO_ACCOUNT_SID');
-  const requestSid = params['AccountSid'];
-  if (expectedSid && requestSid && expectedSid === requestSid) {
+  const signature = req.headers.get('x-twilio-signature');
+  if (!signature) {
+    console.warn(`Twilio validation failed for ${functionName}: missing X-Twilio-Signature`);
+    return false;
+  }
+
+  const sortedKeys = Object.keys(params).sort();
+  const paramSuffix = sortedKeys.map((key) => key + (params[key] ?? '')).join('');
+
+  for (const webhookUrl of candidateWebhookUrls(req, functionName)) {
+    const expected = await hmacSha1(authToken, webhookUrl + paramSuffix);
+    if (constantTimeEqual(expected, signature)) {
+      return true;
+    }
+  }
+
+  console.warn(`Twilio HMAC mismatch for ${functionName} (tried ${candidateWebhookUrls(req, functionName).length} URLs)`);
+
+  const allowFallback = (Deno.env.get('TWILIO_ALLOW_ACCOUNTSID_FALLBACK') || 'true').toLowerCase() !== 'false';
+  const expectedSid = Deno.env.get('TWILIO_ACCOUNT_SID') || '';
+  const requestSid = params['AccountSid'] || '';
+  if (allowFallback && expectedSid && requestSid && constantTimeEqual(expectedSid, requestSid)) {
+    console.warn(
+      `Twilio HMAC mismatch for ${functionName}; accepting via AccountSid fallback. ` +
+        'Set TWILIO_WEBHOOK_URL to the exact Twilio console URL, or TWILIO_ALLOW_ACCOUNTSID_FALLBACK=false to require HMAC.',
+    );
     return true;
   }
 

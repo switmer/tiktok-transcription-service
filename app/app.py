@@ -716,7 +716,7 @@ async def transcribe_and_save(task_id: str, audio_file: str, output_dir: str, vi
                 else:
                     quote_tldr_result = transcriber.generate_quote_and_tldr(
                         transcript_text,
-                        title=ytdlp_title or "",
+                        title=video_id or "",
                         description=""
                     )
             except Exception as e:
@@ -1106,15 +1106,17 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
 
         # Use shared platform detector from transcriber module for consistent detection
         # This correctly identifies X/Twitter URLs as 'twitter', Reddit as 'reddit', etc.
-        platform_hint = transcriber._detect_platform(original_video_url)
-        if platform_hint == 'unknown':
-            platform_hint = 'tiktok'  # Fallback for unrecognized URLs
+        # Generic http(s) pages are 'web' — never fall back to 'tiktok'.
+        platform_hint = transcriber.canonical_platform(original_video_url)
         logger.info(f"Detected platform: {platform_hint} for URL: {original_video_url}")
         # -------------------------------------------------
         
         # Handle generic web page URLs - find the video first
         alternate_video_urls: list = []
-        if platform_hint == 'unknown':
+        if (
+            transcriber.needs_video_discovery(platform_hint)
+            and not transcriber._is_direct_video_url(original_video_url)
+        ):
             logger.info(f"Unknown platform, attempting video discovery on: {original_video_url}")
             try:
                 finder_result = video_finder.find_videos(original_video_url)
@@ -1130,11 +1132,9 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     if alternate_video_urls:
                         logger.info(f"Also found {len(alternate_video_urls)} alternate video(s): {alternate_video_urls}")
                     
-                    # Re-detect platform of the found video URL
+                    # Re-detect platform of the found video URL (YouTube embed → youtube, raw mp4 → web)
                     original_video_url = video_url_from_finder
-                    platform_hint = transcriber._detect_platform(original_video_url)
-                    if platform_hint == 'unknown':
-                        platform_hint = None  # Will use NULL in DB or 'web' if we add migration
+                    platform_hint = transcriber.canonical_platform(original_video_url)
                     logger.info(f"Found video platform: {platform_hint}")
                     
                     # Update task with found video URL
@@ -1445,32 +1445,44 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                             'language': podcast.get('language') or 'english',
                             'platform': 'spotify'
                         }
-                    elif 'data' in metadata and isinstance(metadata['data'], dict):  # RapidAPI format
+                    elif 'data' in metadata and isinstance(metadata['data'], dict):  # RapidAPI nested format
+                        # Instagram/Facebook RapidAPI also wrap payloads in `data`.
+                        # Never hardcode tiktok — keep the detected platform (or metadata.platform).
                         data = metadata['data']
                         author = data.get('author', {}) if isinstance(data.get('author'), dict) else {}
+                        rapidapi_platform = transcriber.canonical_platform(
+                            original_video_url,
+                            metadata.get('platform') or platform_hint,
+                        )
+                        uploader_id = author.get('unique_id') or author.get('nickname') or author.get('username')
+                        uploader_url = None
+                        if rapidapi_platform == 'tiktok' and author.get('unique_id'):
+                            uploader_url = f"https://tiktok.com/@{author.get('unique_id')}"
+                        elif rapidapi_platform == 'instagram' and uploader_id:
+                            uploader_url = f"https://instagram.com/{uploader_id}"
                         rich_metadata = {
-                            'description': data.get('title'),  # RapidAPI puts description in title
+                            'description': data.get('title') or data.get('caption') or metadata.get('description'),
                             'duration': data.get('duration'),
                             'upload_date': None,  # Not available in RapidAPI
                             'timestamp': data.get('create_time'),
-                            'channel': author.get('unique_id') or author.get('nickname'),
+                            'channel': uploader_id,
                             'channel_id': author.get('id'),
-                            'uploader': author.get('unique_id') or author.get('nickname'),
-                            'uploader_url': f"https://tiktok.com/@{author.get('unique_id')}" if author.get('unique_id') else None,
-                            'like_count': data.get('digg_count', 0),  # ✅ Extract from raw_metadata
-                            'comment_count': data.get('comment_count', 0),  # ✅ Extract from raw_metadata
-                            'repost_count': data.get('share_count', 0),  # ✅ Extract from raw_metadata
-                            'view_count': data.get('play_count', 0),  # ✅ Extract from raw_metadata
+                            'uploader': uploader_id,
+                            'uploader_url': uploader_url,
+                            'like_count': data.get('digg_count', 0) or data.get('like_count', 0),
+                            'comment_count': data.get('comment_count', 0),
+                            'repost_count': data.get('share_count', 0),
+                            'view_count': data.get('play_count', 0) or data.get('view_count', 0),
                             'resolution': None,  # Not directly available
                             'width': None,
                             'height': None,
                             'aspect_ratio': None,
                             'filesize': data.get('hd_size'),
-                            'format_id': data.get('aweme_id'),  # Use aweme_id if available
-                            'vcodec': 'h264',  # Assume h264 for TikTok
-                            'acodec': 'aac',   # Assume aac for TikTok
+                            'format_id': data.get('aweme_id') or data.get('shortcode'),
+                            'vcodec': 'h264',
+                            'acodec': 'aac',
                             'language': 'english',  # Default for now
-                            'platform': 'tiktok'
+                            'platform': rapidapi_platform,
                         }
                     else:  # yt-dlp format
                         rich_metadata = {
@@ -1655,7 +1667,7 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 'user_phone': user_phone,  # Include user_phone for SMS notification check
                 'view_count': 1,  # Initialize view count for new videos
                 'visibility': 'public',  # Default visibility
-                'platform': platform_hint,  # Default platform for this path
+                'platform': transcriber.canonical_platform(original_video_url, platform_hint),
                 'language': detected_language  # Use actual detected/configured language
             }
             
@@ -1686,8 +1698,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                 update_data['video_url'] = direct_video_url
                 logger.info(f"Storing direct video URL: {direct_video_url}")
                 
-            # Add all rich metadata fields
+            # Add all rich metadata fields, then re-assert platform so nested RapidAPI
+            # payloads (Instagram/Facebook wrap in `data`) cannot overwrite it to tiktok.
             update_data.update(rich_metadata)
+            update_data['platform'] = transcriber.canonical_platform(
+                original_video_url,
+                platform_hint or rich_metadata.get('platform'),
+            )
             
             # Add file paths for local assets
             audio_files = glob.glob(os.path.join(output_dir, "*.mp3"))
@@ -3048,6 +3065,8 @@ async def rich_link_preview(task_id: str, request: Request):
                     video_url = f"https://www.tiktok.com/video/{task['video_id']}"
             elif task.get('platform') == 'youtube':
                 video_url = f"https://www.youtube.com/watch?v={task['video_id']}"
+            elif task.get('platform') == 'instagram':
+                video_url = f"https://www.instagram.com/reel/{task['video_id']}/"
         
         # Prepare template context data
         template_data = {
@@ -3876,6 +3895,35 @@ def calculate_simple_sentiment(comments):
         "negative": negative_pct,
         "dominant": dominant
     }
+
+
+def include_api_routers():
+    """Mount public/SMS/chat/auth routers onto this app instance.
+
+    Production may start as `uvicorn app:app` (package → main.py) or
+    `uvicorn app.app:app`. Mounting here means /api/sms/chat is registered
+    in both cases. Safe to call more than once.
+    """
+    if getattr(app.state, "api_routers_mounted", False):
+        return
+    try:
+        from .api import public as public_routes
+        from .api import sms as sms_routes
+        from .api import chat as chat_routes
+        from .api import auth as auth_routes
+    except ImportError:
+        from api import public as public_routes
+        from api import sms as sms_routes
+        from api import chat as chat_routes
+        from api import auth as auth_routes
+    app.include_router(public_routes.router)
+    app.include_router(sms_routes.router)
+    app.include_router(chat_routes.router)
+    app.include_router(auth_routes.router)
+    app.state.api_routers_mounted = True
+
+
+include_api_routers()
 
 
 if __name__ == "__main__":

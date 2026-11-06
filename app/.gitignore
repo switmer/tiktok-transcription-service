@@ -119,5 +119,6 @@ downloads/
 .env
 *.log
 
-# Local test/debug scripts
+# Local test/debug scripts (do not ignore the test suite)
 test_*.py
+!tests/test_*.py

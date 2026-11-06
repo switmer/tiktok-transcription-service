@@ -233,17 +233,24 @@ class TestPlatformDetectionIntegration:
             platform = _detect_platform(url)
             assert platform == expected_platform, f"URL {url} should be '{expected_platform}', got '{platform}'"
 
-    def test_unknown_url_returns_unknown(self):
-        """Unknown URLs should return 'unknown'."""
-        from transcriber import _detect_platform
-        
-        unknown_urls = [
+    def test_generic_http_url_returns_web(self):
+        """Generic http(s) pages should return 'web', not 'tiktok'."""
+        from transcriber import _detect_platform, canonical_platform
+
+        web_urls = [
             "https://example.com/video",
             "https://random-site.org/content",
-            "",
-            None,
+            "https://www.w3schools.com/html/html5_video.asp",
         ]
-        
-        for url in unknown_urls:
+
+        for url in web_urls:
             platform = _detect_platform(url)
-            assert platform == "unknown", f"URL {url} should be 'unknown', got '{platform}'"
+            assert platform == "web", f"URL {url} should be 'web', got '{platform}'"
+            assert canonical_platform(url) == "web"
+            assert canonical_platform(url, "unknown") != "tiktok"
+
+    def test_empty_url_returns_unknown(self):
+        from transcriber import _detect_platform
+
+        assert _detect_platform("") == "unknown"
+        assert _detect_platform(None) == "unknown"

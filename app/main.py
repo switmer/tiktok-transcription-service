@@ -1,10 +1,4 @@
-from .app import app
-from .api import public as public_routes
-from .api import sms as sms_routes
-from .api import chat as chat_routes
-from .api import auth as auth_routes
+from .app import app, include_api_routers
 
-app.include_router(public_routes.router)
-app.include_router(sms_routes.router)
-app.include_router(chat_routes.router)
-app.include_router(auth_routes.router)
+# Ensure routers are mounted when this module is the ASGI target.
+include_api_routers()
