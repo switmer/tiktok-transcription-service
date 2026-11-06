@@ -29,6 +29,8 @@ from transcriber import (
     _is_threads_url,
     _is_loom_url,
     _detect_platform,
+    canonical_platform,
+    needs_video_discovery,
     clean_url_trailing_punctuation,
 )
 
@@ -135,6 +137,11 @@ class TestInstagramDetection:
         "https://instagram.com/share/p/ABC123/",
         # With tracking params
         "https://www.instagram.com/reel/Cxxxxxxxxxx/?igsh=xyz123",
+        # Production shortcode that was stored as tiktok
+        "https://www.instagram.com/reel/DfVWPIwFJz_/",
+        "https://instagram.com/reel/DfVWPIwFJz_",
+        # Share links without reel/p prefix
+        "https://www.instagram.com/share/DfVWPIwFJz_/",
         # instagr.am short URLs
         "https://instagr.am/p/ABC123/",
         "https://instagr.am/reel/XYZ789/",
@@ -282,19 +289,52 @@ class TestSpotifyDetection:
         assert _detect_platform(url) == "spotify"
 
 
-class TestUnsupportedURLs:
-    """Test that unsupported URLs are correctly rejected."""
+class TestWebAndUnsupportedURLs:
+    """Generic http(s) pages are 'web'; non-URLs stay 'unknown'."""
 
     @pytest.mark.parametrize("url", [
         "https://example.com/video/123",
         "https://dailymotion.com/video/x123abc",
         "https://streamable.com/abc123",
         "https://google.com",
+        "https://www.w3schools.com/html/html5_video.asp",
+        "https://www.w3schools.com/html/mov_bbb.mp4",
+    ])
+    def test_generic_http_urls_are_web(self, url):
+        assert _detect_platform(url) == "web"
+        assert canonical_platform(url) == "web"
+
+    @pytest.mark.parametrize("url", [
         "not-a-url",
         "",
     ])
-    def test_unsupported_urls_detected(self, url):
+    def test_non_urls_are_unknown(self, url):
         assert _detect_platform(url) == "unknown"
+
+
+class TestCanonicalPlatformStorage:
+    """Stored platform must match the DB constraint and never default to tiktok."""
+
+    def test_never_falls_back_to_tiktok_for_web_pages(self):
+        url = "https://www.w3schools.com/html/html5_video.asp"
+        assert canonical_platform(url) == "web"
+        assert canonical_platform(url, "unknown") == "web"
+        assert canonical_platform(url, "webpage") == "web"
+
+    def test_instagram_rapidapi_nested_data_keeps_instagram(self):
+        # Production bug: Instagram RapidAPI metadata includes a `data` dict and
+        # the completion path used to hardcode platform='tiktok'.
+        url = "https://www.instagram.com/reel/DfVWPIwFJz_/"
+        assert canonical_platform(url, "instagram") == "instagram"
+        assert canonical_platform(url) == "instagram"
+
+    def test_needs_video_discovery_only_for_generic_pages(self):
+        assert needs_video_discovery("web") is True
+        assert needs_video_discovery("unknown") is True
+        assert needs_video_discovery("webpage") is True
+        assert needs_video_discovery("instagram") is False
+        assert needs_video_discovery("tiktok") is False
+        assert needs_video_discovery("youtube") is False
 
 
 class TestTrailingPunctuationWithDetection:

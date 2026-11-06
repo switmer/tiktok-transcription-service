@@ -211,6 +211,8 @@ async def public_get_task(task_id: str):
                     )
                 elif task_data.get('platform') == 'youtube':
                     original_tiktok_url = f"https://www.youtube.com/watch?v={video_id}"
+                elif task_data.get('platform') == 'instagram':
+                    original_tiktok_url = f"https://www.instagram.com/reel/{video_id}/"
 
         def get_with_fallback(key, raw_key=None):
             if raw_key and raw_data.get(raw_key):

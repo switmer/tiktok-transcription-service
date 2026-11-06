@@ -262,7 +262,7 @@ class SMSHandler:
         """Handle /help command"""
         return """👋 Welcome to ScribeTok!
 
-📱 Text a TikTok or YouTube link to get an instant transcript.
+📱 Text a video link (TikTok, YouTube, Instagram, X, or a web page) to get a transcript.
 
 💬 After transcribing, just text your question to chat about it!
 
@@ -1742,7 +1742,7 @@ Updated summary:"""
                         return SMSHandler.create_twiml_response(SOFT_MENU_HINT)
 
             return SMSHandler.create_twiml_response(
-                "🤖 Hi there! Send me a TikTok or YouTube link to get a transcript.\n\nType /help for more options! 📱"
+                "🤖 Hi there! Send me a video link (TikTok, YouTube, Instagram, X, or a web page) to get a transcript.\n\nType /help for more options! 📱"
             )
 
 async def send_sms(phone_number: str, message: str) -> bool:

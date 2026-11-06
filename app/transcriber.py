@@ -934,12 +934,15 @@ download_youtube_ytdlp = download_tiktok_ytdlp
 
 def _is_tiktok_url(url: str) -> bool:
     """Check if URL is a TikTok video URL."""
-    return bool(re.search(r'tiktok\.com|vm\.tiktok\.com', url, re.IGNORECASE))
+    return bool(re.search(
+        r'(?:tiktok\.com/@[^/]+/video/|tiktok\.com/t/|vm\.tiktok\.com/)',
+        url, re.IGNORECASE
+    ))
 
 def _is_instagram_url(url: str) -> bool:
     """Check if URL is an Instagram video URL.
     Supports: /reel/, /reels/, /p/, /tv/, username-prefixed paths,
-    share links (/share/reel/), and instagr.am short URLs.
+    share links (/share/, /share/reel/), and instagr.am short URLs.
     """
     # Match instagr.am short URLs
     if re.search(r'instagr\.am/', url, re.IGNORECASE):
@@ -947,9 +950,9 @@ def _is_instagram_url(url: str) -> bool:
     # Match instagram.com with various path patterns
     # Direct: /reel/, /reels/, /p/, /tv/
     # Username-prefixed: /@username/reel/, /username/reel/
-    # Share links: /share/reel/
+    # Share links: /share/reel/, /share/p/, /share/<shortcode>
     return bool(re.search(
-        r'instagram\.com/(?:(?:reel|reels|p|tv)/|[^/]+/(?:reel|reels|p|tv)/|share/(?:reel|p|video)/)',
+        r'instagram\.com/(?:(?:reel|reels|p|tv)/|[^/]+/(?:reel|reels|p|tv)/|share/(?:reel|p|video/)?[^/]+)',
         url, re.IGNORECASE
     ))
 
@@ -1008,8 +1011,37 @@ def _is_loom_url(url: str) -> bool:
     """Check if URL is a Loom video URL."""
     return bool(re.search(r'loom\.com/share/', url, re.IGNORECASE))
 
+# Values allowed by transcriptions.platform CHECK constraint.
+STORED_PLATFORMS = frozenset({
+    'tiktok',
+    'youtube',
+    'instagram',
+    'twitter',
+    'facebook',
+    'linkedin',
+    'spotify',
+    'reddit',
+    'vimeo',
+    'twitch',
+    'threads',
+    'loom',
+    'web',
+})
+
+# Aliases used by the SMS edge function / older code.
+_PLATFORM_ALIASES = {
+    'webpage': 'web',
+    'x': 'twitter',
+    'x/twitter': 'twitter',
+}
+
+
 def _detect_platform(url: str) -> str:
-    """Detect the platform from a URL. Returns platform name or 'unknown'."""
+    """Detect the platform from a URL.
+
+    Returns a known platform name, 'web' for generic http(s) pages, or
+    'unknown' when the input is empty / not a URL.
+    """
     if not url:
         return 'unknown'
     if _is_tiktok_url(url):
@@ -1036,7 +1068,34 @@ def _detect_platform(url: str) -> str:
         return 'loom'
     if _is_spotify_url(url):
         return 'spotify'
+    if re.match(r'^https?://', url.strip(), re.IGNORECASE):
+        return 'web'
     return 'unknown'
+
+
+def canonical_platform(url: str = '', detected: str | None = None) -> str:
+    """Return the platform value to persist (matches the DB constraint).
+
+    Never falls back to 'tiktok'. Generic http(s) pages become 'web'.
+    """
+    platform = detected if detected not in (None, '') else _detect_platform(url)
+    platform = _PLATFORM_ALIASES.get(platform, platform)
+    if platform in STORED_PLATFORMS:
+        return platform
+    if platform in (None, '', 'unknown'):
+        candidate = (url or '').strip()
+        if candidate.lower().startswith(('http://', 'https://')):
+            return 'web'
+        return 'unknown'
+    return 'web' if (url or '').lower().startswith(('http://', 'https://')) else 'unknown'
+
+
+def needs_video_discovery(platform: str | None) -> bool:
+    """True when the URL is a generic web page, not a known video host."""
+    if not platform:
+        return True
+    mapped = _PLATFORM_ALIASES.get(platform, platform)
+    return mapped in ('web', 'unknown')
 
 def clean_url_trailing_punctuation(url: str) -> str:
     """Clean trailing punctuation from URLs that may be added by users or SMS clients."""
@@ -1274,7 +1333,7 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
         logger.info("Direct video URL detected, downloading directly...")
         direct_result = download_direct_video(clean_url, output_dir)
         if direct_result:
-            direct_result['platform'] = platform or 'unknown'
+            direct_result['platform'] = canonical_platform(clean_url, platform)
             return direct_result
         logger.error("Direct video download failed — no fallback for raw CDN URLs")
         return None
@@ -1298,7 +1357,7 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
             "video_file": None,  # yt-dlp doesn't provide video file
             "metadata_file": None,  # yt-dlp doesn't provide metadata file  
             "video_url": None,  # yt-dlp doesn't provide direct video URL
-            "platform": platform  # Pass through the detected platform
+            "platform": canonical_platform(clean_url, platform)
         }
     
     # Both methods failed

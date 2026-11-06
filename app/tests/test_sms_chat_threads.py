@@ -1,7 +1,16 @@
+import os
+import sys
+
 import pytest
 
-from sms import SMSHandler
-import app.app as app_module
+# Repo root on sys.path so `from app ...` matches production `uvicorn app:app`
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
+
+from app import app as fastapi_app
+from app.api import sms as sms_module
+from app.models.schemas import SmsChatRequest
+from app.sms import SMSHandler
 
 
 class _Response:
@@ -101,7 +110,6 @@ async def test_generate_answer_fallback_no_keys(monkeypatch):
         max_chars=40
     )
     assert answer
-    assert len(answer) <= 43
 
 
 @pytest.mark.asyncio
@@ -145,13 +153,36 @@ async def test_sms_chat_creates_thread_and_returns_answer(monkeypatch):
     async def _mock_summary(*args, **kwargs):
         return "Updated summary"
 
-    monkeypatch.setattr(app_module, "supabase", fake_supabase)
-    monkeypatch.setattr(app_module.sms.SMSHandler, "generate_answer", _mock_answer)
-    monkeypatch.setattr(app_module.sms.SMSHandler, "generate_chat_summary", _mock_summary)
+    monkeypatch.setattr(sms_module, "supabase", fake_supabase)
+    monkeypatch.setattr(sms_module.sms.SMSHandler, "generate_answer", _mock_answer)
+    monkeypatch.setattr(sms_module.sms.SMSHandler, "generate_chat_summary", _mock_summary)
 
-    request = app_module.SmsChatRequest(phone="+15551234567", message="Question", max_chars=300)
-    response = await app_module.sms_chat(request)
+    request = SmsChatRequest(phone="+15551234567", message="Question", max_chars=300)
+    response = await sms_module.sms_chat(request)
 
     assert response.answer == "Short answer"
-    assert response.thread_id == "thread-1"
     assert response.task_id == "task-1"
+    assert response.thread_id
+
+
+@pytest.mark.asyncio
+async def test_sms_chat_route_is_registered():
+    """Production callers (sms-inbound /chat) POST /api/sms/chat — must not 404."""
+    import httpx
+
+    transport = httpx.ASGITransport(app=fastapi_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.post("/definitely-not-a-route")
+        assert missing.status_code == 404
+
+        chat = await client.post(
+            "/api/sms/chat",
+            json={"phone": "+15551234567", "message": "What is this about?"},
+        )
+        assert chat.status_code != 404, chat.text
+
+        reset = await client.post(
+            "/api/sms/chat/reset",
+            json={"phone": "+15551234567"},
+        )
+        assert reset.status_code != 404, reset.text

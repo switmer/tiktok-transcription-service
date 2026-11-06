@@ -30,7 +30,8 @@ export type Platform =
   | 'threads'
   | 'loom'
   | 'spotify'
-  | 'webpage'  // Generic web page with video
+  | 'web'  // Generic web page with video (matches DB constraint)
+  | 'webpage'  // Deprecated alias; detectPlatform returns 'web'
   | null;
 
 /**
@@ -107,7 +108,7 @@ export function isInstagramUrl(url: string): boolean {
   // Direct: /reel/, /reels/, /p/, /tv/
   // Username-prefixed: /@username/reel/, /username/reel/
   // Share links: /share/reel/
-  if (/instagram\.com\/(?:(?:reel|reels|p|tv)\/|[^/]+\/(?:reel|reels|p|tv)\/|share\/(?:reel|p|video)\/)/i.test(url)) {
+  if (/instagram\.com\/(?:(?:reel|reels|p|tv)\/|[^/]+\/(?:reel|reels|p|tv)\/|share\/(?:reel|p|video\/)?[^/]+)/i.test(url)) {
     return true;
   }
   return false;
@@ -237,7 +238,7 @@ export function isWebPageUrl(url: string): boolean {
 /**
  * Detect the platform from a URL.
  * Returns null if the URL is not from a supported platform and not a generic web page.
- * Returns 'webpage' for generic http/https URLs that might contain a video.
+ * Returns 'web' for generic http/https URLs that might contain a video.
  */
 export function detectPlatform(url: string): Platform {
   if (!url) return null;
@@ -259,7 +260,7 @@ export function detectPlatform(url: string): Platform {
   if (isSpotifyUrl(cleanUrl)) return 'spotify';
   
   // Check if it's a generic web page URL (not a known platform but valid http/https)
-  if (isWebPageUrl(cleanUrl)) return 'webpage';
+  if (isWebPageUrl(cleanUrl)) return 'web';
   
   return null;
 }
@@ -276,7 +277,7 @@ export function isSupportedUrl(url: string): boolean {
  */
 export function isKnownPlatformUrl(url: string): boolean {
   const platform = detectPlatform(url);
-  return platform !== null && platform !== 'webpage';
+  return platform !== null && platform !== 'web' && platform !== 'webpage';
 }
 
 /**
