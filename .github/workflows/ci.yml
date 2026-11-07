@@ -70,6 +70,7 @@ jobs:
             app/tests/test_video_finder.py \
             app/tests/test_twilio_signature.py \
             app/tests/test_sms_chat_threads.py \
+            app/tests/test_contact_card.py \
             app/tests/test_large_audio_transcription.py \
             app/tests/test_language_detection.py \
             -q --tb=short

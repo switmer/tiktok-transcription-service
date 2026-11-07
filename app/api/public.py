@@ -5,7 +5,7 @@ import logging
 import os
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from PIL import Image, ImageDraw, ImageFont
 
@@ -614,3 +614,38 @@ async def public_get_square_thumbnail(task_id: str):
     except Exception as e:
         logger.error(f"Error fetching public square thumbnail for task {task_id}: {str(e)}", exc_info=True)
         raise ApiError(500, INTERNAL_ERROR, "Server error fetching square thumbnail")
+
+
+@router.api_route("/api/public/contact/ScribeTok.vcf", methods=["GET", "HEAD"])
+async def public_scribetok_vcard(request: Request):
+    """Public business vCard for Twilio MMS MediaUrl and tap-to-save fallback.
+
+    Contains only the ScribeTok brand name, configured business sender, and
+    public website. No user phone numbers, tokens, or message bodies.
+    Twilio validates MediaUrl with GET and HEAD.
+    """
+    from ..contact_card import build_vcard, vcard_http_headers
+
+    headers = vcard_http_headers()
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers)
+    body = build_vcard()
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/x-vcard",
+        headers=headers,
+    )
+
+
+@router.api_route("/api/public/contact/scribetok-icon.jpg", methods=["GET", "HEAD"])
+async def public_scribetok_contact_icon(request: Request):
+    """Square brand JPEG used as the vCard PHOTO. No user data."""
+    from ..contact_card import load_photo_jpeg_bytes, photo_http_headers
+
+    jpeg = load_photo_jpeg_bytes()
+    if not jpeg:
+        raise ApiError(404, TASK_NOT_FOUND, "Brand icon not available")
+    headers = photo_http_headers()
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers)
+    return Response(content=jpeg, media_type="image/jpeg", headers=headers)
