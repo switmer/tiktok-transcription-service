@@ -215,6 +215,17 @@ class SmsChatResetRequest(BaseModel):
     phone: str = Field(..., description="E.164 phone number")
 
 
+class WelcomeContactRequest(BaseModel):
+    """Internal request to send the first-time ScribeTok vCard (Edge → FastAPI)."""
+    phone: str = Field(..., description="E.164 phone number of a newly created SMS user")
+
+
+class WelcomeContactResponse(BaseModel):
+    """Result of a best-effort contact-card send. Never fails the inbound SMS."""
+    status: str = Field(..., description="disabled | skipped | sent | failed")
+    detail: Optional[str] = Field(None, description="Non-sensitive diagnostic")
+
+
 class FetchCommentsRequest(BaseModel):
     """Request model for fetching comments"""
     task_id: str = Field(..., description="Transcription task id")

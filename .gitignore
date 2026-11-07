@@ -77,6 +77,9 @@ app/static/*
 !app/static/favicon.png
 !app/static/transcript.css
 !app/static/.gitkeep
+!app/static/brand/
+!app/static/brand/scribetok-icon.jpg
+!app/static/brand/scribetok-icon.png
 **/*.tmp
 temp_input.json
 
