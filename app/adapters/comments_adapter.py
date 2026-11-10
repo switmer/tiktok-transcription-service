@@ -80,7 +80,8 @@ class TikTokCommentsAdapter:
         count: int = 30,
         cursor: str = None,
         max_retries: int = 3,
-        get_all: bool = False
+        get_all: bool = False,
+        preview: bool = False,
     ) -> Dict[str, Any]:
         """
         Fetch comments for a video with automatic provider fallback.
@@ -91,6 +92,7 @@ class TikTokCommentsAdapter:
             cursor: Pagination cursor (ignored if get_all=True)
             max_retries: Maximum retry attempts per provider
             get_all: If True, fetch ALL comments with pagination
+            preview: If True, one attempt per provider, fail-fast on 5xx, no backoff sleeps
         
         Returns:
             {
@@ -105,34 +107,39 @@ class TikTokCommentsAdapter:
         if get_all:
             return self._fetch_all_comments_with_pagination(video_id, max_retries)
         else:
-            return self._fetch_single_page(video_id, count, cursor, max_retries)
+            effective_retries = 1 if preview else max_retries
+            return self._fetch_single_page(
+                video_id, count, cursor, effective_retries, preview=preview
+            )
     
     def _fetch_single_page(
         self, 
         video_id: str, 
         count: int = 30,
         cursor: str = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        preview: bool = False,
     ) -> Dict[str, Any]:
         """Fetch a single page of comments (original behavior)"""
         for provider in self.providers:
             for attempt in range(max_retries):
                 try:
                     result = self._fetch_from_provider(
-                        provider, video_id, count, cursor, max_retries
+                        provider, video_id, count, cursor, max_retries, preview=preview
                     )
-                    if result.get('comments'):
-                        logger.info(
-                            f"Successfully fetched {len(result['comments'])} comments "
-                            f"from {provider['name']} for video {video_id}"
-                        )
-                        return result
+                    # Successful provider response — including genuine zero comments
+                    logger.info(
+                        f"Successfully fetched {len(result.get('comments') or [])} comments "
+                        f"from {provider['name']} for video {video_id}"
+                    )
+                    return result
                 except Exception as e:
                     logger.warning(
                         f"Provider {provider['name']} attempt {attempt + 1} failed: {e}"
                     )
-                    if attempt < max_retries - 1:
-                        time.sleep(1)  # Brief delay before retry
+                    if preview or attempt >= max_retries - 1:
+                        break  # next provider; no backoff sleep on preview
+                    time.sleep(1)  # Brief delay before retry
                     continue
         
         # All providers failed
@@ -322,7 +329,8 @@ class TikTokCommentsAdapter:
         video_id: str,
         count: int,
         cursor: Optional[str],
-        max_retries: int = 3
+        max_retries: int = 3,
+        preview: bool = False,
     ) -> Dict[str, Any]:
         """Fetch comments from a specific provider with enhanced error handling"""
         api_key = self.get_api_key()
@@ -352,28 +360,36 @@ class TikTokCommentsAdapter:
         
         if cursor:
             params['cursor'] = cursor
+
+        # Preview: single attempt, fail-fast on 5xx, no retry backoff sleeps
+        attempts = 1 if preview else max_retries
         
-        # Retry logic with exponential backoff
-        for attempt in range(max_retries):
+        for attempt in range(attempts):
             try:
                 response = requests.get(base_url, headers=headers, params=params, timeout=30)
+
+                # Preview path: fail fast on any 5xx (no retries / sleeps)
+                if preview and response.status_code >= 500:
+                    raise requests.exceptions.RequestException(
+                        f"Provider {provider['name']} returned {response.status_code}"
+                    )
                 
-                # Handle specific HTTP errors
+                # Handle specific HTTP errors (full fetch only)
                 if response.status_code == 504:
                     logger.warning(f"Gateway timeout (504) on attempt {attempt + 1}, retrying...")
-                    if attempt < max_retries - 1:
+                    if attempt < attempts - 1:
                         time.sleep(5 * (attempt + 1))  # Exponential backoff
                         continue
                     else:
-                        raise requests.exceptions.RequestException(f"Gateway timeout after {max_retries} attempts")
+                        raise requests.exceptions.RequestException(f"Gateway timeout after {attempts} attempts")
                 
                 if response.status_code == 429:
                     logger.warning(f"Rate limit (429) on attempt {attempt + 1}, retrying...")
-                    if attempt < max_retries - 1:
+                    if attempt < attempts - 1:
                         time.sleep(10 * (attempt + 1))  # Longer delay for rate limits
                         continue
                     else:
-                        raise requests.exceptions.RequestException(f"Rate limit exceeded after {max_retries} attempts")
+                        raise requests.exceptions.RequestException(f"Rate limit exceeded after {attempts} attempts")
                 
                 response.raise_for_status()
                 data = response.json()
@@ -390,35 +406,33 @@ class TikTokCommentsAdapter:
                 
             except requests.exceptions.Timeout:
                 logger.warning(f"Request timeout on attempt {attempt + 1}, retrying...")
-                if attempt < max_retries - 1:
+                if attempt < attempts - 1:
                     time.sleep(5 * (attempt + 1))
                     continue
                 else:
                     raise
             except requests.exceptions.ConnectionError:
                 logger.warning(f"Connection error on attempt {attempt + 1}, retrying...")
-                if attempt < max_retries - 1:
+                if attempt < attempts - 1:
                     time.sleep(5 * (attempt + 1))
                     continue
                 else:
                     raise
             except requests.exceptions.RequestException as e:
                 logger.error(f"Request error on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5 * (attempt + 1))
-                    continue
-                else:
+                if preview or attempt >= attempts - 1:
                     raise
+                time.sleep(5 * (attempt + 1))
+                continue
             except Exception as e:
                 logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5 * (attempt + 1))
-                    continue
-                else:
+                if preview or attempt >= attempts - 1:
                     raise
+                time.sleep(5 * (attempt + 1))
+                continue
         
         # This should never be reached due to the raise statements above
-        raise Exception(f"Failed to fetch comments after {max_retries} attempts")
+        raise Exception(f"Failed to fetch comments after {attempts} attempts")
     
     def _parse_api23(self, data: Dict, parent_id: Optional[str] = None) -> List[Comment]:
         """Parse tiktok-api23 response format"""
