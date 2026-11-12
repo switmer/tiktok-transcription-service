@@ -3124,6 +3124,32 @@ async def rich_link_preview(task_id: str, request: Request):
 # COMMENT EXTRACTION API (PRO FEATURE)
 # ====================================================================================
 
+_UNSUPPORTED_COMMENTS_PLATFORM_MESSAGE = "Comment research is TikTok-only for now."
+
+
+def _resolve_task_platform(task: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Return (platform, url) for a transcription task, deriving platform from URL if needed."""
+    url = task.get('video_url') or task.get('url')
+    platform = task.get('platform')
+    if not platform and url:
+        try:
+            platform = transcriber.canonical_platform(url)
+        except Exception:
+            platform = None
+    return platform, url
+
+
+def _unsupported_comments_platform_response(platform: Optional[str]) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "unsupported_platform",
+            "platform": platform,
+            "message": _UNSUPPORTED_COMMENTS_PLATFORM_MESSAGE,
+        },
+    )
+
+
 @app.post("/api/pro/comments/fetch", tags=["Pro Features - Comments"])
 async def fetch_video_comments(
     payload: FetchCommentsRequest,
@@ -3146,7 +3172,7 @@ async def fetch_video_comments(
         # Check if transcription exists
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                    .select('task_id, video_id, user_phone, comments_fetched, comment_count')
+                    .select('task_id, video_id, user_phone, comments_fetched, comment_count, platform, url, video_url')
                     .eq('task_id', payload.task_id)
                     .limit(1)
                     .execute()
@@ -3160,6 +3186,10 @@ async def fetch_video_comments(
         video_id = task.get('video_id')
         user_phone = task.get('user_phone')
         already_fetched = task.get('comments_fetched', False)
+        platform, _video_url = _resolve_task_platform(task)
+
+        if (platform or '').lower() != 'tiktok':
+            return _unsupported_comments_platform_response(platform)
 
         # If session token provided, validate it and use session phone for credits
         if x_session_token:
@@ -3196,14 +3226,21 @@ async def fetch_video_comments(
         
         adapter = TikTokCommentsAdapter([rapidapi_key])
         
-        # Get preview for credit estimation
+        # Get preview for credit estimation (off the event loop)
         logger.info(f"Getting preview for credit estimation (task {payload.task_id})")
-        preview_result = adapter.fetch_comments(video_id, count=20, get_all=False)
+        preview_result = await asyncio.to_thread(
+            lambda: adapter.fetch_comments(
+                video_id, count=20, get_all=False, preview=True
+            )
+        )
         
         if preview_result.get('error'):
-            raise ApiError(
-                503, SERVICE_UNAVAILABLE,
-                f"Failed to fetch preview: {preview_result['error']}"
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": preview_result['error'],
+                    "message": f"Failed to fetch preview: {preview_result['error']}",
+                },
             )
         
         preview_comments = preview_result.get('comments', [])
@@ -3267,9 +3304,13 @@ async def fetch_video_comments(
             except Exception as e:
                 logger.warning(f"Failed to create progress record: {e}")
         
-        # Fetch comments (all or single page)
+        # Fetch comments (all or single page) — never block the uvicorn event loop
         logger.info(f"Fetching comments for video {video_id} (task {payload.task_id}) - get_all={payload.get_all}")
-        result = adapter.fetch_comments(video_id, count=payload.count, get_all=payload.get_all)
+        result = await asyncio.to_thread(
+            lambda: adapter.fetch_comments(
+                video_id, count=payload.count, get_all=payload.get_all
+            )
+        )
         
         if result.get('error'):
             # Update progress as failed
@@ -3282,9 +3323,12 @@ async def fetch_video_comments(
                     }).eq('id', progress_id).execute()
                 )
             
-            raise ApiError(
-                503, SERVICE_UNAVAILABLE,
-                f"Failed to fetch comments: {result['error']}"
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": result['error'],
+                    "message": f"Failed to fetch comments: {result['error']}",
+                },
             )
         
         comments = result.get('comments', [])
@@ -3636,7 +3680,7 @@ async def preview_comments(
         # Get task info with comment_count from video metadata
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                .select('video_id, video_url, comments_fetched, comment_count')
+                .select('video_id, video_url, url, platform, comments_fetched, comment_count')
                 .eq('task_id', task_id)
                 .single()
                 .execute()
@@ -3647,8 +3691,11 @@ async def preview_comments(
 
         task = response.data
         video_id = task.get('video_id')
-        video_url = task.get('video_url')
+        platform, _task_url = _resolve_task_platform(task)
         stored_comment_count = task.get('comment_count')
+
+        if (platform or '').lower() != 'tiktok':
+            return _unsupported_comments_platform_response(platform)
 
         if not video_id:
             raise ApiError(400, VALIDATION_ERROR, "Video ID not available for this task")
@@ -3689,11 +3736,43 @@ async def preview_comments(
         
         adapter = TikTokCommentsAdapter([rapidapi_key])
         
-        # Fetch preview (first page only)
+        # Fetch preview off the event loop with a hard timeout so uvicorn
+        # cannot stall when RapidAPI providers hang.
         logger.info(f"Fetching preview comments for video {video_id} (task {task_id})")
-        result = adapter.fetch_comments(video_id, count=20, get_all=False)
-        
-        if not result.get('comments'):
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: adapter.fetch_comments(
+                        video_id, count=20, get_all=False, preview=True
+                    )
+                ),
+                timeout=10,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Comment preview timed out for video {video_id} (task {task_id})"
+            )
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": "preview_timeout",
+                    "message": "Comment preview timed out",
+                },
+            )
+
+        if result.get('error'):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": result['error'],
+                    "message": f"Failed to fetch comment preview: {result['error']}",
+                },
+            )
+
+        preview_comments = result.get('comments') or []
+
+        # Genuine TikTok video with zero comments → 200
+        if not preview_comments:
             return {
                 "preview_comments": [],
                 "estimated_total": 0,
@@ -3703,7 +3782,6 @@ async def preview_comments(
                 "message": "No comments available for this video"
             }
         
-        preview_comments = result['comments']
         has_more = result.get('has_more', False)
         
         # Estimate total comments
