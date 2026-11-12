@@ -73,6 +73,7 @@ jobs:
             app/tests/test_large_audio_transcription.py \
             app/tests/test_language_detection.py \
             app/tests/test_comments_preview.py \
+            app/tests/test_user_credits.py \
             -q --tb=short
 
   build:

@@ -2756,38 +2756,48 @@ async def create_checkout_session(
 @app.get("/api/users/credits", tags=["Payment & Billing"])
 async def get_user_credits(
     request: Request,
-    api_key: Optional[str] = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_session_token: Optional[str] = Header(None, alias="X-Session-Token"),
 ):
-    """Get the current user's credit balance"""
+    """Get the current user's credit balance.
+
+    Credits are stored on ``sms_users`` and keyed by phone / auth user id
+    (email is optional). SMS users often have no email, so email-only lookup
+    previously returned a fake 0. When the balance cannot be determined this
+    endpoint returns ``{"credits": null}`` so the UI can show "—".
+    """
     try:
-        # Get verified user email from Supabase auth token
-        user_email = None
+        try:
+            from .core.user_credits import identity_from_auth_user, resolve_sms_user_credits
+        except ImportError:
+            from core.user_credits import identity_from_auth_user, resolve_sms_user_credits
+
+        auth_user_id = None
+        phone = None
+        email = None
+
         auth_header = request.headers.get("authorization")
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header.replace("Bearer ", "")
             try:
                 user_response = supabase.auth.get_user(token)
                 if user_response and user_response.user:
-                    user_email = user_response.user.email
+                    identity = identity_from_auth_user(user_response.user)
+                    auth_user_id = identity.get("auth_user_id")
+                    phone = identity.get("phone")
+                    email = identity.get("email")
             except Exception:
                 logger.warning("Failed to verify auth token for credits lookup")
-                pass
 
-        if not user_email:
-            # Try alternative: get email from user object directly
-            # Return 0 for unauthenticated users
-            return {"credits": 0}
-        
-        # Get user credits from sms_users table (using email)
-        result = supabase.table("sms_users").select("credits_remaining").eq("email", user_email).execute()
-        
-        if result.data and len(result.data) > 0:
-            credits = result.data[0].get("credits_remaining", 0)
-            return {"credits": credits}
-        else:
-            # User doesn't exist, return 0 credits
-            return {"credits": 0}
-    
+        credits = resolve_sms_user_credits(
+            supabase,
+            session_token=x_session_token,
+            auth_user_id=auth_user_id,
+            phone=phone,
+            email=email,
+        )
+        return {"credits": credits}
+
     except HTTPException:
         raise
     except Exception as e:
