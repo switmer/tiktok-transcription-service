@@ -476,7 +476,7 @@ async def search_viral_content(
         try:
             # Use the viral quotes FTS function
             response = await asyncio.to_thread(
-                supabase.rpc('search_viral_quotes', {
+                lambda: supabase.rpc('search_viral_quotes', {
                     'search_query': q.strip(),
                     'min_likes': min_likes,
                     'limit_count': limit

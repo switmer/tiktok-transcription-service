@@ -72,12 +72,15 @@ async def transcribe(
             if is_youtube_url(request.url):
                 logger.info(f"Attempting instant YouTube transcription for task {task_id}")
 
+                # Once the transcript row is saved, post-save bookkeeping failures
+                # must not trigger background reprocessing (which can overwrite success).
+                transcript_saved = False
                 try:
                     youtube_result = transcriber.download_youtube_rapidapi(request.url)
 
                     if youtube_result:
                         await asyncio.to_thread(
-                            supabase.table('transcriptions')
+                            lambda: supabase.table('transcriptions')
                                     .update({
                                         'status': 'completed',
                                         'video_id': youtube_result['video_id'],
@@ -96,12 +99,14 @@ async def transcribe(
                                     .eq('task_id', task_id)
                                     .execute()
                         )
+                        transcript_saved = True
 
                         task_data['status'] = 'completed'
                         task_data['video_id'] = youtube_result['video_id']
                         task_data['title'] = youtube_result['title']
                         task_data['description'] = youtube_result.get('description')
                         task_data['platform'] = 'youtube'
+                        task_data['transcript'] = youtube_result['transcript']
 
                         logger.info(f"YouTube instant transcription completed for task {task_id}")
 
@@ -129,15 +134,21 @@ async def transcribe(
                         logger.info(f"Task {task_id} queued for background processing (YouTube fallback)")
 
                 except Exception as e:
-                    logger.error(f"YouTube instant transcription error for {task_id}: {str(e)}")
-                    background_tasks.add_task(
-                        process_transcription_task,
-                        task_id,
-                        request.url,
-                        request.callback_url,
-                        request.proxy,
-                    )
-                    logger.info(f"Task {task_id} queued for background processing (YouTube error fallback)")
+                    if transcript_saved:
+                        logger.error(
+                            f"Post-save bookkeeping error after successful YouTube instant "
+                            f"transcription for {task_id}: {e}"
+                        )
+                    else:
+                        logger.error(f"YouTube instant transcription error for {task_id}: {str(e)}")
+                        background_tasks.add_task(
+                            process_transcription_task,
+                            task_id,
+                            request.url,
+                            request.callback_url,
+                            request.proxy,
+                        )
+                        logger.info(f"Task {task_id} queued for background processing (YouTube error fallback)")
             else:
                 background_tasks.add_task(
                     process_transcription_task,

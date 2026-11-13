@@ -780,7 +780,7 @@ Or just use plain English: "quote", "tldr", "vault", etc. 🎥✨"""
                 return "🗂️ Vault temporarily unavailable. Please try again later!"
             
             response = await asyncio.to_thread(
-                supabase.table('transcript_jobs')
+                lambda: supabase.table('transcript_jobs')
                         .select("""
                             id, 
                             video_url, 

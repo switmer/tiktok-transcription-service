@@ -2098,6 +2098,28 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
         return 
 
     try:
+        # Never overwrite a successfully saved transcript with a later failure.
+        # Instant YouTube path can complete first; background fallback must not clobber it.
+        if status == "failed":
+            existing = await asyncio.to_thread(
+                lambda: supabase.table('transcriptions')
+                                .select('status, transcript')
+                                .eq('task_id', task_id)
+                                .maybe_single()
+                                .execute()
+            )
+            existing_row = getattr(existing, 'data', None) or None
+            if existing_row:
+                existing_status = existing_row.get('status')
+                existing_transcript = (existing_row.get('transcript') or '').strip()
+                if existing_status == 'completed' and existing_transcript:
+                    logger.warning(
+                        f"Refusing to mark task {task_id} as failed: already completed with "
+                        f"transcript ({len(existing_transcript)} chars). "
+                        f"Preserving saved transcript. Original error: {error}"
+                    )
+                    return
+
         update_data = {"status": status}
         # updated_at is handled by the database trigger
         if error:
@@ -2302,7 +2324,7 @@ async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
     try:
         # Find pending SMS jobs
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
             .select("task_id, url, tags")
             .eq('status', 'pending')
             .limit(500)
@@ -2350,7 +2372,7 @@ async def _cleanup_stuck_tasks_logic():
         cutoff_time = (datetime.now() - timedelta(minutes=30)).isoformat()
 
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
             .select("task_id")
             .eq('status', 'pending')
             .lt('created_at', cutoff_time)
@@ -2384,7 +2406,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
         # Update job status to processing
         if job_id:
             await asyncio.to_thread(
-                supabase.table('transcript_jobs')
+                lambda: supabase.table('transcript_jobs')
                         .update({'status': 'processing'})
                         .eq('id', job_id)
                         .execute()
@@ -2395,7 +2417,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
         
         # Get the completed task details
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
                     .select("task_id, status, title, transcript, error")
                     .eq('task_id', task_id)
                     .single()
@@ -2410,7 +2432,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                 if job_id:
                     public_link = f"{os.getenv('BASE_URL', 'https://share.scribetok.com')}/v/{task_id}"
                     await asyncio.to_thread(
-                        supabase.table('transcript_jobs')
+                        lambda: supabase.table('transcript_jobs')
                                 .update({
                                     'status': 'completed',
                                     'public_link': public_link
@@ -2470,7 +2492,7 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
                 # Update job status to failed
                 if job_id:
                     await asyncio.to_thread(
-                        supabase.table('transcript_jobs')
+                        lambda: supabase.table('transcript_jobs')
                                 .update({
                                     'status': 'failed',
                                     'error': task_data.get('error', 'Unknown error')
@@ -2492,11 +2514,12 @@ async def process_transcription_with_sms_notification(task_id: str, video_url: s
         # Update job status to failed
         if job_id:
             try:
+                error_message = str(e)
                 await asyncio.to_thread(
-                    supabase.table('transcript_jobs')
+                    lambda: supabase.table('transcript_jobs')
                             .update({
                                 'status': 'failed',
-                                'error': str(e)
+                                'error': error_message
                             })
                             .eq('id', job_id)
                             .execute()
@@ -2526,7 +2549,7 @@ async def _track_referral(ref_code: str, task_id: str, visitor_ip: str) -> bool:
         
         # Log the referral event
         await asyncio.to_thread(
-            supabase.table('referral_events').insert({
+            lambda: supabase.table('referral_events').insert({
                 'ref_code': ref_code,
                 'task_id': task_id,
                 'visitor_ip': visitor_ip,
@@ -2550,7 +2573,7 @@ async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
         
         # Get view count from referral events
         response = await asyncio.to_thread(
-            supabase.table('referral_events')
+            lambda: supabase.table('referral_events')
                     .select('id')
                     .eq('task_id', task_id)
                     .execute()
@@ -2561,7 +2584,7 @@ async def _get_viral_metrics(task_id: str) -> Tuple[int, int]:
         # Simple trending score (lower = more trending)
         # Based on views in last 24 hours
         recent_response = await asyncio.to_thread(
-            supabase.table('referral_events')
+            lambda: supabase.table('referral_events')
                     .select('id')
                     .eq('task_id', task_id)
                     .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
@@ -3485,7 +3508,7 @@ async def get_top_comments(
     """Get top N most-liked comments for a video"""
     try:
         response = await asyncio.to_thread(
-            supabase.table('video_comments')
+            lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .is_('parent_comment_id', 'null')  # Top-level only
@@ -3517,7 +3540,7 @@ async def get_comment_analytics(
     try:
         # Fetch all comments for this task
         response = await asyncio.to_thread(
-            supabase.table('video_comments')
+            lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .execute()
@@ -3592,7 +3615,7 @@ async def export_comments_csv(
         
         # Fetch all comments
         response = await asyncio.to_thread(
-            supabase.table('video_comments')
+            lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
@@ -3646,7 +3669,7 @@ async def export_comments_json(
     try:
         # Fetch all comments
         response = await asyncio.to_thread(
-            supabase.table('video_comments')
+            lambda: supabase.table('video_comments')
                     .select('*')
                     .eq('task_id', task_id)
                     .order('likes', desc=True)
