@@ -177,7 +177,7 @@ async def handle_inbound_sms(
             command = Body.split()[0].lower()
 
         await asyncio.to_thread(
-            supabase.table('user_messages')
+            lambda: supabase.table('user_messages')
                     .insert({
                         'from_phone': From,
                         'message_body': Body,
@@ -548,14 +548,14 @@ async def sms_analytics(api_key: str = Depends(verify_api_key)):
     """Get SMS usage analytics"""
     try:
         jobs_response = await asyncio.to_thread(
-            supabase.table('transcript_jobs')
+            lambda: supabase.table('transcript_jobs')
                     .select("status, created_at, from_phone")
                     .limit(5000)
                     .execute()
         )
 
         messages_response = await asyncio.to_thread(
-            supabase.table('user_messages')
+            lambda: supabase.table('user_messages')
                     .select("command, created_at, from_phone")
                     .limit(5000)
                     .execute()

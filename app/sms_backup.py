@@ -109,7 +109,7 @@ class SMSHandler:
         try:
             # Query transcript_jobs with linked transcriptions
             response = await asyncio.to_thread(
-                supabase.table('transcript_jobs')
+                lambda: supabase.table('transcript_jobs')
                         .select("id, video_url, status, created_at, transcriptions!transcript_jobs_transcript_id_fkey(title, transcript)")
                         .eq('from_phone', phone_number)
                         .eq('status', 'completed')
@@ -179,7 +179,7 @@ Just paste any video link and we'll transcribe it for you! 🎥✨"""
                 return "🗂️ Vault temporarily unavailable. Please try again later!"
             
             response = await asyncio.to_thread(
-                supabase.table('transcript_jobs')
+                lambda: supabase.table('transcript_jobs')
                         .select("""
                             id, 
                             video_url, 

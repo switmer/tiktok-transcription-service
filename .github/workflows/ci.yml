@@ -74,6 +74,7 @@ jobs:
             app/tests/test_language_detection.py \
             app/tests/test_comments_preview.py \
             app/tests/test_user_credits.py \
+            app/tests/test_youtube_instant_transcription.py \
             -q --tb=short
 
   build:
