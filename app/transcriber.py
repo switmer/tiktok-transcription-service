@@ -361,6 +361,86 @@ def download_youtube_rapidapi(url: str) -> dict:
         return None
 
 
+def fetch_youtube_captions(url: str, proxy: str = None) -> dict:
+    """Get YouTube captions (with timestamps) via youtube-transcript-api.
+
+    Returns {"status": ...} where status is one of:
+      "found"       - also has "result" (same shape as download_youtube_rapidapi)
+      "no_captions" - video has no captions (or is unavailable)
+      "blocked"     - YouTube blocked our IP (RequestBlocked / IpBlocked); NOT the same as no captions
+      "error"       - anything else
+    """
+    from youtube_transcript_api import (
+        YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled,
+        VideoUnavailable, RequestBlocked,
+    )
+    from youtube_transcript_api.proxies import GenericProxyConfig
+
+    match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([^&\n?#]+)', clean_url_for_api(url))
+    if not match:
+        return {"status": "error", "message": "could not find video id"}
+    video_id = match.group(1)
+
+    try:
+        proxy_config = GenericProxyConfig(http_url=proxy, https_url=proxy) if proxy else None
+        api = YouTubeTranscriptApi(proxy_config=proxy_config)
+        transcript_list = api.list(video_id)
+        try:
+            transcript = transcript_list.find_transcript(["en"])
+        except NoTranscriptFound:
+            transcript = next(iter(transcript_list))  # any language is better than Whisper on a long video
+        fetched = transcript.fetch()
+    except RequestBlocked as e:  # IpBlocked is a subclass
+        logger.warning(f"YouTube captions blocked for {video_id}: {type(e).__name__}")
+        return {"status": "blocked", "message": type(e).__name__}
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, StopIteration) as e:
+        logger.info(f"No YouTube captions for {video_id}: {type(e).__name__}")
+        return {"status": "no_captions", "message": type(e).__name__}
+    except Exception as e:
+        logger.error(f"YouTube captions failed for {video_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+    segments = [{"text": sn.text, "start": sn.start, "duration": sn.duration} for sn in fetched.snippets]
+    text = " ".join(seg["text"].replace("\n", " ").strip() for seg in segments).strip()
+    if not text:
+        return {"status": "no_captions", "message": "empty transcript"}
+
+    title, uploader, thumbnail_url = None, None, None
+    try:
+        oembed = requests.get(
+            f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json",
+            timeout=5
+        ).json()
+        title = oembed.get("title")
+        uploader = oembed.get("author_name")
+        thumbnail_url = oembed.get("thumbnail_url")
+    except Exception:
+        pass
+
+    return {
+        "status": "found",
+        "result": {
+            "video_id": video_id,
+            "title": title or "YouTube Video",
+            "description": None,
+            "transcript": text,
+            "platform": "youtube",
+            "thumbnail_url": thumbnail_url or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            "uploader": uploader,
+            "channel": uploader,
+            "duration": int(segments[-1]["start"] + segments[-1]["duration"]),
+            "download_method": "youtube_transcript_api",
+            "transcribed_at": datetime.now().isoformat(),
+            # Timestamped segments live in raw_metadata (no new column)
+            "metadata": {"captions": {
+                "language": fetched.language_code,
+                "is_generated": fetched.is_generated,
+                "segments": segments,
+            }},
+        },
+    }
+
+
 def download_tiktok_rapidapi(url: str, output_dir: str):
     """Download TikTok video using RapidAPI service"""
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")

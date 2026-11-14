@@ -1186,8 +1186,13 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
         if is_youtube_url(original_video_url):
             logger.info(f"Detected YouTube URL, attempting instant transcription: {original_video_url}")
             
-            # Try YouTube instant transcription via RapidAPI
-            youtube_result = transcriber.download_youtube_rapidapi(original_video_url)
+            # 1) Captions via youtube-transcript-api (timestamped), 2) RapidAPI as fallback
+            captions = transcriber.fetch_youtube_captions(original_video_url, normalize_proxy(proxy))
+            if captions["status"] == "found":
+                youtube_result = captions["result"]
+            else:
+                logger.warning(f"YouTube captions not used for task {task_id}: {captions['status']} ({captions.get('message')})")
+                youtube_result = transcriber.download_youtube_rapidapi(original_video_url)
             
             if youtube_result:
                 logger.info(f"YouTube instant transcription successful for task {task_id}")
