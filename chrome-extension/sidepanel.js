@@ -319,21 +319,19 @@ async function handleFile(file) {
     if (!totalChunks) throw new Error('No audio chunks were prepared.');
     const transcripts = [];
     let partialFailure = false;
-    let completedChunks = 0;
     setChunkProgress(0, totalChunks);
     for (let i = 0; i < totalChunks; i++) {
-      progressStatus.textContent = `${completedChunks} of ${totalChunks} chunks completed. Transcribing chunk ${i + 1}...`;
+      progressStatus.textContent = `${i} of ${totalChunks} chunks processed. Transcribing chunk ${i + 1}...`;
       try {
         const text = await waitForRun(run, transcribeChunk(chunks[i], openaiApiKey, run.controller.signal));
         transcripts.push(text);
-        completedChunks++;
       } catch (chunkErr) {
         if (chunkErr.name === 'AbortError') throw chunkErr;
         partialFailure = true;
         transcripts.push(`[Chunk ${i + 1} failed: ${chunkErr.message}]`);
       }
-      setChunkProgress(completedChunks, totalChunks);
-      progressStatus.textContent = `${completedChunks} of ${totalChunks} chunks completed.`;
+      setChunkProgress(i + 1, totalChunks);
+      progressStatus.textContent = `${i + 1} of ${totalChunks} chunks processed.`;
     }
     const fullText = transcripts.join(' ');
     showState('result');

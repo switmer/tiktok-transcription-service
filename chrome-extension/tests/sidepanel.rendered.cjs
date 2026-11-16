@@ -155,17 +155,20 @@ for (const stage of ['settings', 'submit', 'delay', 'poll', 'transcript']) {
   });
 }
 
-test('file prep spinner, measured chunks, partial failure and file title', async t => {
+test('file prep spinner, measured processed chunks, partial failure and file title', async t => {
   const page = await panel(t);
   await page.evaluate(() => startFile('voice.mp3'));
   assert.equal(await text(page, 'progressPct'), '');
   assert.equal(await text(page, 'cancelBtn'), 'Cancel');
-  await page.evaluate(() => mock.prep.resolve([1, 2].map(i => ({ blob: new Blob(['audio']), name: `${i}.wav` }))));
-  assert.equal(await text(page, 'progressPct'), '0/2');
+  await page.evaluate(() => mock.prep.resolve([1, 2, 3].map(i => ({ blob: new Blob(['audio']), name: `${i}.wav` }))));
+  assert.equal(await text(page, 'progressPct'), '0/3');
   await page.evaluate(() => mock.chunks[0].resolve('First chunk'));
-  assert.equal(await text(page, 'progressPct'), '1/2');
-  assert.match(await text(page, 'progressStatus'), /1 of 2 chunks completed/);
+  assert.equal(await text(page, 'progressPct'), '1/3');
+  assert.match(await text(page, 'progressStatus'), /1 of 3 chunks processed/);
   await page.evaluate(() => mock.chunks[1].reject(new Error('Mock failure')));
+  assert.equal(await text(page, 'progressPct'), '2/3');
+  assert.match(await text(page, 'progressStatus'), /2 of 3 chunks processed/);
+  await page.evaluate(() => mock.chunks[2].resolve('Last chunk'));
   assert.equal(await text(page, 'resultTitle'), 'voice.mp3');
   assert.equal(await page.locator('#resultTitle').isVisible(), true);
   assert.equal(await page.locator('#warningBanner').isVisible(), true);
