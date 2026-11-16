@@ -1,4 +1,5 @@
 """Checks for task statuses and the callback_url webhook. No network, no live DB."""
+import ipaddress
 import os
 import re
 import sys
@@ -51,7 +52,17 @@ def test_extension_poll_loop_only_checks_backend_statuses():
     "http://2130706433/x", "http://0x7f.1/x", "http://127.0.0.1:80@example.com.invalid/x",
 ])
 def test_unsafe_callback_urls_refused(url):
-    assert callbacks.resolve_safe_callback(url) is None
+    def resolve(host, port, **kwargs):
+        # Keep this suite offline, including platform-specific numeric host forms.
+        aliases = {"localhost": "127.0.0.1", "2130706433": "127.0.0.1", "0x7f.1": "127.0.0.1"}
+        try:
+            address = str(ipaddress.ip_address(aliases.get(host, host)))
+        except ValueError:
+            raise OSError("test hostname has no records")
+        return _public(address)
+
+    with patch.object(callbacks.socket, "getaddrinfo", side_effect=resolve):
+        assert callbacks.resolve_safe_callback(url) is None
 
 
 def test_hostname_resolving_to_private_ip_refused():
