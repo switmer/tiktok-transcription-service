@@ -45,6 +45,9 @@ def test_extension_poll_loop_only_checks_backend_statuses():
     "ftp://example.com/x", "file:///etc/passwd", "javascript:alert(1)", "http://", "not a url",
     "http://127.0.0.1/x", "http://localhost/x", "http://10.0.0.5/x", "http://192.168.1.1/x",
     "http://169.254.169.254/latest/meta-data", "http://[::1]/x", "http://0.0.0.0/x",
+    "http://[64:ff9b::7f00:1]/x", "http://[64:ff9b::a9fe:a9fe]/x", "http://[2002:7f00:1::]/x",
+    "http://[::127.0.0.1]/x", "http://[::ffff:127.0.0.1]/x", "http://224.0.0.1/x",
+    "http://2130706433/x", "http://0x7f.1/x", "http://127.0.0.1:80@example.com.invalid/x",
 ])
 def test_unsafe_callback_urls_refused(url):
     assert callbacks.resolve_safe_callback(url) is None
@@ -63,21 +66,28 @@ def test_mixed_public_and_private_records_refused():
 
 def test_public_url_pins_checked_ip():
     with patch.object(callbacks.socket, "getaddrinfo", return_value=_public("93.184.216.34")):
-        url, host = callbacks.resolve_safe_callback("https://example.com/hook?a=1")
-    assert url == "https://93.184.216.34:443/hook?a=1" and host == "example.com"
+        url, host, host_header = callbacks.resolve_safe_callback("https://example.com/hook?a=1")
+    assert url == "https://93.184.216.34:443/hook?a=1" and host == "example.com" and host_header == "example.com"
+
+
+def test_host_header_keeps_non_default_port():
+    with patch.object(callbacks.socket, "getaddrinfo", return_value=_public("93.184.216.34")):
+        _, _, host_header = callbacks.resolve_safe_callback("https://example.com:8443/hook")
+    assert host_header == "example.com:8443"
 
 
 @pytest.mark.asyncio
 async def test_send_callback_posts_to_checked_ip_without_redirects():
     client = MagicMock()
-    client.post = AsyncMock()
+    client.stream.return_value = MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
     ctx = MagicMock(__aenter__=AsyncMock(return_value=client), __aexit__=AsyncMock(return_value=False))
     with patch.object(callbacks.socket, "getaddrinfo", return_value=_public("93.184.216.34")), \
          patch.object(callbacks.httpx, "AsyncClient", return_value=ctx) as cls:
         await callbacks.send_task_callback("https://example.com/hook", {"task_id": "t", "status": "completed"})
     assert cls.call_args.kwargs["follow_redirects"] is False
-    assert client.post.call_args.args[0] == "https://93.184.216.34:443/hook"
-    assert client.post.call_args.kwargs["headers"] == {"Host": "example.com"}
+    assert client.stream.call_args.args[:2] == ("POST", "https://93.184.216.34:443/hook")
+    assert client.stream.call_args.kwargs["headers"] == {"Host": "example.com"}
+    assert client.stream.call_args.kwargs["extensions"] == {"sni_hostname": "example.com"}
 
 
 @pytest.mark.asyncio
@@ -91,7 +101,7 @@ async def test_send_callback_skips_unsafe_url():
 async def test_send_callback_failure_does_not_raise():
     with patch.object(callbacks.socket, "getaddrinfo", side_effect=OSError("dns down")):
         await callbacks.send_task_callback("https://example.com/hook", {"task_id": "t"})
-    with patch.object(callbacks, "resolve_safe_callback", return_value=("https://1.1.1.1:443/", "x")), \
+    with patch.object(callbacks, "resolve_safe_callback", return_value=("https://1.1.1.1:443/", "x", "x")), \
          patch.object(callbacks.httpx, "AsyncClient", side_effect=RuntimeError("boom")):
         await callbacks.send_task_callback("https://example.com/hook", {"task_id": "t"})
 
