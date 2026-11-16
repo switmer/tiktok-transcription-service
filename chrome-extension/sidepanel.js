@@ -314,7 +314,7 @@ async function handleUrl(url) {
           if (task.status === 'pending') {
             progressStatus.textContent = 'Queued...';
             jumpFakeProgress(15);
-          } else if (task.status === 'transcribing') {
+          } else if (task.status === 'processing') {
             progressStatus.textContent = 'Transcribing...';
             stopFakeProgress();
             jumpFakeProgress(35);

@@ -34,6 +34,13 @@ def test_response_model_matches_allowed_statuses():
         TranscriptionResponse(task_id="t", status="transcribing", created_at="2025-01-01T00:00:00Z")
 
 
+def test_extension_poll_loop_only_checks_backend_statuses():
+    js_path = os.path.join(_root, "chrome-extension", "sidepanel.js")
+    js = open(js_path, encoding="utf-8").read()
+    used = set(re.findall(r"task\.status === '([a-z_]+)'", js))
+    assert used == ALLOWED, f"extension checks statuses the backend never sends: {used - ALLOWED}"
+
+
 @pytest.mark.parametrize("url", [
     "ftp://example.com/x", "file:///etc/passwd", "javascript:alert(1)", "http://", "not a url",
     "http://127.0.0.1/x", "http://localhost/x", "http://10.0.0.5/x", "http://192.168.1.1/x",
