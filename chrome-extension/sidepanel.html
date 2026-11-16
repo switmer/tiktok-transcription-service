@@ -28,6 +28,7 @@
       color: #a1a1aa;
       cursor: pointer;
       text-decoration: underline;
+      background: none; border: none;
     }
     .container { flex: 1; padding: 16px; display: flex; flex-direction: column; }
 
@@ -87,6 +88,7 @@
     }
     .url-input {
       flex: 1;
+      min-width: 0;
       padding: 10px 12px;
       border: 1px solid #4a4a4f;
       border-radius: 8px;
@@ -94,7 +96,8 @@
       background: #2a2a2d;
       color: #e4e4e7;
     }
-    .url-input:focus { outline: none; border-color: #3b82f6; }
+    :focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+    .url-label { display: block; font-size: 13px; margin-bottom: 6px; }
     .url-input::placeholder { color: #71717a; }
     .url-submit-btn {
       padding: 10px 16px;
@@ -164,11 +167,17 @@
       font-size: 13px;
       color: #71717a;
       margin-bottom: 20px;
-      animation: pulse-status 2s ease-in-out infinite;
     }
-    @keyframes pulse-status {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+    .progress-ring-wrap.indeterminate .progress-ring-fill {
+      stroke-dasharray: 80 247;
+      stroke-dashoffset: 0 !important;
+      animation: spin 1.2s linear infinite;
+      transform-origin: center;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-elapsed, .stop-explanation { font-size: 12px; color: #a1a1aa; margin-bottom: 12px; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
     }
     .cancel-btn {
       padding: 8px 20px;
@@ -198,15 +207,6 @@
       object-fit: cover;
       display: block;
     }
-    .result-hero-overlay {
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(0deg, rgba(18,18,18,0.95) 0%, rgba(18,18,18,0.4) 50%, transparent 100%);
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-end;
-      padding: 16px;
-    }
     .result-title {
       font-size: 16px;
       font-weight: 700;
@@ -224,7 +224,7 @@
       color: rgba(255,255,255,0.6);
       letter-spacing: 0.02em;
     }
-    .result-hero-hidden { display: none; }
+    .result-heading { margin-bottom: 12px; }
 
     .result-meta-row {
       display: flex;
@@ -339,6 +339,7 @@
     .history-list { list-style: none; }
     .history-item {
       padding: 8px 0;
+      width: 100%; background: none; border: none; text-align: left; font: inherit;
       border-bottom: 1px solid #2a2a2d;
       cursor: pointer;
       display: flex;
@@ -354,11 +355,11 @@
 <body>
   <header>
     <h1>Transcribe</h1>
-    <span class="settings-link" id="openSettings">Settings</span>
+    <button type="button" class="settings-link" id="openSettings">Settings</button>
   </header>
 
   <div class="container">
-    <div class="error-msg" id="errorMsg"></div>
+    <div class="error-msg" id="errorMsg" role="alert"></div>
 
     <!-- State 1: Input -->
     <div class="drop-zone" id="dropZone">
@@ -372,6 +373,7 @@
     <!-- URL input -->
     <div id="urlSection">
       <div class="url-divider">or</div>
+      <label class="url-label" for="urlInput">Video or podcast URL</label>
       <div class="url-input-wrap">
         <input type="text" class="url-input" id="urlInput" placeholder="Paste a video or podcast URL">
         <button class="url-submit-btn" id="urlSubmitBtn">Transcribe</button>
@@ -380,15 +382,17 @@
 
     <!-- State 2: Progress -->
     <div class="progress-section" id="progressSection">
-      <div class="progress-ring-wrap">
+      <div class="progress-ring-wrap" aria-hidden="true">
         <svg class="progress-ring" viewBox="0 0 120 120">
           <circle class="progress-ring-bg" cx="60" cy="60" r="52"/>
           <circle class="progress-ring-fill" id="progressRingFill" cx="60" cy="60" r="52"/>
         </svg>
-        <div class="progress-pct" id="progressPct">0%</div>
+        <div class="progress-pct" id="progressPct"></div>
       </div>
       <div class="progress-filename" id="progressFilename"></div>
-      <div class="progress-status" id="progressStatus">Preparing...</div>
+      <div class="progress-status" id="progressStatus" role="status" aria-live="polite" aria-atomic="true">Preparing...</div>
+      <div class="progress-elapsed" id="progressElapsed"></div>
+      <p class="stop-explanation" id="stopExplanation" hidden>Stop waiting returns to the input. The server task continues; this does not cancel it.</p>
       <button class="cancel-btn" id="cancelBtn">Cancel</button>
     </div>
 
@@ -396,17 +400,17 @@
     <div class="result-section" id="resultSection">
       <div class="result-hero" id="resultHero">
         <img class="result-hero-img" id="resultHeroImg" src="" alt="">
-        <div class="result-hero-overlay">
-          <div class="result-title" id="resultTitle"></div>
-          <div class="result-channel" id="resultChannel"></div>
-        </div>
+      </div>
+      <div class="result-heading">
+        <h2 class="result-title" id="resultTitle"></h2>
+        <div class="result-channel" id="resultChannel"></div>
       </div>
       <div class="result-meta-row" id="resultMetaRow">
         <span class="result-platform-badge" id="resultPlatform"></span>
         <span class="result-duration" id="resultDuration"></span>
       </div>
       <div class="result-filename" id="resultFilename" style="display:none"></div>
-      <div class="warning-banner" id="warningBanner"></div>
+      <div class="warning-banner" id="warningBanner" role="status"></div>
       <div class="transcript-box" id="transcriptBox"></div>
       <div class="result-actions">
         <button class="primary" id="copyBtn">Copy</button>

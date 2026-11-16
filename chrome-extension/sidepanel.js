@@ -1,12 +1,7 @@
 const ACCEPTED_TYPES = ['.wav', '.mp3', '.mp4', '.m4a', '.ogg', '.flac'];
 const MAX_HISTORY = 20;
 
-let abortController = null;
-let elapsedTimer = null;
-let elapsedSeconds = 0;
-let fakeProgressTimer = null;
-let fakeProgress = 0;
-let pollTimer = null;
+let activeRun = null;
 
 // DOM elements
 const dropZone = document.getElementById('dropZone');
@@ -83,12 +78,9 @@ urlInput.addEventListener('keydown', (e) => {
   }
 });
 
-// Cancel — snap back to input immediately
+// URL requests through the background script cannot be aborted. Stop only our wait.
 cancelBtn.addEventListener('click', () => {
-  if (abortController) abortController.abort();
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  stopElapsedTimer();
-  stopFakeProgress();
+  stopRun();
   showState('input');
 });
 
@@ -114,6 +106,7 @@ downloadBtn.addEventListener('click', () => {
 });
 
 newBtn.addEventListener('click', () => {
+  stopRun();
   showState('input');
 });
 
@@ -132,14 +125,12 @@ function showResultHero(task) {
   const platform = task && task.platform;
   const duration = task && task.duration;
 
-  if (thumb) {
-    resultHeroImg.src = thumb;
-    resultHero.classList.remove('result-hero-hidden');
-  } else {
-    resultHero.classList.add('result-hero-hidden');
-  }
+  resultHero.style.display = thumb ? 'block' : 'none';
+  resultHeroImg.onerror = () => { resultHero.style.display = 'none'; };
+  if (thumb) resultHeroImg.src = thumb;
+  else resultHeroImg.removeAttribute('src');
 
-  resultTitle.textContent = title || '';
+  resultTitle.textContent = title || resultFilename.textContent || 'Transcript';
   resultChannel.textContent = channel || '';
 
   if (platform || duration) {
@@ -170,70 +161,63 @@ function showError(msg) {
   errorMsg.style.display = 'block';
 }
 
-// Elapsed timer
-function formatElapsed(secs) {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function startElapsedTimer() {
-  stopElapsedTimer();
-  elapsedSeconds = 0;
-  elapsedTimer = setInterval(() => {
-    elapsedSeconds++;
-    const statusEl = document.getElementById('progressStatus');
-    const base = statusEl.textContent.replace(/ \(\d+:\d{2}\)$/, '');
-    statusEl.textContent = `${base} (${formatElapsed(elapsedSeconds)})`;
-  }, 1000);
-}
-
-function stopElapsedTimer() {
-  if (elapsedTimer) {
-    clearInterval(elapsedTimer);
-    elapsedTimer = null;
+// Each run owns its controller and timer. Late work can never clear a newer run.
+function stopRun() {
+  const run = activeRun;
+  activeRun = null;
+  if (run) {
+    clearInterval(run.timer);
+    run.controller.abort();
   }
 }
 
-// Ring progress helpers
-const RING_CIRCUMFERENCE = 2 * Math.PI * 52; // ~326.73
-
-function setRingProgress(pct) {
-  const offset = RING_CIRCUMFERENCE * (1 - pct / 100);
-  progressRingFill.style.strokeDashoffset = offset;
-  progressPct.textContent = `${Math.round(pct)}%`;
+function beginRun(kind, filename) {
+  stopRun();
+  const run = { controller: new AbortController(), started: Date.now() };
+  activeRun = run;
+  showState('progress');
+  progressFilename.textContent = filename;
+  progressStatus.textContent = kind === 'url' ? 'Waiting for server...' : 'Preparing file...';
+  cancelBtn.textContent = kind === 'url' ? 'Stop waiting' : 'Cancel';
+  document.getElementById('stopExplanation').hidden = kind !== 'url';
+  setChunkProgress();
+  const elapsed = document.getElementById('progressElapsed');
+  const updateElapsed = () => {
+    const secs = Math.floor((Date.now() - run.started) / 1000);
+    elapsed.textContent = `Elapsed ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  updateElapsed();
+  run.timer = setInterval(updateElapsed, 1000);
+  return run;
 }
 
-// Fake progress — decelerating crawl toward a ceiling, never quite reaching it
-function startFakeProgress(ceiling = 90) {
-  stopFakeProgress();
-  setRingProgress(fakeProgress);
-  fakeProgressTimer = setInterval(() => {
-    const remaining = ceiling - fakeProgress;
-    const step = remaining * (0.02 + Math.random() * 0.04);
-    fakeProgress = Math.min(fakeProgress + step, ceiling);
-    setRingProgress(fakeProgress);
-  }, 300);
+// Settle even when an underlying operation (background fetch or audio prep) cannot stop.
+function waitForRun(run, promise) {
+  const signal = run.controller.signal;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(value => {
+      if (signal.aborted) onAbort();
+      else resolve(value);
+    }, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
-function jumpFakeProgress(minPct) {
-  if (fakeProgress < minPct) {
-    fakeProgress = minPct;
-    setRingProgress(fakeProgress);
+async function pollDelay(run) {
+  let timer;
+  try {
+    await waitForRun(run, new Promise(resolve => { timer = setTimeout(resolve, 3000); }));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-function finishFakeProgress() {
-  stopFakeProgress();
-  fakeProgress = 100;
-  setRingProgress(100);
-}
-
-function stopFakeProgress() {
-  if (fakeProgressTimer) {
-    clearInterval(fakeProgressTimer);
-    fakeProgressTimer = null;
-  }
+function setChunkProgress(completed, total) {
+  progressRingFill.parentElement.parentElement.classList.toggle('indeterminate', total === undefined);
+  progressPct.textContent = total === undefined ? '' : `${completed}/${total}`;
+  progressRingFill.style.strokeDashoffset = total ? 2 * Math.PI * 52 * (1 - completed / total) : 0;
 }
 
 // URL handling
@@ -264,105 +248,55 @@ async function handleUrl(url) {
     return;
   }
 
-  const backend = await getBackendUrl();
-
-  showState('progress');
-  progressFilename.textContent = url;
-  progressStatus.textContent = 'Submitting...';
-  startElapsedTimer();
-  fakeProgress = 0;
-  setRingProgress(0);
-  startFakeProgress(30);
-
-  abortController = new AbortController();
-
+  const run = beginRun('url', url);
   try {
-    // Submit URL to backend (via background script to bypass CORS)
-    const submitResp = await bgFetch(`${backend}/api/public/transcribe`, {
+    const backend = await waitForRun(run, getBackendUrl());
+    const submitResp = await waitForRun(run, bgFetch(`${backend}/api/public/transcribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
-    });
-
+    }));
     if (!submitResp.ok) {
       throw new Error(`Submit failed (${submitResp.status}): ${submitResp.body || 'Unknown error'}`);
     }
-
     const submitData = typeof submitResp.body === 'string' ? JSON.parse(submitResp.body) : submitResp.body;
     const task_id = submitData.task_id;
     if (!task_id) throw new Error('No task_id returned from server.');
+    progressStatus.textContent = 'Waiting for server status...';
 
-    // Poll for completion
-    stopFakeProgress();
-    jumpFakeProgress(10);
-    startFakeProgress(70);
-    progressStatus.textContent = 'Downloading...';
-
-    await new Promise((resolve, reject) => {
-      pollTimer = setInterval(async () => {
-        if (abortController && abortController.signal.aborted) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          reject(new DOMException('Aborted', 'AbortError'));
-          return;
-        }
-        try {
-          const taskResp = await bgFetch(`${backend}/api/public/tasks/${task_id}`);
-          if (!taskResp.ok) return; // retry next tick
-          const task = typeof taskResp.body === 'string' ? JSON.parse(taskResp.body) : taskResp.body;
-
-          if (task.status === 'pending') {
-            progressStatus.textContent = 'Queued...';
-            jumpFakeProgress(15);
-          } else if (task.status === 'processing') {
-            progressStatus.textContent = 'Transcribing...';
-            stopFakeProgress();
-            jumpFakeProgress(35);
-            startFakeProgress(80);
-          } else if (task.status === 'completed') {
-            clearInterval(pollTimer);
-            pollTimer = null;
-            finishFakeProgress();
-            stopElapsedTimer();
-
-            // Fetch transcript
-            const txResp = await bgFetch(`${backend}/api/public/transcript/${task_id}?format=plain`);
-            const transcript = txResp.ok ? (typeof txResp.body === 'string' ? txResp.body : JSON.stringify(txResp.body)) : '[Could not fetch transcript]';
-
-            showState('result');
-            showResultHero(task);
-            resultFilename.textContent = task.title || url;
-            transcriptBox.textContent = transcript;
-            urlInput.value = '';
-
-            await saveToHistory(task.title || url, transcript, task.thumbnail_url);
-            resolve();
-          } else if (task.status === 'failed') {
-            clearInterval(pollTimer);
-            pollTimer = null;
-            reject(new Error(task.error || 'Transcription failed on server.'));
-          }
-        } catch (err) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          reject(err);
-        }
-      }, 3000);
-    });
-
-  } catch (err) {
-    stopFakeProgress();
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    if (err.name === 'AbortError') {
-      stopElapsedTimer();
-      showState('input');
-      return;
+    while (true) {
+      await pollDelay(run);
+      const taskResp = await waitForRun(run, bgFetch(`${backend}/api/public/tasks/${task_id}`));
+      if (!taskResp.ok) continue;
+      const task = typeof taskResp.body === 'string' ? JSON.parse(taskResp.body) : taskResp.body;
+      if (task.status === 'pending') {
+        progressStatus.textContent = 'Queued...';
+      } else if (task.status === 'processing') {
+        progressStatus.textContent = 'Processing...';
+      } else if (task.status === 'failed') {
+        throw new Error(task.error || 'Transcription failed on server.');
+      } else if (task.status === 'completed') {
+        progressStatus.textContent = 'Fetching transcript...';
+        const txResp = await waitForRun(run, bgFetch(`${backend}/api/public/transcript/${task_id}?format=plain`));
+        if (!txResp.ok) throw new Error('Could not fetch transcript.');
+        const transcript = typeof txResp.body === 'string' ? txResp.body : JSON.stringify(txResp.body);
+        showState('result');
+        resultFilename.textContent = task.title || url;
+        showResultHero(task);
+        transcriptBox.textContent = transcript;
+        urlInput.value = '';
+        await waitForRun(run, saveToHistory(task.title || url, transcript, task.thumbnail_url, task, run));
+        break;
+      } else {
+        progressStatus.textContent = 'Waiting for server status...';
+      }
     }
-    stopElapsedTimer();
+  } catch (err) {
+    if (activeRun !== run) return;
     showState('input');
-    showError(err.message);
+    if (err.name !== 'AbortError') showError(err.message);
   } finally {
-    abortController = null;
+    if (activeRun === run) stopRun();
   }
 }
 
@@ -374,90 +308,49 @@ async function handleFile(file) {
     return;
   }
 
-  // Check API key
-  const { openaiApiKey } = await chrome.storage.sync.get('openaiApiKey');
-  if (!openaiApiKey) {
-    showError('Set your OpenAI API key in Settings.');
-    return;
-  }
-
-  showState('progress');
   const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-  progressFilename.textContent = `${file.name} \u2014 ${sizeMB} MB`;
-  progressStatus.textContent = 'Preparing...';
-  startElapsedTimer();
-  fakeProgress = 0;
-  setRingProgress(0);
-  startFakeProgress(15); // crawl to ~15% during prep
-
-  abortController = new AbortController();
-
+  const run = beginRun('file', `${file.name} — ${sizeMB} MB`);
   try {
-    // Chunk the audio
-    progressStatus.textContent = needsChunking(file)
-      ? 'Splitting audio into chunks...'
-      : 'Preparing file...';
-
-    const chunks = await chunkAudioFile(file);
+    const { openaiApiKey } = await waitForRun(run, chrome.storage.sync.get('openaiApiKey'));
+    if (!openaiApiKey) throw new Error('Set your OpenAI API key in Settings.');
+    progressStatus.textContent = needsChunking(file) ? 'Splitting audio into chunks...' : 'Preparing file...';
+    const chunks = await waitForRun(run, chunkAudioFile(file));
     const totalChunks = chunks.length;
+    if (!totalChunks) throw new Error('No audio chunks were prepared.');
     const transcripts = [];
     let partialFailure = false;
-
-    // Prep done — now crawl toward 90% during transcription
-    stopFakeProgress();
-    jumpFakeProgress(15);
-    startFakeProgress(90);
-
+    let completedChunks = 0;
+    setChunkProgress(0, totalChunks);
     for (let i = 0; i < totalChunks; i++) {
-      if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-      progressStatus.textContent = totalChunks > 1
-        ? `Transcribing chunk ${i + 1} of ${totalChunks}...`
-        : 'Transcribing...';
-
+      progressStatus.textContent = `${completedChunks} of ${totalChunks} chunks completed. Transcribing chunk ${i + 1}...`;
       try {
-        const text = await transcribeChunk(chunks[i], openaiApiKey, abortController.signal);
+        const text = await waitForRun(run, transcribeChunk(chunks[i], openaiApiKey, run.controller.signal));
         transcripts.push(text);
+        completedChunks++;
       } catch (chunkErr) {
         if (chunkErr.name === 'AbortError') throw chunkErr;
         partialFailure = true;
         transcripts.push(`[Chunk ${i + 1} failed: ${chunkErr.message}]`);
       }
-      // Ensure bar is at least at the real chunk progress (15-90% range)
-      jumpFakeProgress(15 + ((i + 1) / totalChunks) * 75);
+      setChunkProgress(completedChunks, totalChunks);
+      progressStatus.textContent = `${completedChunks} of ${totalChunks} chunks completed.`;
     }
-
-    finishFakeProgress();
-    stopElapsedTimer();
     const fullText = transcripts.join(' ');
-
-    // Show result
     showState('result');
-    showResultHero(null);
     resultFilename.textContent = file.name;
-    resultFilename.style.display = 'block';
+    showResultHero(null);
     transcriptBox.textContent = fullText;
-
     if (partialFailure) {
       warningBanner.textContent = 'Some chunks failed to transcribe. Partial transcript shown.';
       warningBanner.style.display = 'block';
     }
-
-    // Save to history
-    await saveToHistory(file.name, fullText);
-
+    await waitForRun(run, saveToHistory(file.name, fullText, null, null, run));
   } catch (err) {
-    stopFakeProgress();
-    if (err.name === 'AbortError') {
-      stopElapsedTimer();
-      showState('input');
-      return;
-    }
-    stopElapsedTimer();
+    if (activeRun !== run) return;
     showState('input');
-    showError(err.message);
+    if (err.name !== 'AbortError') showError(err.message);
   } finally {
-    abortController = null;
+    if (activeRun === run) stopRun();
   }
 }
 
@@ -485,9 +378,11 @@ async function transcribeChunk(chunk, apiKey, signal) {
 }
 
 // History
-async function saveToHistory(filename, transcript, thumbnailUrl) {
+async function saveToHistory(filename, transcript, thumbnailUrl, task, run) {
   const { transcribeHistory = [] } = await chrome.storage.local.get('transcribeHistory');
+  if (activeRun !== run) return;
   const entry = {
+    metadata: task ? { title: task.title, uploader: task.uploader, channel: task.channel, platform: task.platform, duration: task.duration } : null,
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     filename,
     transcript,
@@ -497,7 +392,7 @@ async function saveToHistory(filename, transcript, thumbnailUrl) {
   transcribeHistory.unshift(entry);
   if (transcribeHistory.length > MAX_HISTORY) transcribeHistory.length = MAX_HISTORY;
   await chrome.storage.local.set({ transcribeHistory });
-  renderHistory(transcribeHistory);
+  if (activeRun === run) renderHistory(transcribeHistory);
 }
 
 async function loadHistory() {
@@ -513,20 +408,21 @@ function renderHistory(history) {
   historyList.innerHTML = '';
   history.forEach((entry) => {
     const li = document.createElement('li');
-    li.className = 'history-item';
-    li.innerHTML = `
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'history-item';
+    button.innerHTML = `
       <span class="history-item-name">${escapeHtml(entry.filename)}</span>
       <span class="history-item-date">${new Date(entry.date).toLocaleDateString()}</span>
     `;
-    li.addEventListener('click', () => {
+    button.addEventListener('click', () => {
+      stopRun();
       showState('result');
-      showResultHero(entry.thumbnailUrl ? { thumbnail_url: entry.thumbnailUrl, title: entry.filename } : null);
-      if (!entry.thumbnailUrl) {
-        resultFilename.textContent = entry.filename;
-        resultFilename.style.display = 'block';
-      }
+      resultFilename.textContent = entry.filename;
+      showResultHero({ ...entry.metadata, thumbnail_url: entry.thumbnailUrl, title: entry.filename });
       transcriptBox.textContent = entry.transcript;
     });
+    li.appendChild(button);
     historyList.appendChild(li);
   });
 }
