@@ -259,6 +259,7 @@ else:
 app.include_router(discovery.router)
 
 from .core.auth import validate_api_key, verify_api_key
+from .core.callbacks import send_task_callback
 from .models.schemas import (
     TranscriptionRequest,
     TranscriptionResponse,
@@ -1064,8 +1065,27 @@ def create_square_thumbnail(input_path: str, output_path: str, size: int = 1200)
         logger.error(f"Error creating square thumbnail: {str(e)}")
         return False
 
-@task_timeout(1800)  # 30-minute timeout
 async def process_transcription_task(task_id: str, video_url: str, callback_url: Optional[str] = None, proxy: Optional[str] = None):
+    """Process a transcription task, then POST the result to callback_url if one was given."""
+    await _run_transcription_task(task_id, video_url, callback_url, proxy)
+    if not callback_url or supabase is None:
+        return
+    try:
+        row = await asyncio.to_thread(
+            lambda: supabase.table('transcriptions')
+                            .select("status, error, video_id, title, thumbnail_url")
+                            .eq('task_id', task_id)
+                            .maybe_single()
+                            .execute()
+        )
+        data = row.data if row else None
+        if data and data.get('status') in ('completed', 'failed'):
+            await send_task_callback(callback_url, {"task_id": task_id, **data})
+    except Exception as e:
+        logger.error(f"Callback lookup failed for task {task_id}: {e}")
+
+@task_timeout(1800)  # 30-minute timeout
+async def _run_transcription_task(task_id: str, video_url: str, callback_url: Optional[str] = None, proxy: Optional[str] = None):
     """Process a transcription task asynchronously."""
     if supabase is None:
         logger.error(f"Cannot process task {task_id}: Supabase client not initialized")
@@ -1207,10 +1227,9 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
                     ytdlp_audio, ytdlp_video_id, ytdlp_title = transcriber.download_youtube_ytdlp(original_video_url, output_dir)
                     if ytdlp_audio and ytdlp_video_id:
                         # Proceed with transcription using downloaded audio
-                        await update_task_status(task_id, "transcribing")
+                        await update_task_status(task_id, "processing")
                         transcript_response, transcript_file_path = transcriber.transcribe_audio(ytdlp_audio, output_dir, ytdlp_video_id)
                         if transcript_response:
-                            await update_task_status(task_id, "generating")
                             # Load transcript text
                             transcript_text = ""
                             if transcript_file_path and os.path.exists(transcript_file_path):

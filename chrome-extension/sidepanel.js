@@ -311,8 +311,8 @@ async function handleUrl(url) {
           if (!taskResp.ok) return; // retry next tick
           const task = typeof taskResp.body === 'string' ? JSON.parse(taskResp.body) : taskResp.body;
 
-          if (task.status === 'downloading') {
-            progressStatus.textContent = 'Downloading...';
+          if (task.status === 'pending') {
+            progressStatus.textContent = 'Queued...';
             jumpFakeProgress(15);
           } else if (task.status === 'transcribing') {
             progressStatus.textContent = 'Transcribing...';

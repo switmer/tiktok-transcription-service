@@ -24,6 +24,7 @@ from ..app import (
     process_transcription_task,
     send_completion_sms,
 )
+from ..core.callbacks import send_task_callback
 from ..core.paths import DOWNLOADS_DIR, static_dir
 from ..database import supabase
 from .. import sms, transcriber
@@ -115,6 +116,19 @@ async def transcribe(
                                 )
                             except Exception as sms_err:
                                 logger.error(f"Failed to send SMS for YouTube instant task {task_id}: {sms_err}")
+
+                        if request.callback_url:
+                            background_tasks.add_task(
+                                send_task_callback,
+                                request.callback_url,
+                                {
+                                    "task_id": str(task_id),
+                                    "status": "completed",
+                                    "video_id": youtube_result['video_id'],
+                                    "title": youtube_result['title'],
+                                    "thumbnail_url": youtube_result.get('thumbnail_url'),
+                                },
+                            )
                     else:
                         logger.warning(
                             f"YouTube instant transcription failed for {task_id}, falling back to background processing"
