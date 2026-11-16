@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 # is_global on Python 3.10 misses these ranges, which can wrap or tunnel to private IPv4 addresses.
-_BLOCKED_NETS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "::/96")]
+_BLOCKED_NETS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "::/96", "::ffff:0:0:0/96")]
 
 
 def _is_public(ip) -> bool:
@@ -47,7 +47,8 @@ def resolve_safe_callback(callback_url: str) -> Optional[Tuple[str, str]]:
     ip_text = f"[{ip}]" if ip.version == 6 else str(ip)
     netloc = f"{ip_text}:{port}"
     default_port = 443 if parts.scheme == "https" else 80
-    host_header = host if port == default_port else f"{host}:{port}"
+    host_text = f"[{host}]" if ":" in host else host
+    host_header = host_text if port == default_port else f"{host_text}:{port}"
     return urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, "")), host, host_header
 
 

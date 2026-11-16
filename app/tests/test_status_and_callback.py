@@ -47,6 +47,7 @@ def test_extension_poll_loop_only_checks_backend_statuses():
     "http://169.254.169.254/latest/meta-data", "http://[::1]/x", "http://0.0.0.0/x",
     "http://[64:ff9b::7f00:1]/x", "http://[64:ff9b::a9fe:a9fe]/x", "http://[2002:7f00:1::]/x",
     "http://[::127.0.0.1]/x", "http://[::ffff:127.0.0.1]/x", "http://224.0.0.1/x",
+    "http://[::ffff:0:7f00:1]/x", "http://[::ffff:0:a9fe:a9fe]/x",
     "http://2130706433/x", "http://0x7f.1/x", "http://127.0.0.1:80@example.com.invalid/x",
 ])
 def test_unsafe_callback_urls_refused(url):
@@ -68,6 +69,11 @@ def test_public_url_pins_checked_ip():
     with patch.object(callbacks.socket, "getaddrinfo", return_value=_public("93.184.216.34")):
         url, host, host_header = callbacks.resolve_safe_callback("https://example.com/hook?a=1")
     assert url == "https://93.184.216.34:443/hook?a=1" and host == "example.com" and host_header == "example.com"
+
+
+def test_host_header_brackets_ipv6_literal():
+    _, _, h = callbacks.resolve_safe_callback("http://[2606:4700::1111]:8080/x")
+    assert h == "[2606:4700::1111]:8080"
 
 
 def test_host_header_keeps_non_default_port():
