@@ -305,10 +305,19 @@
     }
     .new-btn:hover { background: rgba(255,255,255,0.06); color: #e4e4e7; }
 
-    .source-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
-    .source-link { flex: 1; min-width: 0; overflow-wrap: anywhere; color: #93c5fd; font-size: 13px; }
-    .copy-source-btn { padding: 5px 8px; background: #2a2a2d; border: 1px solid #4a4a4f; border-radius: 6px; color: #e4e4e7; white-space: nowrap; cursor: pointer; }
+    .result-title-row { display: flex; align-items: flex-start; gap: 8px; }
+    .result-title-row .result-title { flex: 1; min-width: 0; }
+    .source-control { position: relative; flex: none; }
+    .source-control[hidden] { display: none; }
+    .copy-source-btn { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin-top: -5px; background: none; border: none; border-radius: 6px; color: #a1a1aa; cursor: pointer; }
+    .copy-source-btn:hover { color: #e4e4e7; background: #2a2a2d; }
+    .source-tooltip { visibility: hidden; position: absolute; z-index: 2; right: 0; top: 100%; width: 260px; max-width: calc(100vw - 32px); padding: 10px; border: 1px solid #4a4a4f; border-radius: 6px; background: #252526; color: #e4e4e7; font-size: 12px; font-weight: 400; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
+    .source-control:not(.tooltip-dismissed):hover .source-tooltip,
+    .source-control:not(.tooltip-dismissed):focus-within .source-tooltip { visibility: visible; }
+    .source-control:not(.tooltip-dismissed):hover .source-tooltip,
+    .source-control:not(.tooltip-dismissed):focus-within .source-tooltip { visibility: visible; }
     .source-note { font-size: 12px; color: #a1a1aa; margin-bottom: 12px; }
+    .source-note:empty { display: none; }
 
     /* Warning banner */
     .warning-banner {
@@ -407,12 +416,16 @@
         <img class="result-hero-img" id="resultHeroImg" src="" alt="">
       </div>
       <div class="result-heading">
-        <h2 class="result-title" id="resultTitle"></h2>
+        <div class="result-title-row">
+          <h2 class="result-title" id="resultTitle"></h2>
+          <div class="source-control" id="sourceControl" hidden>
+            <button class="copy-source-btn" id="copySourceBtn" type="button" aria-label="Copy source link" aria-describedby="sourceTooltip" hidden>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 .5l3-3a5 5 0 0 0-7-7l-2 2"/><path d="M14 11a5 5 0 0 0-7-.5l-3 3a5 5 0 0 0 7 7l2-2"/></svg>
+            </button>
+            <div class="source-tooltip" id="sourceTooltip" role="tooltip"></div>
+          </div>
+        </div>
         <div class="result-channel" id="resultChannel"></div>
-      </div>
-      <div class="source-row">
-        <a class="source-link" id="sourceLink" target="_blank" rel="noopener noreferrer" hidden></a>
-        <button class="copy-source-btn" id="copySourceBtn" type="button" hidden>Copy link</button>
       </div>
       <p class="source-note" id="sourceNote" role="status"></p>
       <div class="result-meta-row" id="resultMetaRow">

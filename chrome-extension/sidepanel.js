@@ -134,27 +134,43 @@ function historySource(entry) {
   return { url: null, recovered: false };
 }
 
+let sourceFeedbackTimer = null;
+
 function showSource(value, note = '') {
-  const link = document.getElementById('sourceLink');
   const button = document.getElementById('copySourceBtn');
+  const control = document.getElementById('sourceControl');
   const source = safeSourceUrl(value);
-  link.hidden = button.hidden = !source;
-  link.textContent = source || '';
-  if (source) link.href = source;
-  else link.removeAttribute('href');
-  button.textContent = 'Copy link';
-  document.getElementById('sourceNote').textContent = note;
+  clearTimeout(sourceFeedbackTimer);
+  control.classList.remove('tooltip-dismissed');
+  control.hidden = button.hidden = !source;
+  if (source) button.dataset.sourceUrl = source;
+  else delete button.dataset.sourceUrl;
+  button.setAttribute('aria-label', source ? `Copy source link: ${source}` : 'Copy source link');
+  document.getElementById('sourceTooltip').textContent = source ? `Click to copy source link\n${source}` : '';
+  const status = document.getElementById('sourceNote');
+  status.textContent = note;
+  status.dataset.note = note;
 }
 
-document.getElementById('copySourceBtn').addEventListener('click', async () => {
-  const link = document.getElementById('sourceLink');
-  const source = link.getAttribute('href');
+const sourceButton = document.getElementById('copySourceBtn');
+const sourceControl = document.getElementById('sourceControl');
+sourceButton.addEventListener('focus', () => sourceControl.classList.remove('tooltip-dismissed'));
+sourceControl.addEventListener('mouseenter', () => sourceControl.classList.remove('tooltip-dismissed'));
+sourceButton.addEventListener('keydown', event => {
+  if (event.key === 'Escape') sourceControl.classList.add('tooltip-dismissed');
+});
+sourceButton.addEventListener('click', async () => {
+  const source = sourceButton.dataset.sourceUrl;
   if (!source) return;
+  const status = document.getElementById('sourceNote');
   try {
     await navigator.clipboard.writeText(source);
-    if (link.getAttribute('href') === source) document.getElementById('sourceNote').textContent = 'Link copied';
+    if (sourceButton.dataset.sourceUrl !== source) return;
+    status.textContent = 'Link copied';
+    clearTimeout(sourceFeedbackTimer);
+    sourceFeedbackTimer = setTimeout(() => { status.textContent = status.dataset.note; }, 2000);
   } catch {
-    if (link.getAttribute('href') === source) document.getElementById('sourceNote').textContent = 'Could not copy link. Select the URL to copy it.';
+    if (sourceButton.dataset.sourceUrl === source) status.textContent = 'Could not copy link. Select the URL in the tooltip and copy it.';
   }
 });
 

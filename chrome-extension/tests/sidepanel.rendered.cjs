@@ -255,13 +255,13 @@ test('source URL survives saving, reopening history, copying and downloading', a
   await tick(page);
   await reply(page, 'poll', { status: 'completed', title: 'Source title' });
   await reply(page, 'transcript', 'Saved transcript');
-  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://youtube.com/watch?v=source');
+  assert.equal(await page.locator('#copySourceBtn').getAttribute('data-source-url'), 'https://youtube.com/watch?v=source');
   await page.locator('#copySourceBtn').click();
   assert.equal(await page.evaluate(() => mock.clipboard), 'https://youtube.com/watch?v=source');
   assert.equal(await page.evaluate(() => mock.history[0].sourceUrl), 'https://youtube.com/watch?v=source');
   await page.locator('#newBtn').click();
   await page.locator('.history-item').click();
-  assert.equal(await page.locator('#sourceLink').isVisible(), true);
+  assert.equal(await page.locator('#copySourceBtn').isVisible(), true);
   await page.locator('#copyBtn').click();
   assert.equal(await page.evaluate(() => mock.clipboard), 'Saved transcript');
   await page.locator('#downloadBtn').click();
@@ -272,7 +272,7 @@ test('source URL survives saving, reopening history, copying and downloading', a
 test('older history recovers YouTube source from its stored thumbnail', async t => {
   const page = await panel(t, [entry('Old video', 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg')]);
   await page.locator('.history-item').click();
-  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://www.youtube.com/watch?v=abcdefghijk');
+  assert.equal(await page.locator('#copySourceBtn').getAttribute('data-source-url'), 'https://www.youtube.com/watch?v=abcdefghijk');
   assert.match(await text(page, 'sourceNote'), /Recovered/);
   assert.equal(await page.evaluate(() => mock.history[0].sourceUrl), undefined, 'opening history does not rewrite it');
 });
@@ -281,13 +281,13 @@ test('old entries without recoverable URLs say so and unsafe URLs never become l
   const items = [entry('No saved source'), { ...entry('Unsafe', 'https://evil.invalid/vi/abcdefghijk/hqdefault.jpg'), sourceUrl: 'javascript:alert(1)' }, { ...entry('URL filename'), filename: 'https://youtube.com/watch?v=legacy' }];
   const page = await panel(t, items);
   await page.locator('.history-item').nth(2).click();
-  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://youtube.com/watch?v=legacy');
+  assert.equal(await page.locator('#copySourceBtn').getAttribute('data-source-url'), 'https://youtube.com/watch?v=legacy');
   await page.locator('.history-item').nth(0).click();
-  assert.equal(await page.locator('#sourceLink').isVisible(), false);
+  assert.equal(await page.locator('#copySourceBtn').isVisible(), false);
   assert.match(await text(page, 'sourceNote'), /wasn.t saved/);
   await page.locator('.history-item').nth(1).click();
   assert.equal(await page.locator('#copySourceBtn').isVisible(), false);
-  assert.equal(await page.locator('#sourceLink').getAttribute('href'), null);
+  assert.equal(await page.locator('#copySourceBtn').getAttribute('data-source-url'), null);
 });
 
 test('local-file result clears prior source link and clipboard failures are announced', async t => {
@@ -295,11 +295,44 @@ test('local-file result clears prior source link and clipboard failures are anno
   await page.locator('.history-item').click();
   await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw Error('denied'); }; });
   await page.locator('#copySourceBtn').click();
-  assert.equal(await text(page, 'sourceNote'), 'Could not copy link. Select the URL to copy it.');
+  assert.equal(await text(page, 'sourceNote'), 'Could not copy link. Select the URL in the tooltip and copy it.');
   await page.evaluate(() => startFile('voice.mp3'));
   await page.evaluate(() => mock.prep.resolve([{ blob: new Blob(['audio']), name: 'voice.wav' }]));
   await page.evaluate(() => mock.chunks[0].resolve('File transcript'));
-  assert.equal(await page.locator('#sourceLink').isVisible(), false);
-  assert.equal(await page.locator('#sourceLink').getAttribute('href'), null);
+  assert.equal(await page.locator('#copySourceBtn').isVisible(), false);
+  assert.equal(await page.locator('#copySourceBtn').getAttribute('data-source-url'), null);
   assert.equal(await text(page, 'sourceNote'), 'Local file');
+});
+
+
+test('compact source icon shows full tooltip on hover and keyboard focus, copies with brief feedback', async t => {
+  const url = 'https://www.youtube.com/watch?v=abcdefghijk&list=long-list';
+  const page = await panel(t, [{ ...entry('Budget Committee — November 10, 2026'), sourceUrl: url }]);
+  await page.locator('.history-item').click();
+  const button = page.locator('#copySourceBtn');
+  const tooltip = page.locator('#sourceTooltip');
+  assert.equal(await page.locator('#sourceLink').count(), 0, 'no visible raw URL row');
+  assert.equal(await button.textContent().then(v => v.trim()), '', 'icon-only button');
+  assert.equal(await button.getAttribute('aria-label'), `Copy source link: ${url}`);
+  assert.equal(await tooltip.isVisible(), false);
+  await button.hover();
+  assert.equal(await tooltip.isVisible(), true);
+  assert.equal(await tooltip.textContent(), `Click to copy source link\n${url}`);
+  await screenshot(page, 'source-icon-hover');
+  await page.mouse.move(0, 0);
+  await button.focus();
+  assert.equal(await tooltip.isVisible(), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await tooltip.isVisible(), false);
+  await button.blur();
+  await button.focus();
+  assert.equal(await tooltip.isVisible(), true);
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => mock.clipboard), url);
+  assert.equal(await text(page, 'sourceNote'), 'Link copied');
+  await page.clock.runFor(2100);
+  assert.equal(await text(page, 'sourceNote'), '');
+  await button.blur();
+  await page.mouse.move(0, 0);
+  await screenshot(page, 'source-icon');
 });
