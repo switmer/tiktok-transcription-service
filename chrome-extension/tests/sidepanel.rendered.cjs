@@ -246,3 +246,60 @@ test('file prep error and missing key return to input without a stale result', a
   assert.equal(await page.locator('#dropZone').isVisible(), true);
   assert.equal(await page.evaluate(() => mock.history.length), 0);
 });
+
+
+test('source URL survives saving, reopening history, copying and downloading', async t => {
+  const page = await panel(t);
+  await page.evaluate(() => startUrl('source'));
+  await reply(page, 'submit', { task_id: 'source' });
+  await tick(page);
+  await reply(page, 'poll', { status: 'completed', title: 'Source title' });
+  await reply(page, 'transcript', 'Saved transcript');
+  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://youtube.com/watch?v=source');
+  await page.locator('#copySourceBtn').click();
+  assert.equal(await page.evaluate(() => mock.clipboard), 'https://youtube.com/watch?v=source');
+  assert.equal(await page.evaluate(() => mock.history[0].sourceUrl), 'https://youtube.com/watch?v=source');
+  await page.locator('#newBtn').click();
+  await page.locator('.history-item').click();
+  assert.equal(await page.locator('#sourceLink').isVisible(), true);
+  await page.locator('#copyBtn').click();
+  assert.equal(await page.evaluate(() => mock.clipboard), 'Saved transcript');
+  await page.locator('#downloadBtn').click();
+  assert.equal(await page.evaluate(() => mock.download), 'Source title.txt');
+  await screenshot(page, 'source-link');
+});
+
+test('older history recovers YouTube source from its stored thumbnail', async t => {
+  const page = await panel(t, [entry('Old video', 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg')]);
+  await page.locator('.history-item').click();
+  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://www.youtube.com/watch?v=abcdefghijk');
+  assert.match(await text(page, 'sourceNote'), /Recovered/);
+  assert.equal(await page.evaluate(() => mock.history[0].sourceUrl), undefined, 'opening history does not rewrite it');
+});
+
+test('old entries without recoverable URLs say so and unsafe URLs never become links', async t => {
+  const items = [entry('No saved source'), { ...entry('Unsafe', 'https://evil.invalid/vi/abcdefghijk/hqdefault.jpg'), sourceUrl: 'javascript:alert(1)' }, { ...entry('URL filename'), filename: 'https://youtube.com/watch?v=legacy' }];
+  const page = await panel(t, items);
+  await page.locator('.history-item').nth(2).click();
+  assert.equal(await page.locator('#sourceLink').getAttribute('href'), 'https://youtube.com/watch?v=legacy');
+  await page.locator('.history-item').nth(0).click();
+  assert.equal(await page.locator('#sourceLink').isVisible(), false);
+  assert.match(await text(page, 'sourceNote'), /wasn.t saved/);
+  await page.locator('.history-item').nth(1).click();
+  assert.equal(await page.locator('#copySourceBtn').isVisible(), false);
+  assert.equal(await page.locator('#sourceLink').getAttribute('href'), null);
+});
+
+test('local-file result clears prior source link and clipboard failures are announced', async t => {
+  const page = await panel(t, [{ ...entry('Video'), sourceUrl: 'https://youtube.com/watch?v=saved' }]);
+  await page.locator('.history-item').click();
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw Error('denied'); }; });
+  await page.locator('#copySourceBtn').click();
+  assert.equal(await text(page, 'sourceNote'), 'Could not copy link. Select the URL to copy it.');
+  await page.evaluate(() => startFile('voice.mp3'));
+  await page.evaluate(() => mock.prep.resolve([{ blob: new Blob(['audio']), name: 'voice.wav' }]));
+  await page.evaluate(() => mock.chunks[0].resolve('File transcript'));
+  assert.equal(await page.locator('#sourceLink').isVisible(), false);
+  assert.equal(await page.locator('#sourceLink').getAttribute('href'), null);
+  assert.equal(await text(page, 'sourceNote'), 'Local file');
+});

@@ -110,6 +110,54 @@ newBtn.addEventListener('click', () => {
   showState('input');
 });
 
+// Keep saved source links separate from transcript copy/download actions.
+function safeSourceUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
+function historySource(entry) {
+  const saved = safeSourceUrl(entry.sourceUrl) || safeSourceUrl(entry.metadata?.source_url)
+    || safeSourceUrl(entry.metadata?.video_url) || safeSourceUrl(entry.metadata?.url)
+    || safeSourceUrl(entry.filename);
+  if (saved) return { url: saved, recovered: false };
+  // Older entries kept thumbnails but discarded the submitted URL.
+  try {
+    const thumb = new URL(entry.thumbnailUrl);
+    if (['i.ytimg.com', 'img.youtube.com'].includes(thumb.hostname) && ['http:', 'https:'].includes(thumb.protocol)) {
+      const match = thumb.pathname.match(/^\/(?:vi|vi_webp)\/([a-zA-Z0-9_-]{11})\//);
+      if (match) return { url: `https://www.youtube.com/watch?v=${match[1]}`, recovered: true };
+    }
+  } catch { /* This entry has no recoverable source. */ }
+  return { url: null, recovered: false };
+}
+
+function showSource(value, note = '') {
+  const link = document.getElementById('sourceLink');
+  const button = document.getElementById('copySourceBtn');
+  const source = safeSourceUrl(value);
+  link.hidden = button.hidden = !source;
+  link.textContent = source || '';
+  if (source) link.href = source;
+  else link.removeAttribute('href');
+  button.textContent = 'Copy link';
+  document.getElementById('sourceNote').textContent = note;
+}
+
+document.getElementById('copySourceBtn').addEventListener('click', async () => {
+  const link = document.getElementById('sourceLink');
+  const source = link.getAttribute('href');
+  if (!source) return;
+  try {
+    await navigator.clipboard.writeText(source);
+    if (link.getAttribute('href') === source) document.getElementById('sourceNote').textContent = 'Link copied';
+  } catch {
+    if (link.getAttribute('href') === source) document.getElementById('sourceNote').textContent = 'Could not copy link. Select the URL to copy it.';
+  }
+});
+
 // Result hero card
 function formatDuration(secs) {
   if (!secs) return '';
@@ -130,6 +178,7 @@ function showResultHero(task) {
   if (thumb) resultHeroImg.src = thumb;
   else resultHeroImg.removeAttribute('src');
 
+  showSource(task?.source_url || task?.video_url || task?.url, task ? '' : 'Local file');
   resultTitle.textContent = title || resultFilename.textContent || 'Transcript';
   resultChannel.textContent = channel || '';
 
@@ -282,10 +331,11 @@ async function handleUrl(url) {
         const transcript = typeof txResp.body === 'string' ? txResp.body : JSON.stringify(txResp.body);
         showState('result');
         resultFilename.textContent = task.title || url;
-        showResultHero(task);
+        const sourceTask = { ...task, source_url: url };
+        showResultHero(sourceTask);
         transcriptBox.textContent = transcript;
         urlInput.value = '';
-        await waitForRun(run, saveToHistory(task.title || url, transcript, task.thumbnail_url, task, run));
+        await waitForRun(run, saveToHistory(task.title || url, transcript, task.thumbnail_url, sourceTask, run));
         break;
       } else {
         progressStatus.textContent = 'Waiting for server status...';
@@ -380,6 +430,7 @@ async function saveToHistory(filename, transcript, thumbnailUrl, task, run) {
   const { transcribeHistory = [] } = await chrome.storage.local.get('transcribeHistory');
   if (activeRun !== run) return;
   const entry = {
+    sourceUrl: safeSourceUrl(task?.source_url || task?.video_url || task?.url),
     metadata: task ? { title: task.title, uploader: task.uploader, channel: task.channel, platform: task.platform, duration: task.duration } : null,
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     filename,
@@ -418,6 +469,8 @@ function renderHistory(history) {
       showState('result');
       resultFilename.textContent = entry.filename;
       showResultHero({ ...entry.metadata, thumbnail_url: entry.thumbnailUrl, title: entry.filename });
+      const source = historySource(entry);
+      showSource(source.url, source.recovered ? 'Recovered from the saved YouTube thumbnail' : source.url ? '' : /\.(wav|mp3|mp4|mov|m4a|ogg|flac)$/i.test(entry.filename) ? 'Local file' : 'Source link wasn’t saved for this transcript.');
       transcriptBox.textContent = entry.transcript;
     });
     li.appendChild(button);

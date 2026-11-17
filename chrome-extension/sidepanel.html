@@ -305,6 +305,11 @@
     }
     .new-btn:hover { background: rgba(255,255,255,0.06); color: #e4e4e7; }
 
+    .source-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+    .source-link { flex: 1; min-width: 0; overflow-wrap: anywhere; color: #93c5fd; font-size: 13px; }
+    .copy-source-btn { padding: 5px 8px; background: #2a2a2d; border: 1px solid #4a4a4f; border-radius: 6px; color: #e4e4e7; white-space: nowrap; cursor: pointer; }
+    .source-note { font-size: 12px; color: #a1a1aa; margin-bottom: 12px; }
+
     /* Warning banner */
     .warning-banner {
       display: none;
@@ -405,6 +410,11 @@
         <h2 class="result-title" id="resultTitle"></h2>
         <div class="result-channel" id="resultChannel"></div>
       </div>
+      <div class="source-row">
+        <a class="source-link" id="sourceLink" target="_blank" rel="noopener noreferrer" hidden></a>
+        <button class="copy-source-btn" id="copySourceBtn" type="button" hidden>Copy link</button>
+      </div>
+      <p class="source-note" id="sourceNote" role="status"></p>
       <div class="result-meta-row" id="resultMetaRow">
         <span class="result-platform-badge" id="resultPlatform"></span>
         <span class="result-duration" id="resultDuration"></span>
