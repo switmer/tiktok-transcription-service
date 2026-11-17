@@ -51,7 +51,7 @@ def paid_session(metadata=None):
 async def test_webhook_uses_app_phone_and_price_not_checkout_input():
     items = SimpleNamespace(data=[{
         "price": {"id": "price_1RnBh3BaZtBtpc8wC4aXxkCx"}, "quantity": 1,
-    }], get=lambda key: False)
+    }], has_more=False)
     credit = AsyncMock(return_value={"success": True, "applied": True, "total_credits": 8})
     confirm = AsyncMock()
     with patch.object(stripe_webhook.stripe.checkout.Session, "list_line_items", return_value=items):
@@ -77,7 +77,7 @@ async def test_webhook_refuses_payment_without_sms_phone():
 
 @pytest.mark.asyncio
 async def test_webhook_refuses_unknown_price():
-    items = SimpleNamespace(data=[{"price": {"id": "price_unknown"}, "quantity": 1}], get=lambda key: False)
+    items = SimpleNamespace(data=[{"price": {"id": "price_unknown"}, "quantity": 1}], has_more=False)
     with patch.object(stripe_webhook.stripe.checkout.Session, "list_line_items", return_value=items):
         with patch.object(stripe_webhook, "add_credits_to_user", new_callable=AsyncMock) as credit:
             result = await stripe_webhook.process_successful_payment(paid_session())
@@ -89,7 +89,7 @@ async def test_webhook_refuses_unknown_price():
 async def test_webhook_retry_does_not_send_second_confirmation():
     items = SimpleNamespace(data=[{
         "price": {"id": "price_1RnBh3BaZtBtpc8wC4aXxkCx"}, "quantity": 1,
-    }], get=lambda key: False)
+    }], has_more=False)
     credit = AsyncMock(return_value={"success": True, "applied": False, "total_credits": 8})
     confirm = AsyncMock()
     with patch.object(stripe_webhook.stripe.checkout.Session, "list_line_items", return_value=items):
