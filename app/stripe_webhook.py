@@ -76,7 +76,8 @@ async def handle_stripe_webhook(request: Request) -> Dict[str, Any]:
         
         # Handle the event
         if event["type"] == "checkout.session.completed":
-            session = event["data"]["object"]
+            # stripe>=13 returns StripeObjects that reject dict .get(); normalize to dict
+            session = event["data"]["object"].to_dict()
             
             # Process the successful payment
             result = await process_successful_payment(session)
@@ -110,7 +111,7 @@ async def process_successful_payment(session: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         line_items = stripe.checkout.Session.list_line_items(session_id, limit=100)
-        if line_items.get("has_more"):
+        if line_items.has_more:
             return {"success": False, "error": "Too many line items to verify", "session_id": session_id}
         total_credits = 0
         purchased_products = []
