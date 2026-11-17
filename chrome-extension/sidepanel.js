@@ -156,8 +156,8 @@ const sourceButton = document.getElementById('copySourceBtn');
 const sourceControl = document.getElementById('sourceControl');
 sourceButton.addEventListener('focus', () => sourceControl.classList.remove('tooltip-dismissed'));
 sourceControl.addEventListener('mouseenter', () => sourceControl.classList.remove('tooltip-dismissed'));
-sourceButton.addEventListener('keydown', event => {
-  if (event.key === 'Escape') sourceControl.classList.add('tooltip-dismissed');
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !sourceControl.hidden) sourceControl.classList.add('tooltip-dismissed');
 });
 sourceButton.addEventListener('click', async () => {
   const source = sourceButton.dataset.sourceUrl;
@@ -170,7 +170,10 @@ sourceButton.addEventListener('click', async () => {
     clearTimeout(sourceFeedbackTimer);
     sourceFeedbackTimer = setTimeout(() => { status.textContent = status.dataset.note; }, 2000);
   } catch {
-    if (sourceButton.dataset.sourceUrl === source) status.textContent = 'Could not copy link. Select the URL in the tooltip and copy it.';
+    if (sourceButton.dataset.sourceUrl === source) {
+      clearTimeout(sourceFeedbackTimer);
+      status.textContent = 'Could not copy link. Select the URL in the tooltip and copy it.';
+    }
   }
 });
 

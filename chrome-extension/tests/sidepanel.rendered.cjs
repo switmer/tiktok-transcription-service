@@ -336,3 +336,26 @@ test('compact source icon shows full tooltip on hover and keyboard focus, copies
   await page.mouse.move(0, 0);
   await screenshot(page, 'source-icon');
 });
+
+
+test('hover tooltip dismisses with Escape when the button is not focused', async t => {
+  const page = await panel(t, [{ ...entry('Hover source'), sourceUrl: 'https://youtube.com/watch?v=hover' }]);
+  await page.locator('.history-item').click();
+  await page.locator('#copySourceBtn').hover();
+  assert.equal(await page.locator('#sourceTooltip').isVisible(), true);
+  assert.equal(await page.locator('#copySourceBtn').evaluate(el => el === document.activeElement), false);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#sourceTooltip').isVisible(), false);
+});
+
+test('failed copy retry stays visible after the earlier success timer expires', async t => {
+  const page = await panel(t, [{ ...entry('Retry source'), sourceUrl: 'https://youtube.com/watch?v=retry' }]);
+  await page.locator('.history-item').click();
+  await page.locator('#copySourceBtn').click();
+  assert.equal(await text(page, 'sourceNote'), 'Link copied');
+  await page.clock.runFor(1900);
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw Error('denied'); }; });
+  await page.locator('#copySourceBtn').click();
+  await page.clock.runFor(1000);
+  assert.equal(await text(page, 'sourceNote'), 'Could not copy link. Select the URL in the tooltip and copy it.');
+});
