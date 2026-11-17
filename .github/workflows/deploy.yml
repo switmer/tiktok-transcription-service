@@ -242,7 +242,7 @@ jobs:
           fi
 
       - name: 📋 Upload deployment artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-manifest
           path: deployment-manifest.json
