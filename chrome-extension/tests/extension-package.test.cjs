@@ -38,3 +38,14 @@ test('MOV is converted and other small files pass straight through', async () =>
   assert.equal(chunks.length, 1);
   assert.equal(chunks[0].blob, small);
 });
+
+test('stereo audio that is only on one side is mixed down, not dropped', async () => {
+  const sandbox = { Blob };
+  vm.runInNewContext(`${read('audio-utils.js')}\nthis.encodeWavChunk = encodeWavChunk;`, sandbox);
+  const silent = new Float32Array(16000);
+  const loud = new Float32Array(16000).fill(0.8);
+  const buffer = { sampleRate: 16000, numberOfChannels: 2, getChannelData: c => (c === 0 ? silent : loud) };
+  const wav = await sandbox.encodeWavChunk(buffer, 0, 16000).arrayBuffer();
+  const sample = new DataView(wav).getInt16(44 + 2 * 100, true);
+  assert.ok(sample > 10000, `expected the right channel at half volume, got ${sample}`);
+});

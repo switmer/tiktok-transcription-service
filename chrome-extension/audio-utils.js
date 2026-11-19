@@ -59,8 +59,13 @@ async function chunkAudioFile(file) {
 function encodeWavChunk(audioBuffer, startSample, endSample) {
   const numChannels = 1;
   const sampleRate = audioBuffer.sampleRate;
-  const sourceData = audioBuffer.getChannelData(0);
-  const segment = sourceData.slice(startSample, endSample);
+  // Mix every channel down to mono so audio that is only on one side is not lost.
+  const channelCount = audioBuffer.numberOfChannels;
+  const segment = new Float32Array(endSample - startSample);
+  for (let c = 0; c < channelCount; c++) {
+    const channelData = audioBuffer.getChannelData(c);
+    for (let n = 0; n < segment.length; n++) segment[n] += channelData[startSample + n] / channelCount;
+  }
 
   // Downsample to 16kHz if needed
   const samples = sampleRate !== TARGET_SAMPLE_RATE

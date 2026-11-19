@@ -17,8 +17,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-# is_global on Python 3.10 misses these ranges, which can wrap or tunnel to private IPv4 addresses.
-_BLOCKED_NETS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "::/96", "::ffff:0:0:0/96")]
+# is_global on some Python versions misses these ranges: they can wrap or tunnel to private IPv4
+# addresses, or (fec0::/10, deprecated site-local) reach internal networks.
+_BLOCKED_NETS = [ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "::/96", "::ffff:0:0:0/96", "fec0::/10")]
 
 
 def _is_public(ip) -> bool:
@@ -57,13 +58,13 @@ async def send_task_callback(callback_url: Optional[str], payload: Dict[str, Any
     if not callback_url:
         return
     try:
-        target = await asyncio.to_thread(resolve_safe_callback, callback_url)
+        target = await asyncio.wait_for(asyncio.to_thread(resolve_safe_callback, callback_url), timeout=5)
         if target is None:
             logger.warning(f"Refused unsafe callback_url for task {payload.get('task_id')}")
             return
         url, host, host_header = target
         # Do not read the reply body (a hostile server could send endless data), and cap total time.
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False) as client:
             async def post():
                 async with client.stream(
                     "POST", url, json=payload,

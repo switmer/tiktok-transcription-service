@@ -19,11 +19,20 @@
 !.github/
 !.github/**
 
-# And the Chrome extension source (not its local tooling state)
+# And only the Chrome extension files that ship or test it (nothing else in that folder)
 !chrome-extension/
-!chrome-extension/**
-chrome-extension/.agent-grid/
-chrome-extension/node_modules/
+chrome-extension/*
+!chrome-extension/manifest.json
+!chrome-extension/background.js
+!chrome-extension/audio-utils.js
+!chrome-extension/options.html
+!chrome-extension/options.js
+!chrome-extension/sidepanel.html
+!chrome-extension/sidepanel.js
+!chrome-extension/icons/
+!chrome-extension/icons/*.png
+!chrome-extension/tests/
+!chrome-extension/tests/*.cjs
 
 # Python files to ignore 
 **/__pycache__/

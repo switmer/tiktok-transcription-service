@@ -48,7 +48,7 @@ def test_extension_poll_loop_only_checks_backend_statuses():
     "http://169.254.169.254/latest/meta-data", "http://[::1]/x", "http://0.0.0.0/x",
     "http://[64:ff9b::7f00:1]/x", "http://[64:ff9b::a9fe:a9fe]/x", "http://[2002:7f00:1::]/x",
     "http://[::127.0.0.1]/x", "http://[::ffff:127.0.0.1]/x", "http://224.0.0.1/x",
-    "http://[::ffff:0:7f00:1]/x", "http://[::ffff:0:a9fe:a9fe]/x",
+    "http://[::ffff:0:7f00:1]/x", "http://[::ffff:0:a9fe:a9fe]/x", "http://[fec0::1]/x",
     "http://2130706433/x", "http://0x7f.1/x", "http://127.0.0.1:80@example.com.invalid/x",
 ])
 def test_unsafe_callback_urls_refused(url):
