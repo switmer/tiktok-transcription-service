@@ -18,7 +18,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Slow DNS lookups run here so they cannot use up the shared thread pool that serves transcription work.
-_DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="callback-dns")
+_DNS_WORKERS = 4
+_DNS_POOL = ThreadPoolExecutor(max_workers=_DNS_WORKERS, thread_name_prefix="callback-dns")
+_dns_in_flight = 0  # lookups running in the pool; only touched from the event loop thread
 
 
 # is_global on some Python versions misses these ranges: they can wrap or tunnel to private IPv4
@@ -62,9 +64,20 @@ async def send_task_callback(callback_url: Optional[str], payload: Dict[str, Any
     if not callback_url:
         return
     try:
-        target = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(_DNS_POOL, resolve_safe_callback, callback_url), timeout=5
-        )
+        global _dns_in_flight
+        if _dns_in_flight >= _DNS_WORKERS:
+            # Every slot is held by a slow lookup. Refuse instead of queueing more work.
+            logger.warning(f"Skipped callback for task {payload.get('task_id')}: DNS lookups are busy")
+            return
+        _dns_in_flight += 1
+        lookup = asyncio.get_running_loop().run_in_executor(_DNS_POOL, resolve_safe_callback, callback_url)
+
+        def _release(_):
+            global _dns_in_flight
+            _dns_in_flight -= 1
+        # Free the slot only when the lookup really ends, even if we stop waiting for it.
+        lookup.add_done_callback(_release)
+        target = await asyncio.wait_for(asyncio.shield(lookup), timeout=5)
         if target is None:
             logger.warning(f"Refused unsafe callback_url for task {payload.get('task_id')}")
             return

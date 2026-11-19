@@ -5,6 +5,7 @@ import re
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
 import pytest
 
 _root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -140,3 +141,28 @@ async def test_pipeline_posts_callback_on_final_status(final_status):
     else:
         send.assert_awaited_once()
         assert send.call_args.args[1]["status"] == final_status
+
+
+@pytest.mark.asyncio
+async def test_callback_refuses_new_lookups_while_all_dns_slots_are_busy():
+    import threading
+    from app.core import callbacks
+    release = threading.Event()
+
+    def stuck_lookup(url):
+        release.wait(5)
+        return None
+
+    posted = []
+    with patch.object(callbacks, "resolve_safe_callback", stuck_lookup), \
+         patch.object(callbacks, "_DNS_WORKERS", 2), \
+         patch.object(callbacks.asyncio, "wait_for", side_effect=asyncio.TimeoutError):
+        for _ in range(3):
+            await callbacks.send_task_callback("https://example.com/hook", {"task_id": "t"})
+        assert callbacks._dns_in_flight == 2  # third call was refused, not queued
+        release.set()
+        for _ in range(50):
+            if callbacks._dns_in_flight == 0:
+                break
+            await asyncio.sleep(0.02)
+        assert callbacks._dns_in_flight == 0
