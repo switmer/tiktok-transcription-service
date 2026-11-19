@@ -9,12 +9,16 @@ import asyncio
 import ipaddress
 import logging
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Slow DNS lookups run here so they cannot use up the shared thread pool that serves transcription work.
+_DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="callback-dns")
 
 
 # is_global on some Python versions misses these ranges: they can wrap or tunnel to private IPv4
@@ -58,7 +62,9 @@ async def send_task_callback(callback_url: Optional[str], payload: Dict[str, Any
     if not callback_url:
         return
     try:
-        target = await asyncio.wait_for(asyncio.to_thread(resolve_safe_callback, callback_url), timeout=5)
+        target = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_DNS_POOL, resolve_safe_callback, callback_url), timeout=5
+        )
         if target is None:
             logger.warning(f"Refused unsafe callback_url for task {payload.get('task_id')}")
             return
