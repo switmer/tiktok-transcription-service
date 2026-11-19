@@ -19,6 +19,12 @@
 !.github/
 !.github/**
 
+# And the Chrome extension source (not its local tooling state)
+!chrome-extension/
+!chrome-extension/**
+chrome-extension/.agent-grid/
+chrome-extension/node_modules/
+
 # Python files to ignore 
 **/__pycache__/
 **/*.py[cod]

@@ -155,6 +155,17 @@ for (const stage of ['settings', 'submit', 'delay', 'poll', 'transcript']) {
   });
 }
 
+test('MOV files are accepted and say audio is being extracted', async t => {
+  const page = await panel(t);
+  assert.match(await page.locator('#fileInput').getAttribute('accept'), /\.mov/);
+  await page.evaluate(() => startFile('clip.MOV'));
+  assert.equal(await text(page, 'progressStatus'), 'Extracting audio from MOV...');
+  await page.evaluate(() => mock.prep.resolve([{ blob: new Blob(['audio']), name: '1.wav' }]));
+  await page.evaluate(() => mock.chunks[0].resolve('MOV words'));
+  assert.equal(await text(page, 'resultTitle'), 'clip.MOV');
+  assert.match(await text(page, 'transcriptBox'), /MOV words/);
+});
+
 test('file prep spinner, measured processed chunks, partial failure and file title', async t => {
   const page = await panel(t);
   await page.evaluate(() => startFile('voice.mp3'));

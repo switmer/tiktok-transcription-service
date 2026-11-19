@@ -1,4 +1,4 @@
-const ACCEPTED_TYPES = ['.wav', '.mp3', '.mp4', '.m4a', '.ogg', '.flac'];
+const ACCEPTED_TYPES = ['.wav', '.mp3', '.mp4', '.mov', '.m4a', '.ogg', '.flac'];
 const MAX_HISTORY = 20;
 
 let activeRun = null;
@@ -373,7 +373,7 @@ async function handleUrl(url) {
 async function handleFile(file) {
   const ext = '.' + file.name.split('.').pop().toLowerCase();
   if (!ACCEPTED_TYPES.includes(ext)) {
-    showError('Unsupported format. Use WAV, MP3, MP4, M4A, OGG, or FLAC.');
+    showError('Unsupported format. Use WAV, MP3, MP4, MOV, M4A, OGG, or FLAC.');
     return;
   }
 
@@ -382,7 +382,11 @@ async function handleFile(file) {
   try {
     const { openaiApiKey } = await waitForRun(run, chrome.storage.sync.get('openaiApiKey'));
     if (!openaiApiKey) throw new Error('Set your OpenAI API key in Settings.');
-    progressStatus.textContent = needsChunking(file) ? 'Splitting audio into chunks...' : 'Preparing file...';
+    progressStatus.textContent = ext === '.mov'
+      ? 'Extracting audio from MOV...'
+      : needsChunking(file)
+        ? 'Splitting audio into chunks...'
+        : 'Preparing file...';
     const chunks = await waitForRun(run, chunkAudioFile(file));
     const totalChunks = chunks.length;
     if (!totalChunks) throw new Error('No audio chunks were prepared.');
