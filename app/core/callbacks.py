@@ -17,6 +17,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# httpx logs every request URL at INFO, and a callback URL can carry a secret token in its path or query.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Slow DNS lookups run here so they cannot use up the shared thread pool that serves transcription work.
 _DNS_WORKERS = 4
 _DNS_POOL = ThreadPoolExecutor(max_workers=_DNS_WORKERS, thread_name_prefix="callback-dns")
@@ -69,8 +72,8 @@ async def send_task_callback(callback_url: Optional[str], payload: Dict[str, Any
             # Every slot is held by a slow lookup. Refuse instead of queueing more work.
             logger.warning(f"Skipped callback for task {payload.get('task_id')}: DNS lookups are busy")
             return
-        _dns_in_flight += 1
         lookup = asyncio.get_running_loop().run_in_executor(_DNS_POOL, resolve_safe_callback, callback_url)
+        _dns_in_flight += 1  # only after the lookup was accepted, so a rejected submit cannot leak a slot
 
         def _release(_):
             global _dns_in_flight

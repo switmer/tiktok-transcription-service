@@ -166,3 +166,17 @@ async def test_callback_refuses_new_lookups_while_all_dns_slots_are_busy():
                 break
             await asyncio.sleep(0.02)
         assert callbacks._dns_in_flight == 0
+
+
+def test_httpx_request_urls_are_not_logged_at_info():
+    import logging
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_rejected_dns_submit_does_not_leak_a_slot():
+    from app.core import callbacks
+    before = callbacks._dns_in_flight
+    with patch.object(callbacks._DNS_POOL, "submit", side_effect=RuntimeError("pool down")):
+        await callbacks.send_task_callback("https://example.com/hook", {"task_id": "t"})
+    assert callbacks._dns_in_flight == before
