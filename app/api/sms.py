@@ -35,7 +35,10 @@ router = APIRouter(tags=["SMS Integration"])
 
 
 @router.post("/api/link-sms-account", response_model=AccountLinkResponse)
-async def link_sms_account(request: Request):
+async def link_sms_account(
+    request: Request,
+    api_key: str = Depends(verify_api_key),
+):
     """Create phone-based auth account and link SMS user's transcription history"""
     try:
         body = await request.json()
@@ -294,7 +297,10 @@ async def send_sms(
 
 
 @router.post("/api/sms/summary")
-async def generate_sms_summary(request: Request):
+async def generate_sms_summary(
+    request: Request,
+    api_key: str = Depends(verify_api_key),
+):
     """Generate AI summary of user's latest transcript for SMS"""
     try:
         body = await request.json()
@@ -314,7 +320,10 @@ async def generate_sms_summary(request: Request):
 
 
 @router.post("/api/sms/chat", response_model=SmsChatResponse)
-async def sms_chat(request: SmsChatRequest):
+async def sms_chat(
+    request: SmsChatRequest,
+    api_key: str = Depends(verify_api_key),
+):
     """Answer a user's question about their latest transcript with chat memory."""
     if supabase is None:
         logger.error("Cannot chat: Supabase client not initialized.")
@@ -519,7 +528,10 @@ async def sms_chat(request: SmsChatRequest):
 
 
 @router.post("/api/sms/chat/reset", response_model=SmsChatResetResponse)
-async def sms_chat_reset(request: SmsChatResetRequest):
+async def sms_chat_reset(
+    request: SmsChatResetRequest,
+    api_key: str = Depends(verify_api_key),
+):
     """Reset the active chat thread for a phone number."""
     if supabase is None:
         logger.error("Cannot reset chat: Supabase client not initialized.")
