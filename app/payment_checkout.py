@@ -22,8 +22,9 @@ def create_sms_checkout_url(phone: str, credits: int, source: str) -> str:
         raise RuntimeError("Stripe is not configured")
 
     frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
+    # stripe 17 pins 2026-10-28.endive, which rejects payment_method_types.
+    # Omitting it uses the Dashboard payment method configuration.
     session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
         line_items=[{"price": price_ids[credits], "quantity": 1}],
         mode="payment",
         success_url=f"{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}",

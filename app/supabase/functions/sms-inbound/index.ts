@@ -379,7 +379,9 @@ async function createStripeCheckoutUrl(phoneNumber: string, priceId: string, cre
     const frontendUrl = Deno.env.get('FRONTEND_URL') || 'https://scribetok.com';
 
     const params = new URLSearchParams();
-    params.append('payment_method_types[]', 'card');
+    // payment_method_types was removed in Stripe API 2026-09-30.endive.
+    // Omit it so Checkout uses the Dashboard payment method configuration
+    // on both the account default version and the pinned Python SDK version.
     params.append('line_items[0][price]', priceId);
     params.append('line_items[0][quantity]', '1');
     params.append('mode', 'payment');
@@ -425,7 +427,7 @@ async function createStripeSubscriptionUrl(phoneNumber: string, priceId: string)
     const frontendUrl = Deno.env.get('FRONTEND_URL') || 'https://scribetok.com';
 
     const params = new URLSearchParams();
-    params.append('payment_method_types[]', 'card');
+    // Same as createStripeCheckoutUrl: do not send payment_method_types.
     params.append('line_items[0][price]', priceId);
     params.append('line_items[0][quantity]', '1');
     params.append('mode', 'subscription');
