@@ -77,6 +77,7 @@ jobs:
             app/tests/test_payment_linking.py \
             app/tests/test_stripe_webhook_signed.py \
             app/tests/test_status_and_callback.py \
+            app/tests/test_youtube_segments_and_privacy.py \
             -q --tb=short
 
   build:

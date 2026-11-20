@@ -61,6 +61,11 @@ class TranscriptionRequest(BaseModel):
         description="Phone number for SMS notifications and user tracking",
         example="+1234567890",
     )
+    visibility: Optional[str] = Field(
+        None,
+        description="public, private, or unlisted. POST /api/tasks defaults to private when omitted.",
+        example="private",
+    )
 
 
 class TranscriptionResponse(BaseModel):
