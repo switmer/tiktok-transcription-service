@@ -193,8 +193,18 @@ class SMSHandler:
             return []
     
     @staticmethod
-    async def send_sms(to: str, body: str, status_callback: Optional[str] = None) -> bool:
-        """Send an SMS message"""
+    async def send_sms(
+        to: str,
+        body: str,
+        status_callback: Optional[str] = None,
+        media_url: Optional[str] = None,
+    ) -> bool:
+        """Send an SMS or MMS message.
+
+        ``media_url`` is a publicly reachable URL Twilio GETs as MMS media
+        (used for the first-time vCard). Failures still return False; callers
+        must not treat that as fatal for inbound processing.
+        """
         if not twilio_client:
             logger.error("Cannot send SMS: Twilio client not initialized")
             return False
@@ -208,6 +218,8 @@ class SMSHandler:
 
             if status_callback:
                 message_data['status_callback'] = status_callback
+            if media_url:
+                message_data['media_url'] = [media_url]
 
             message = twilio_client.messages.create(**message_data)
 

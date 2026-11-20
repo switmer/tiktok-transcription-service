@@ -68,12 +68,81 @@ async function checkRateLimit(phoneNumber, supabase) {
     return false; // Fail closed on error
   }
 }
+// Twilio reserved single-token keywords. Exact match only (STOP PLEASE is not STOP).
+// https://help.twilio.com/articles/223134027-Twilio-support-for-opt-out-keywords-SMS-STOP-filtering
+const COMPLIANCE_KEYWORDS = new Set([
+  'stop', 'stopall', 'unsubscribe', 'end', 'quit', 'revoke', 'optout', 'cancel',
+  'start', 'yes', 'unstop',
+  'help', 'info',
+]);
+
+function isComplianceKeyword(body: string): boolean {
+  return COMPLIANCE_KEYWORDS.has(String(body || '').trim().toLowerCase());
+}
+
+function sendEmptyTwilioResponse() {
+  return new Response('<Response></Response>', {
+    status: 200,
+    headers: { 'Content-Type': 'text/xml' },
+  });
+}
+
+/**
+ * First-time vCard MMS. Only genuinely new sms_users (insert path) qualify.
+ * Never blocks transcription: waitUntil when available, otherwise fire-and-forget.
+ * Failures are swallowed. Duplicate webhooks lose the claim RPC race.
+ */
+function scheduleWelcomeContactCard(phone: string) {
+  const run = (async () => {
+    try {
+      const enabled = (Deno.env.get('CONTACT_CARD_ENABLED') || 'true').trim().toLowerCase();
+      if (['0', 'false', 'no', 'off'].includes(enabled)) return;
+      const baseUrl = (Deno.env.get('RENDER_SERVICE_URL') || '').replace(/\/$/, '');
+      const apiKey = Deno.env.get('RENDER_API_KEY') || '';
+      if (!baseUrl || !apiKey) {
+        console.warn('Skipping contact card: RENDER_SERVICE_URL or RENDER_API_KEY missing');
+        return;
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const resp = await fetch(`${baseUrl}/api/sms/welcome-contact`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify({ phone }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      if (!resp.ok) {
+        console.warn('welcome-contact HTTP', resp.status, await resp.text());
+      }
+    } catch (err) {
+      console.error('welcome-contact schedule failed:', err);
+    }
+  })();
+
+  try {
+    const runtime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+    if (runtime && typeof runtime.waitUntil === 'function') {
+      runtime.waitUntil(run);
+      return;
+    }
+  } catch (_e) {
+    // ignore
+  }
+  run.catch(() => {});
+}
+
 // Get or create SMS user
-async function getOrCreateSMSUser(phoneNumber, supabase) {
+async function getOrCreateSMSUser(phoneNumber, supabase, inboundBody = '') {
   const normalizedPhone = normalizePhoneNumber(phoneNumber);
+  if (!normalizedPhone) return null;
   // Try to find existing SMS user
   let { data: smsUsers, error } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone);
   let smsUser = smsUsers && smsUsers.length > 0 ? smsUsers[0] : null;
+  let justCreated = false;
   if (!smsUser) {
     // SMS user doesn't exist, create both main user and SMS user
     // Create SMS user without auth requirement (SMS-only users) with 3 free credits
@@ -84,10 +153,19 @@ async function getOrCreateSMSUser(phoneNumber, supabase) {
       credits_remaining: 3  // Start with 3 free credits
     }).select('*').single();
     if (createError) {
-      console.error('Error creating SMS user:', createError);
-      return null;
+      // Unique race: a concurrent webhook already inserted this phone.
+      const { data: raced } = await supabase.from('sms_users').select('*').eq('phone_number', normalizedPhone);
+      if (raced && raced.length > 0) {
+        smsUser = raced[0];
+        justCreated = false;
+      } else {
+        console.error('Error creating SMS user:', createError);
+        return null;
+      }
+    } else {
+      smsUser = newSmsUser;
+      justCreated = true;
     }
-    smsUser = newSmsUser;
   } else if (error) {
     console.error('Error fetching SMS user:', error);
     return null;
@@ -100,6 +178,9 @@ async function getOrCreateSMSUser(phoneNumber, supabase) {
     if (updateError) {
       console.error('Error updating last_active for SMS user:', updateError);
     }
+  }
+  if (justCreated && !isComplianceKeyword(inboundBody)) {
+    scheduleWelcomeContactCard(normalizedPhone);
   }
   return smsUser;
 }
@@ -556,6 +637,13 @@ Deno.serve(async (req)=>{
     console.error('Error logging message to user_messages:', logError);
     // Continue processing even if logging fails
   }
+
+  // Twilio already auto-replies to STOP/START/HELP. Do not create a user,
+  // send a contact card, or add a second TwiML body.
+  if (isComplianceKeyword(String(Body))) {
+    console.log('Compliance keyword inbound; skipping app reply and contact card');
+    return sendEmptyTwilioResponse();
+  }
   
   // Check rate limiting (max 5 commands per minute)
   const trimmed = String(Body).trim();
@@ -599,6 +687,7 @@ Deno.serve(async (req)=>{
           });
 
         console.log(`Secret code used: Created new user ${From} with 10 credits`);
+        scheduleWelcomeContactCard(normalizedFrom);
         return sendTwilioResponse(`🎉 Welcome! 10 credits added to your new account!\n\n💳 Balance: 10 credits\n\nText any video link to get started! 🚀`);
       }
     } catch (error) {
@@ -728,7 +817,7 @@ Just text a video link (TikTok, YouTube, Instagram, Facebook, X/Twitter, Reddit,
   }
   // Profile command
   if (Body.trim().toLowerCase() === '/profile') {
-    const user = await getOrCreateSMSUser(From, supabase);
+    const user = await getOrCreateSMSUser(From, supabase, String(Body));
     if (!user) {
       return sendTwilioResponse('❌ Error loading profile. Try again later.');
     }
@@ -759,7 +848,7 @@ ${verifiedStatus}
         return sendTwilioResponse('📱 No transcription history found. Send a video link first, then register!');
       }
       // Check if already has auth account
-      const user = await getOrCreateSMSUser(From, supabase);
+      const user = await getOrCreateSMSUser(From, supabase, String(Body));
       if (user && user.auth_user_id) {
         return sendTwilioResponse('✅ You already have an account!\n\n💻 Access web: https://scribetok.com/login\n📱 Use your phone number to sign in');
       }
@@ -885,7 +974,7 @@ Success: ${usage.success_rate || 0}%`;
   // Referral command
   if (Body.trim().toLowerCase() === '/referral') {
     try {
-      const user = await getOrCreateSMSUser(From, supabase);
+      const user = await getOrCreateSMSUser(From, supabase, String(Body));
       if (!user) {
         return sendTwilioResponse('❌ Error loading your account. Try again later.');
       }
@@ -1038,7 +1127,7 @@ You can now use /stats to see your creator dashboard!`);
         return sendTwilioResponse('💬 Please provide more detailed feedback!\n\nExample: /feedback The app is great but could use faster transcriptions');
       }
 
-      const user = await getOrCreateSMSUser(From, supabase);
+      const user = await getOrCreateSMSUser(From, supabase, String(Body));
       if (!user) {
         return sendTwilioResponse('❌ Error saving feedback. Try again later.');
       }
@@ -1285,7 +1374,7 @@ Reply /help for more commands!`);
   }
   try {
     // Get or create SMS user and check credits
-    const smsUser = await getOrCreateSMSUser(normalizedFrom, supabase);
+    const smsUser = await getOrCreateSMSUser(normalizedFrom, supabase, String(Body));
     if (!smsUser) {
       return sendTwilioResponse('❌ Error creating user account. Try again later.');
     }

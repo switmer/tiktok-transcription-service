@@ -27,6 +27,8 @@ from ..models.schemas import (
     SmsChatResponse,
     SmsChatResetRequest,
     SmsChatResetResponse,
+    WelcomeContactRequest,
+    WelcomeContactResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -264,6 +266,25 @@ async def handle_sms_status(
     except Exception as e:
         logger.error(f"Error handling SMS status: {str(e)}", exc_info=True)
         return {"error": "Failed to process status update"}
+
+
+@router.post("/api/sms/welcome-contact", response_model=WelcomeContactResponse)
+async def sms_welcome_contact(
+    request: WelcomeContactRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Best-effort first-time vCard MMS. Failures must not affect inbound SMS."""
+    from ..contact_card import send_welcome_contact_card
+
+    try:
+        status, detail = await send_welcome_contact_card(
+            request.phone.strip(),
+            supabase_client=supabase,
+        )
+        return WelcomeContactResponse(status=status, detail=detail)
+    except Exception as e:
+        logger.error("welcome-contact endpoint failed: %s", e, exc_info=True)
+        return WelcomeContactResponse(status="failed", detail="internal_error")
 
 
 @router.post("/api/sms/send", response_model=SMSResponse)
