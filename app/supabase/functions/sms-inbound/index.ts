@@ -13,6 +13,44 @@ import {
 
 const FIVE_CREDIT_PRICE_ID = Deno.env.get('STRIPE_5_CREDITS_PRICE_ID') || 'price_1RnBh3BaZtBtpc8wC4aXxkCx';
 
+/**
+ * FastAPI `verify_api_key` reads the raw `X-API-Key` header (no Bearer prefix)
+ * and compares it to the backend `API_KEYS` list. The edge secret
+ * `RENDER_API_KEY` must be one of those keys. Never fall back to a value
+ * committed in source.
+ */
+function getRenderApiKey(reason = 'authenticated backend call'): string | null {
+  const apiKey = (Deno.env.get('RENDER_API_KEY') || '').trim();
+  if (!apiKey) {
+    console.error(`Missing RENDER_API_KEY; refusing ${reason}`);
+    return null;
+  }
+  return apiKey;
+}
+
+function renderAuthHeaders(apiKey: string, includeJson = true): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': 'Supabase-Edge-Function',
+    'X-API-Key': apiKey,
+  };
+  if (includeJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return headers;
+}
+
+/** POST JSON to the Render API. Returns null when the key is missing (caller fails closed). */
+async function postAuthenticatedRender(path: string, body: unknown): Promise<Response | null> {
+  const apiKey = getRenderApiKey(path);
+  if (!apiKey) return null;
+  const baseUrl = (Deno.env.get('RENDER_SERVICE_URL') || '').replace(/\/$/, '');
+  return await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: renderAuthHeaders(apiKey),
+    body: JSON.stringify(body),
+  });
+}
+
 // XML escape function for TwiML responses - prevents XML parsing errors from & and < characters
 function escapeXml(str: string): string {
   if (!str) return '';
@@ -693,20 +731,13 @@ Just text a video link (TikTok, YouTube, Instagram, Facebook, X/Twitter, Reddit,
       return sendTwilioResponse('💬 Ask a question like:\n\n/chat What is the main point?');
     }
     try {
-      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat`;
-      const chatResponse = await fetch(renderApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-        },
-        body: JSON.stringify({
-          phone: normalizePhoneNumber(From),
-          message: question
-        })
+      const chatResponse = await postAuthenticatedRender('/api/sms/chat', {
+        phone: normalizePhoneNumber(From),
+        message: question
       });
+      if (!chatResponse) {
+        return sendTwilioResponse('❌ Couldn\'t answer that right now. Try again later.');
+      }
 
       if (chatResponse.ok) {
         const result = await chatResponse.json();
@@ -764,19 +795,12 @@ ${verifiedStatus}
         return sendTwilioResponse('✅ You already have an account!\n\n💻 Access web: https://scribetok.com/login\n📱 Use your phone number to sign in');
       }
       // Call backend to create phone-based account and link transcriptions
-      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/link-sms-account`;
-      const linkResponse = await fetch(renderApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-        },
-        body: JSON.stringify({
-          phone: From
-        })
+      const linkResponse = await postAuthenticatedRender('/api/link-sms-account', {
+        phone: From
       });
+      if (!linkResponse) {
+        return sendTwilioResponse('❌ Registration failed. Please try again later.');
+      }
       const result = await linkResponse.json();
       if (linkResponse.ok && result.success) {
         return sendTwilioResponse(`✅ Account created successfully!\n\n📱 Phone: ${From}\n🔗 Linked ${result.linked_transcriptions} transcriptions\n\n💻 Web access: https://scribetok.com/login\n🔑 Use your phone number to sign in`);
@@ -833,14 +857,14 @@ ${verifiedStatus}
 
     try {
       // Call Python backend for admin stats
+      const apiKey = getRenderApiKey('/api/admin/stats');
+      if (!apiKey) {
+        return sendTwilioResponse('Error fetching admin stats. Try again later.');
+      }
       const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const apiKey = Deno.env.get('RENDER_API_KEY') || '';
       const statsResponse = await fetch(`${baseUrl.replace(/\/$/, '')}/api/admin/stats?period=month`, {
         method: 'GET',
-        headers: {
-          'X-API-Key': apiKey,
-          'User-Agent': 'Supabase-Edge-Function'
-        }
+        headers: renderAuthHeaders(apiKey, false)
       });
 
       if (!statsResponse.ok) {
@@ -1076,19 +1100,12 @@ Reply /help for more commands!`);
   if (Body.trim().toLowerCase() === '/tldr' || Body.trim().toLowerCase() === '/summary') {
     try {
       // Call the Python backend's summary endpoint
-      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/summary`;
-      const summaryResponse = await fetch(renderApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-        },
-        body: JSON.stringify({
-          phone: normalizePhoneNumber(From)
-        })
+      const summaryResponse = await postAuthenticatedRender('/api/sms/summary', {
+        phone: normalizePhoneNumber(From)
       });
+      if (!summaryResponse) {
+        return sendTwilioResponse('🧠 Too long, didn\'t watch? We got you covered - but our TLDR feature is temporarily unavailable. Try again later!');
+      }
 
       if (summaryResponse.ok) {
         const result = await summaryResponse.json();
@@ -1168,19 +1185,12 @@ Reply /help for more commands!`);
   // Reset chat command
   if (Body.trim().toLowerCase() === '/reset') {
     try {
-      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat/reset`;
-      const resetResponse = await fetch(renderApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-        },
-        body: JSON.stringify({
-          phone: normalizePhoneNumber(From)
-        })
+      const resetResponse = await postAuthenticatedRender('/api/sms/chat/reset', {
+        phone: normalizePhoneNumber(From)
       });
+      if (!resetResponse) {
+        return sendTwilioResponse('❌ Couldn\'t reset chat right now. Try again later.');
+      }
 
       if (resetResponse.ok) {
         return sendTwilioResponse('✅ Chat reset. Ask a new question whenever you\'re ready.');
@@ -1236,20 +1246,13 @@ Reply /help for more commands!`);
   const match = Body.trim().match(urlRegex);
   if (!match) {
     try {
-      const baseUrl = Deno.env.get('RENDER_SERVICE_URL') || '';
-      const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/sms/chat`;
-      const chatResponse = await fetch(renderApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': Deno.env.get('RENDER_API_KEY') || 'f8a9b1e2-c5d4-4e5f-8d7b-1c2d3e4f5a6b'
-        },
-        body: JSON.stringify({
-          phone: normalizePhoneNumber(From),
-          message: Body.trim()
-        })
+      const chatResponse = await postAuthenticatedRender('/api/sms/chat', {
+        phone: normalizePhoneNumber(From),
+        message: Body.trim()
       });
+      if (!chatResponse) {
+        return sendTwilioResponse('👀 That doesn\'t look like a link. Try again or type /help.');
+      }
 
       if (chatResponse.ok) {
         const result = await chatResponse.json();
@@ -1361,9 +1364,8 @@ Reply /help for more commands!`);
       const renderApiUrl = `${baseUrl.replace(/\/$/, '')}/api/public/transcribe`;
       console.log('Calling Render API:', renderApiUrl);
 
-      const apiKey = Deno.env.get('RENDER_API_KEY') || '';
+      const apiKey = getRenderApiKey('to enqueue transcription');
       if (!apiKey) {
-        console.error('Missing RENDER_API_KEY; refusing to enqueue transcription');
         return sendTwilioResponse('⚠️ Service misconfigured. Please try again later.');
       }
 
@@ -1372,11 +1374,7 @@ Reply /help for more commands!`);
 
       const transcribeResponse = await fetch(renderApiUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Supabase-Edge-Function',
-          'X-API-Key': apiKey,
-        },
+        headers: renderAuthHeaders(apiKey),
         body: JSON.stringify({
           url,
           user_phone: normalizedFrom,
