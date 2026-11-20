@@ -250,6 +250,134 @@ def _extract_youtube_metadata(data: dict) -> dict:
     }
     return {k: v for k, v in metadata.items() if v is not None}
 
+def _coerce_float(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _segment_field(item, *names):
+    if isinstance(item, dict):
+        for name in names:
+            if item.get(name) is not None:
+                return item.get(name)
+        return None
+    for name in names:
+        if hasattr(item, name):
+            value = getattr(item, name)
+            if value is not None:
+                return value
+    return None
+
+
+def normalize_timed_segments(raw):
+    """Normalize provider timings to [{start, end, text}] seconds.
+
+    Accepts RapidAPI chunks (`timestamp: [start, end]`), Whisper segments
+    (`start` / `end` / `text`), and `start` + `duration`. A missing end is
+    `start + duration`, otherwise the next segment's start, otherwise `start`.
+    When every numeric time in the list is above 100000, values are milliseconds.
+    Returns None when `raw` is not a list. Returns [] when nothing is usable.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return None
+
+    parsed = []
+    raw_times = []
+    for item in raw:
+        if item is None:
+            continue
+        text_value = _segment_field(item, "text", "content", "transcript")
+        text = str(text_value).strip() if text_value is not None else ""
+        if not text:
+            continue
+
+        timestamp = _segment_field(item, "timestamp", "timestamps", "time")
+        start = _coerce_float(_segment_field(item, "start", "offset", "start_time"))
+        end = _coerce_float(_segment_field(item, "end", "end_time"))
+        duration = _coerce_float(_segment_field(item, "duration", "dur"))
+        if isinstance(timestamp, (list, tuple)):
+            if start is None and len(timestamp) >= 1:
+                start = _coerce_float(timestamp[0])
+            if end is None and len(timestamp) >= 2:
+                end = _coerce_float(timestamp[1])
+
+        raw_times.extend(value for value in (start, end, duration) if value is not None)
+        parsed.append((start, end, duration, text))
+
+    if not parsed:
+        return []
+
+    scale = 1000.0 if raw_times and max(raw_times) > 100_000 else 1.0
+    normalized = []
+    for start, end, duration, text in parsed:
+        if start is None:
+            continue
+        start = start / scale
+        if start < 0:
+            continue
+        if end is not None:
+            end = end / scale
+        if duration is not None:
+            duration = duration / scale
+        if end is None and duration is not None and duration >= 0:
+            end = start + duration
+        normalized.append({"start": float(start), "end": None if end is None else float(end), "text": text})
+
+    for index, segment in enumerate(normalized):
+        if segment["end"] is None:
+            nxt = next(
+                (item["start"] for item in normalized[index + 1:] if item["start"] >= segment["start"]),
+                None,
+            )
+            segment["end"] = float(nxt) if nxt is not None else float(segment["start"])
+        if segment["end"] < segment["start"]:
+            segment["end"] = float(segment["start"])
+    return normalized
+
+
+def extract_timed_segments(payload):
+    """Pull a timed-segment list out of a RapidAPI (or similar) transcript payload."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw = (
+        data.get("chunks")
+        or data.get("segments")
+        or payload.get("chunks")
+        or payload.get("segments")
+    )
+    if raw is None:
+        return None
+    return normalize_timed_segments(raw)
+
+
+def segments_from_whisper_response(transcript_response):
+    """Whisper verbose_json segments, when the response has them. Otherwise None."""
+    if transcript_response is None:
+        return None
+    raw = None
+    if isinstance(transcript_response, dict):
+        raw = transcript_response.get("segments")
+    elif hasattr(transcript_response, "segments"):
+        raw = transcript_response.segments
+    if raw is None:
+        return None
+    return normalize_timed_segments(raw)
+
+
+# Caption fetch for a multi-hour video can return a large JSON body.
+# 60s was tight for that payload; this does not download the video.
+YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS = 120
+
+
 def download_youtube_rapidapi(url: str) -> dict:
     """Transcribe YouTube video instantly using RapidAPI service"""
     rapidapi_key = os.environ.get("RAPIDAPI_KEY")
@@ -279,7 +407,12 @@ def download_youtube_rapidapi(url: str) -> dict:
         }
 
         logger.info(f"Attempting YouTube RapidAPI transcription for: {clean_url} (video_id: {video_id})")
-        response = requests.get(rapidapi_url, headers=headers, params=params, timeout=60)
+        response = requests.get(
+            rapidapi_url,
+            headers=headers,
+            params=params,
+            timeout=YOUTUBE_TRANSCRIPT_TIMEOUT_SECONDS,
+        )
         
         if response.status_code == 200:
             data = response.json()
@@ -335,7 +468,8 @@ def download_youtube_rapidapi(url: str) -> dict:
                     "duration": normalized_metadata.get("duration"),
                     "download_method": "rapidapi_youtube_fastest",
                     "transcribed_at": datetime.now().isoformat(),
-                    "metadata": data
+                    "metadata": data,
+                    "segments": extract_timed_segments(data),
                 }
             else:
                 logger.error(f"No transcript found in YouTube RapidAPI response: {data}")
@@ -1426,6 +1560,10 @@ def format_timestamped_transcript(transcript_data, max_duration_seconds=None):
 WHISPER_MAX_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB OpenAI limit
 WHISPER_REENCODE_THRESHOLD = 24 * 1024 * 1024  # Re-encode if over 24 MB
 CHUNK_DURATION_SECONDS = 600  # 10-minute chunks for splitting
+# A 3-hour source re-encoded to 64kbps mono does not fit in 25MB, so it is
+# chunked. Re-encoding the whole file can take longer than 5 minutes.
+# Kept inside the 30-minute task budget in app.task_timeout.
+WHISPER_REENCODE_TIMEOUT_SECONDS = 1800
 
 # Language detection settings
 DEFAULT_LANGUAGE = os.environ.get("TRANSCRIBE_DEFAULT_LANGUAGE", "en")
@@ -1701,7 +1839,7 @@ def _prepare_audio_for_whisper(audio_path: str, output_dir: str, video_id: str) 
             '-ar', '16000',
             '-ac', '1',
             '-y', prepared_path
-        ], check=True, capture_output=True, timeout=300)
+        ], check=True, capture_output=True, timeout=WHISPER_REENCODE_TIMEOUT_SECONDS)
         
         new_size = os.path.getsize(prepared_path)
         logger.info(f"Re-encoded audio: {file_size:,} -> {new_size:,} bytes (64kbps mono 16kHz)")

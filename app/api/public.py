@@ -26,6 +26,13 @@ from ..app import (
 )
 from ..core.callbacks import send_task_callback
 from ..core.paths import DOWNLOADS_DIR, static_dir
+from ..core.transcripts import fetch_transcript_row, persist_transcript_segments, transcript_payload
+from ..core.visibility import (
+    apply_public_listing_filter,
+    exclude_hidden_from_listing,
+    resolve_visibility,
+    row_is_publicly_readable,
+)
 from ..database import supabase
 from .. import sms, transcriber
 from ..models.schemas import (
@@ -52,7 +59,11 @@ async def transcribe(
     """Start a new transcription task or return existing one."""
     try:
         logger.info(f"Transcribe request: url={request.url}, user_phone={request.user_phone}")
-        task = await init_task(request.url, user_id, request.user_phone)
+        try:
+            visibility = resolve_visibility(request.visibility, from_api_key=False)
+        except ValueError:
+            raise ApiError(400, VALIDATION_ERROR, "visibility must be public, private, or unlisted")
+        task = await init_task(request.url, user_id, request.user_phone, visibility=visibility)
         task_id = task['task_id']
 
         response = await asyncio.to_thread(
@@ -74,7 +85,9 @@ async def transcribe(
                 logger.info(f"Attempting instant YouTube transcription for task {task_id}")
 
                 try:
-                    youtube_result = transcriber.download_youtube_rapidapi(request.url)
+                    youtube_result = await asyncio.to_thread(
+                        transcriber.download_youtube_rapidapi, request.url
+                    )
 
                     if youtube_result:
                         await asyncio.to_thread(
@@ -97,6 +110,7 @@ async def transcribe(
                                     .eq('task_id', task_id)
                                     .execute()
                         )
+                        persist_transcript_segments(supabase, task_id, youtube_result.get('segments'))
 
                         task_data['status'] = 'completed'
                         task_data['video_id'] = youtube_result['video_id']
@@ -194,7 +208,7 @@ async def public_get_task(task_id: str):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata")
+                            .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path, video_url, url, like_count, comment_count, repost_count, view_count, duration, platform, uploader, channel, metadata, raw_metadata, visibility")
                             .eq('task_id', task_id)
                             .maybe_single()
                             .execute()
@@ -208,6 +222,8 @@ async def public_get_task(task_id: str):
             raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task_data = response.data
+        if not row_is_publicly_readable(task_data.get("visibility")):
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         raw_meta = task_data.get('raw_metadata') if task_data.get('raw_metadata') else {}
         raw_data = raw_meta.get('data', {}) if isinstance(raw_meta, dict) else {}
@@ -261,27 +277,21 @@ async def public_get_transcript(task_id: str, format: Optional[str] = None):
         raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
-        response = await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                            .select("task_id, status, transcript, error")
-                            .eq('task_id', task_id)
-                            .maybe_single()
-                            .execute()
-        )
+        response = await fetch_transcript_row(supabase, task_id)
 
-        if not response.data:
+        if not response or not response.data:
             raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
+        if not row_is_publicly_readable(task.get("visibility")):
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
         if task.get('status') != 'completed':
             raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready")
 
         transcript_text = task.get('transcript') or ''
         if format in ("plain", "text"):
             return Response(content=transcript_text, media_type="text/plain")
-        if format == "json":
-            return {"task_id": task_id, "transcript": transcript_text}
-        return {"task_id": task_id, "transcript": transcript_text}
+        return transcript_payload(task_id, task)
 
     except HTTPException:
         raise
@@ -302,7 +312,7 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                            .select("task_id, status, transcript, title, description, quote, tldr, error, uploader, channel, duration, platform, view_count, like_count, category, auto_tags")
+                            .select("task_id, status, transcript, title, description, quote, tldr, error, uploader, channel, duration, platform, view_count, like_count, category, auto_tags, visibility")
                             .eq('task_id', task_id)
                             .maybe_single()
                             .execute()
@@ -312,6 +322,8 @@ async def public_chat_transcript(task_id: str, payload: TranscriptChatRequest):
             raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
+        if not row_is_publicly_readable(task.get("visibility")):
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
         if task.get('status') != 'completed':
             raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready")
 
@@ -353,12 +365,16 @@ async def public_list_tasks():
         raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     response = await asyncio.to_thread(
-        lambda: supabase.table('transcriptions')
-                        .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
-                        .eq('status', 'completed')
-                        .order('created_at', desc=True)
-                        .limit(50)
-                        .execute()
+        lambda: (
+            apply_public_listing_filter(
+                supabase.table('transcriptions')
+                .select("task_id, status, video_id, title, description, created_at, error, thumbnail_url, thumbnail_local_path")
+                .eq('status', 'completed')
+            )
+            .order('created_at', desc=True)
+            .limit(50)
+            .execute()
+        )
     )
 
     tasks_list = []
@@ -394,6 +410,9 @@ async def public_search_transcriptions(
         logger.error("Cannot search transcriptions: Supabase client not initialized.")
         raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
+    if not only_public:
+        logger.info("Ignoring only_public=false on the public search route")
+
     query = (q or "").strip()
     if len(query) < 2:
         return SearchResponse(query=query, results=[], limit=max(0, limit), offset=max(0, offset))
@@ -404,7 +423,7 @@ async def public_search_transcriptions(
                 "search_transcriptions",
                 {
                     "query": query,
-                    "only_public": only_public,
+                    "only_public": True,
                     "only_completed": only_completed,
                     "limit_results": limit,
                     "offset_results": offset,
@@ -416,8 +435,9 @@ async def public_search_transcriptions(
             logger.error(f"Search RPC error: {response.error}")
             raise ApiError(500, INTERNAL_ERROR, "Search failed")
 
+        visible_rows = await exclude_hidden_from_listing(supabase, response.data or [])
         results: List[SearchHit] = []
-        for row in (response.data or []):
+        for row in visible_rows:
             results.append(
                 SearchHit(
                     task_id=str(row.get("task_id")),
@@ -446,7 +466,7 @@ async def public_get_thumbnail(task_id: str):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url")
+                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url, visibility")
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute()
@@ -460,6 +480,8 @@ async def public_get_thumbnail(task_id: str):
             raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
+        if not row_is_publicly_readable(task.get("visibility")):
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         if task["status"] == "failed":
             error_message = task.get("error", "Unknown error")
@@ -555,7 +577,7 @@ async def public_get_square_thumbnail(task_id: str):
     try:
         response = await asyncio.to_thread(
             lambda: supabase.table('transcriptions')
-                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url")
+                    .select("task_id, status, error, thumbnail_url, thumbnail_local_path, supabase_thumbnail_url, visibility")
                     .eq('task_id', task_id)
                     .maybe_single()
                     .execute()
@@ -569,6 +591,8 @@ async def public_get_square_thumbnail(task_id: str):
             raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         task = response.data
+        if not row_is_publicly_readable(task.get("visibility")):
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
 
         if task["status"] == "failed":
             error_message = task.get("error", "Unknown error")

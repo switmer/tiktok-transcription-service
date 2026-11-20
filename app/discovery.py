@@ -3,8 +3,10 @@ from fastapi import APIRouter, HTTPException
 
 try:
     from .core.errors import ApiError, SERVICE_UNAVAILABLE
+    from .core.visibility import apply_public_listing_filter, exclude_hidden_from_listing
 except ImportError:
     from core.errors import ApiError, SERVICE_UNAVAILABLE
+    from core.visibility import apply_public_listing_filter, exclude_hidden_from_listing
 import asyncio
 from datetime import datetime, timedelta
 import logging
@@ -167,10 +169,11 @@ async def get_trending_transcriptions(
 
         try:
             # Build query to get completed transcriptions with all fields
-            query = supabase.table('transcriptions') \
-                        .select('*') \
-                        .eq('status', 'completed') \
-                        .limit(limit)
+            query = apply_public_listing_filter(
+                supabase.table('transcriptions')
+                .select('*')
+                .eq('status', 'completed')
+            ).limit(limit)
 
             # Order by like_count (engagement) for trending, fallback to view_count, then created_at
             query = query.order('like_count', desc=True, nullsfirst=False)
@@ -238,12 +241,12 @@ async def get_similar_transcriptions(
 
         try:
             # Build query for similar completed content
-            query = supabase.table('transcriptions') \
-                           .select('*') \
-                           .eq('status', 'completed') \
-                           .neq('task_id', task_id) \
-                           .order('like_count', desc=True, nullsfirst=False) \
-                           .limit(limit)
+            query = apply_public_listing_filter(
+                supabase.table('transcriptions')
+                .select('*')
+                .eq('status', 'completed')
+                .neq('task_id', task_id)
+            ).order('like_count', desc=True, nullsfirst=False).limit(limit)
 
             # Add category filter if available
             if source.data.get('category'):
@@ -282,11 +285,11 @@ async def get_recent_transcriptions(
 
         try:
             # Build query to get completed transcriptions with all fields
-            query = supabase.table('transcriptions') \
-                           .select('*') \
-                           .eq('status', 'completed') \
-                           .order('created_at', desc=True) \
-                           .limit(limit)
+            query = apply_public_listing_filter(
+                supabase.table('transcriptions')
+                .select('*')
+                .eq('status', 'completed')
+            ).order('created_at', desc=True).limit(limit)
 
             # Add category filter if specified
             if category:
@@ -323,11 +326,11 @@ async def get_categories():
 
         # Query only completed tasks with non-null categories
         response = await asyncio.to_thread(
-            lambda: supabase.table('transcriptions')
-                            .select('category')
-                            .eq('status', 'completed')
-                            .not_.is_('category', 'null')
-                            .execute()
+            lambda: apply_public_listing_filter(
+                supabase.table('transcriptions')
+                .select('category')
+                .eq('status', 'completed')
+            ).not_.is_('category', 'null').execute()
         )
 
         logger.info(f"Categories query returned {len(response.data) if response.data else 0} rows")
@@ -415,9 +418,13 @@ async def search_content(
                 logger.info(f"No search results for query: {q}")
                 return SearchListResponse(query=q, results=[], total_results=0)
 
+            visible_rows = await exclude_hidden_from_listing(supabase, response.data)
+            if not visible_rows:
+                return SearchListResponse(query=q, results=[], total_results=0)
+
             # Process results
             results = []
-            for item in response.data:
+            for item in visible_rows:
                 try:
                     result = SearchResponse(
                         task_id=item.get("task_id", ""),
@@ -487,9 +494,13 @@ async def search_viral_content(
                 logger.info(f"No viral results for query: {q}")
                 return []
 
+            visible_rows = await exclude_hidden_from_listing(supabase, response.data)
+            if not visible_rows:
+                return []
+
             # Process results
             results = []
-            for item in response.data:
+            for item in visible_rows:
                 try:
                     result = SearchResponse(
                         task_id=item.get("task_id", ""),

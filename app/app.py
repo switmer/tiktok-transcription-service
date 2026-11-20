@@ -262,6 +262,8 @@ app.include_router(discovery.router)
 
 from .core.auth import validate_api_key, verify_api_key
 from .core.callbacks import send_task_callback
+from .core.transcripts import fetch_transcript_row, persist_transcript_segments, transcript_payload
+from .core.visibility import resolve_visibility
 from .models.schemas import (
     TranscriptionRequest,
     TranscriptionResponse,
@@ -476,6 +478,26 @@ async def get_task(task_id: str, api_key: str = Depends(verify_api_key)):
     except Exception as e:
         logger.error(f"Exception getting task {task_id} from Supabase: {str(e)}", exc_info=True)
         raise ApiError(500, INTERNAL_ERROR, "Server error retrieving task")
+
+@app.get("/api/transcript/{task_id}", tags=["Private Task Management"])
+async def get_transcript(task_id: str, api_key: str = Depends(verify_api_key)):
+    """Transcript text plus timed segments. Requires X-API-Key. Includes private tasks."""
+    if supabase is None:
+        logger.error(f"Cannot get transcript {task_id}: Supabase client not initialized.")
+        raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
+    try:
+        response = await fetch_transcript_row(supabase, task_id)
+        if not response or not response.data:
+            raise ApiError(404, TASK_NOT_FOUND, "Task not found")
+        task = response.data
+        if task.get("status") != "completed":
+            raise ApiError(400, TRANSCRIPT_NOT_READY, "Transcript not ready")
+        return transcript_payload(task_id, task)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Exception getting transcript {task_id}: {str(e)}", exc_info=True)
+        raise ApiError(500, INTERNAL_ERROR, "Server error retrieving transcript")
 
 @app.delete("/api/tasks/{task_id}", status_code=204, tags=["Private Task Management"])
 async def delete_task(task_id: str, api_key: str = Depends(verify_api_key)):
@@ -1098,6 +1120,9 @@ async def process_transcription_task(task_id: str, video_url: str, callback_url:
     except Exception as e:
         logger.error(f"Callback lookup failed for task {task_id}: {e}")
 
+# 30-minute cap for the yt-dlp + Whisper fallback (including 2-3 hour sources).
+# The RapidAPI caption path returns before this runs. The body calls sync
+# download/transcribe code and holds the event loop, so the cap stays here.
 @task_timeout(1800)  # 30-minute timeout
 async def _run_transcription_task(task_id: str, video_url: str, callback_url: Optional[str] = None, proxy: Optional[str] = None):
     """Process a transcription task asynchronously."""
@@ -1207,7 +1232,9 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
             logger.info(f"Detected YouTube URL, attempting instant transcription: {original_video_url}")
             
             # Try YouTube instant transcription via RapidAPI
-            youtube_result = transcriber.download_youtube_rapidapi(original_video_url)
+            youtube_result = await asyncio.to_thread(
+                transcriber.download_youtube_rapidapi, original_video_url
+            )
             
             if youtube_result:
                 logger.info(f"YouTube instant transcription successful for task {task_id}")
@@ -1255,7 +1282,6 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
                     'uploader': youtube_result.get('uploader'),
                     'channel': youtube_result.get('channel'),
                     'view_count': 1,  # Initialize view count
-                    'visibility': 'public'
                 }
                 if youtube_result.get('metadata') is not None:
                     update_data['raw_metadata'] = youtube_result.get('metadata')
@@ -1273,6 +1299,7 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
                     update_data['user_phone'] = user_phone
                 
                 result = supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+                persist_transcript_segments(supabase, task_id, youtube_result.get('segments'))
                 if result.data:
                     logger.info(f"Successfully updated transcription with download results for task {task_id}")
                 else:
@@ -1347,13 +1374,17 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
                                 'tags': ['sms-inbound', 'youtube'] if user_phone else ['youtube'],
                                 'error': None,
                                 'view_count': 1,
-                                'visibility': 'public'
                             }
                             if quote_tldr_result.get('quote'):
                                 update_data['quote'] = quote_tldr_result['quote']
                             if quote_tldr_result.get('tldr'):
                                 update_data['tldr'] = json.dumps(quote_tldr_result['tldr'])
                             supabase.table('transcriptions').update(update_data).eq('task_id', task_id).execute()
+                            persist_transcript_segments(
+                                supabase,
+                                task_id,
+                                transcriber.segments_from_whisper_response(transcript_response),
+                            )
                             # SMS notify
                             if user_phone:
                                 try:
@@ -1685,7 +1716,6 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
                 'error': None,
                 'user_phone': user_phone,  # Include user_phone for SMS notification check
                 'view_count': 1,  # Initialize view count for new videos
-                'visibility': 'public',  # Default visibility
                 'platform': transcriber.canonical_platform(original_video_url, platform_hint),
                 'language': detected_language  # Use actual detected/configured language
             }
@@ -1834,6 +1864,11 @@ async def _run_transcription_task(task_id: str, video_url: str, callback_url: Op
                 logger.info(f"Successfully updated transcription record for task {task_id}")
             else:
                 logger.warning(f"Update returned no data for task {task_id}: {result}")
+            persist_transcript_segments(
+                supabase,
+                task_id,
+                transcriber.segments_from_whisper_response(transcript_response),
+            )
             logger.info(f"Task {task_id} completed with {len(tags)} tags in category: {category}, thumbnail: {thumbnail_local_path or 'none'}")
             
             # Send SMS notification if this was an SMS request
@@ -2145,7 +2180,12 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
     except Exception as e:
         logger.error(f"Exception updating status for task {task_id}: {str(e)}", exc_info=True)
 
-async def init_task(video_url: str, user_id: str = None, user_phone: str = None) -> Dict[str, Any]:
+async def init_task(
+    video_url: str,
+    user_id: str = None,
+    user_phone: str = None,
+    visibility: str = None,
+) -> Dict[str, Any]:
     """Initialize a new task entry in the Supabase database."""
     if supabase is None:
         logger.error("Cannot initialize task: Supabase client not initialized")
@@ -2162,6 +2202,9 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
             "status": "pending",
             "url": video_url,  # Make sure 'url' column exists in your table
             "created_at": datetime.now().isoformat(),
+            # Callers pass an explicit value. Null would drop the row out of
+            # public_transcriptions, so the fallback stays public.
+            "visibility": visibility or "public",
         }
         
         # Add user identification if provided (both optional now)
@@ -2211,8 +2254,13 @@ async def submit_task(
         raise ApiError(503, SERVICE_UNAVAILABLE, "Database connection not available")
 
     try:
-        # Initialize task in DB, passing the validated user_id
-        task = await init_task(request.url, user_id)
+        try:
+            visibility = resolve_visibility(request.visibility, from_api_key=True)
+        except ValueError:
+            raise ApiError(400, VALIDATION_ERROR, "visibility must be public, private, or unlisted")
+        # Initialize task in DB, passing the validated user_id.
+        # API-key creates default to private unless the body sets visibility.
+        task = await init_task(request.url, user_id, visibility=visibility)
         
         # Add the processing task to background
         background_tasks.add_task(
@@ -2312,6 +2360,19 @@ async def reprocess_sms_jobs(background_tasks: BackgroundTasks, api_key: str = D
     """Reprocess stuck SMS transcription jobs (requires API key)"""
     return await _reprocess_sms_jobs_logic(background_tasks)
 
+@app.post("/api/public/cleanup-stuck-tasks", tags=["System & Health"])
+async def public_cleanup_stuck_tasks(api_key: str = Depends(verify_api_key)):
+    """Documented alias of /api/cleanup-stuck-tasks. Same X-API-Key check."""
+    return await _cleanup_stuck_tasks_logic()
+
+@app.post("/api/public/reprocess-sms-jobs", tags=["System & Health"])
+async def public_reprocess_sms_jobs(
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key),
+):
+    """Documented alias of /api/reprocess-sms-jobs. Same X-API-Key check."""
+    return await _reprocess_sms_jobs_logic(background_tasks)
+
 async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
     """Find and reprocess stuck SMS jobs"""
     if supabase is None:
@@ -2321,7 +2382,7 @@ async def _reprocess_sms_jobs_logic(background_tasks: BackgroundTasks):
     try:
         # Find pending SMS jobs
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
             .select("task_id, url, tags")
             .eq('status', 'pending')
             .limit(500)
@@ -2369,7 +2430,7 @@ async def _cleanup_stuck_tasks_logic():
         cutoff_time = (datetime.now() - timedelta(minutes=30)).isoformat()
 
         response = await asyncio.to_thread(
-            supabase.table('transcriptions')
+            lambda: supabase.table('transcriptions')
             .select("task_id")
             .eq('status', 'pending')
             .lt('created_at', cutoff_time)
@@ -2923,6 +2984,10 @@ async def rich_link_preview(task_id: str, request: Request):
             raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
 
         task = response.data
+        # public_transcriptions already requires visibility = 'public'.
+        # Reject anything else if a private or unlisted row is ever returned.
+        if task.get("visibility") not in (None, "public"):
+            raise ApiError(404, TASK_NOT_FOUND, "Transcript not found")
 
         # Parse JSONB fields from database
         if task.get('tldr'):
