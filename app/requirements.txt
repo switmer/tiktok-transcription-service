@@ -3,6 +3,7 @@ uvicorn>=0.23.2
 python-dotenv>=1.0.0
 httpx>=0.25.0
 requests>=2.25.0
+youtube-transcript-api>=1.2.0
 # yt-dlp with default extras (includes yt-dlp-ejs for JS-based extractors like YouTube)
 # and deno extra (includes the Deno binary for JS runtime)
 yt-dlp[default,deno]>=2025.6.30
