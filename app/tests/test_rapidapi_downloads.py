@@ -510,7 +510,7 @@ class TestYouTubeRapidAPIResponseParsing:
 
         mock_get.side_effect = [api_response, oembed_response]
 
-        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=abc123")
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
         assert result is not None
         assert result["transcript"] == "Hello world, this is a test transcript."
@@ -532,7 +532,7 @@ class TestYouTubeRapidAPIResponseParsing:
 
         mock_get.return_value = api_response
 
-        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=xyz789")
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=xyz78901234")
 
         assert result is not None
         assert result["transcript"] == "Legacy format transcript."
@@ -552,7 +552,7 @@ class TestYouTubeRapidAPIResponseParsing:
 
         mock_get.return_value = api_response
 
-        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=nope")
+        result = download_youtube_rapidapi("https://www.youtube.com/watch?v=nopetranscr")
 
         assert result is None
 

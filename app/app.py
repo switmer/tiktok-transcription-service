@@ -997,16 +997,13 @@ async def process_video_with_external_script(
         raise RuntimeError(f"Unexpected error: {e}")
 
 def is_youtube_url(url: str) -> bool:
-    """Check if URL is a YouTube video."""
-    import re
-    youtube_patterns = [
-        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|m\.youtube\.com/watch\?v=)([^&\n?#]+)',
-        r'(?:www\.)?youtube\.com/watch\?v=[\w-]+',
-        r'(?:www\.)?youtu\.be/[\w-]+',
-        r'(?:www\.)?youtube\.com/shorts/[\w-]+',
-        r'(?:m\.)?youtube\.com/watch\?v=[\w-]+'
-    ]
-    return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
+    """True when the URL has an 11-character YouTube video ID.
+
+    Uses transcriber.youtube_video_identity (watch, youtu.be, shorts, live,
+    embed, m., music., extra params). A /live/ link must not fall through
+    to the generic downloader and keep the DB default platform of tiktok.
+    """
+    return transcriber.youtube_video_identity(url) is not None
 
 def normalize_proxy(proxy: Optional[str]) -> Optional[str]:
     """Return a well-formed proxy URL or None."""
@@ -2142,6 +2139,24 @@ async def update_task_status(task_id: str, status: str, error: Optional[str] = N
         else:
             logger.info(f"Updated status for task {task_id} to {status} in Supabase.")
 
+        # SMS credits are taken when Render accepts the job, before this
+        # task finishes. Give the credit back on failure. Keyed by task_id
+        # so a second failure path (timeout plus exception) refunds once,
+        # and a task that was never charged (free retry) is left alone.
+        if status == "failed" and task_id and task_id != "unknown":
+            try:
+                try:
+                    from .core.credit_refund import refund_failed_task_with_retry
+                except ImportError:
+                    from core.credit_refund import refund_failed_task_with_retry
+                refund_result = await refund_failed_task_with_retry(supabase, task_id)
+                logger.info(f"Credit refund for failed task {task_id}: {refund_result}")
+            except Exception as refund_error:
+                logger.error(
+                    f"Credit refund failed for task {task_id}: {refund_error}",
+                    exc_info=True,
+                )
+
     except Exception as e:
         logger.error(f"Exception updating status for task {task_id}: {str(e)}", exc_info=True)
 
@@ -2155,14 +2170,25 @@ async def init_task(video_url: str, user_id: str = None, user_phone: str = None)
         # Skip user_transcriptions table lookup since it might not exist
         # Just create a new task record each time
         task_id = str(uuid.uuid4())
-        
+
+        # Store YouTube as the canonical watch URL with platform='youtube'.
+        # The column default is 'tiktok'; leaving platform unset is how a
+        # /live/ link that never reached the YouTube branch was saved.
+        stored_url = video_url
+        youtube_identity = transcriber.youtube_video_identity(video_url)
+        if youtube_identity:
+            stored_url = youtube_identity[1]
+
         # Create the transcription record with minimal required fields
         task_data = {
             "task_id": task_id,
             "status": "pending",
-            "url": video_url,  # Make sure 'url' column exists in your table
+            "url": stored_url,  # Make sure 'url' column exists in your table
             "created_at": datetime.now().isoformat(),
         }
+        if youtube_identity:
+            task_data["platform"] = "youtube"
+            task_data["video_id"] = youtube_identity[0]
         
         # Add user identification if provided (both optional now)
         if user_id:

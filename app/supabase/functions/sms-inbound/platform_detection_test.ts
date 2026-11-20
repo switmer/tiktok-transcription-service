@@ -22,6 +22,11 @@ import {
   isInstagramStoriesUrl,
   isWebPageUrl,
   extractYouTubeVideoId,
+  canonicalizeYouTubeUrl,
+  youtubeIdIlikePattern,
+  linksMatchForRetry,
+  pickRetryTask,
+  classifyExistingTask,
   isSupportedUrl,
   isKnownPlatformUrl,
   getInstagramStoriesMessage,
@@ -376,4 +381,93 @@ Deno.test("getInstagramStoriesMessage - returns helpful message", () => {
   const message = getInstagramStoriesMessage();
   assertEquals(message.includes("Stories"), true);
   assertEquals(message.includes("Reel"), true);
+});
+
+const LIVE = "https://www.youtube.com/live/LzZ_FptHWqs?is=qIAcJzCrcYqh_KF9";
+const CANONICAL = "https://www.youtube.com/watch?v=LzZ_FptHWqs";
+
+Deno.test("canonicalizeYouTubeUrl - every share form is the same watch URL", () => {
+  const forms = [
+    LIVE,
+    "https://www.youtube.com/watch?v=LzZ_FptHWqs",
+    "https://www.youtube.com/watch?list=PLxxx&v=LzZ_FptHWqs",
+    "https://youtu.be/LzZ_FptHWqs?si=abc&t=12",
+    "https://www.youtube.com/shorts/LzZ_FptHWqs?pp=ygU",
+    "https://www.youtube.com/embed/LzZ_FptHWqs",
+    "https://m.youtube.com/watch?v=LzZ_FptHWqs&pp=1&is=other",
+    "https://music.youtube.com/watch?v=LzZ_FptHWqs&si=track",
+    "https://youtube.com/live/LzZ_FptHWqs/",
+  ];
+  for (const form of forms) {
+    assertEquals(canonicalizeYouTubeUrl(form), CANONICAL);
+    assertEquals(extractYouTubeVideoId(form), "LzZ_FptHWqs");
+  }
+});
+
+Deno.test("extractYouTubeVideoId - does not treat the is= token as the video id", () => {
+  assertEquals(extractYouTubeVideoId(LIVE), "LzZ_FptHWqs");
+  assertEquals(extractYouTubeVideoId("https://www.youtube.com/watch?is=qIAcJzCrcYqh_KF9"), null);
+});
+
+Deno.test("youtubeIdIlikePattern - escapes underscore wildcards", () => {
+  assertEquals(youtubeIdIlikePattern("LzZ_FptHWqs"), "%LzZ\\_FptHWqs%");
+});
+
+Deno.test("free retry matches a live share link with a different is= param", () => {
+  const rows = [
+    {
+      task_id: "other",
+      status: "failed",
+      url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      video_id: "dQw4w9WgXcQ",
+      title: "Different video",
+    },
+    {
+      task_id: "failed-live",
+      status: "failed",
+      url: "https://www.youtube.com/live/LzZ_FptHWqs?is=oldToken",
+      video_id: null,
+      title: "Live",
+    },
+  ];
+  // Newest-first list: the failed live row is the match, not the other video.
+  const incoming = "https://youtu.be/LzZ_FptHWqs?is=qIAcJzCrcYqh_KF9";
+  const match = pickRetryTask(incoming, rows);
+  assertEquals(match?.task_id, "failed-live");
+  assertEquals(classifyExistingTask(match?.status), "free_retry");
+  assertEquals(linksMatchForRetry(incoming, rows[1].url, rows[1].video_id), true);
+  assertEquals(linksMatchForRetry(incoming, rows[0].url, rows[0].video_id), false);
+});
+
+Deno.test("retry match treats watch, shorts, embed, m., and music. as one video", () => {
+  const stored = "https://music.youtube.com/watch?v=dQw4w9WgXcQ&si=abc";
+  for (const incoming of [
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ?pp=1",
+    "https://www.youtube.com/embed/dQw4w9WgXcQ",
+    "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://youtu.be/dQw4w9WgXcQ?si=zzz",
+  ]) {
+    assertEquals(linksMatchForRetry(incoming, stored, null), true);
+  }
+});
+
+Deno.test("a different video does not qualify as a free retry", () => {
+  const rows = [{
+    task_id: "failed-live",
+    status: "failed",
+    url: LIVE,
+    video_id: null,
+    title: "Live",
+  }];
+  const match = pickRetryTask("https://www.youtube.com/watch?v=dQw4w9WgXcQ&is=something", rows);
+  assertEquals(match, null);
+  assertEquals(classifyExistingTask(undefined), "none");
+});
+
+Deno.test("completed and in-flight matches are not free retries", () => {
+  assertEquals(classifyExistingTask("completed"), "completed");
+  assertEquals(classifyExistingTask("pending"), "inflight");
+  assertEquals(classifyExistingTask("processing"), "inflight");
+  assertEquals(classifyExistingTask("error"), "free_retry");
 });

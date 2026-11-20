@@ -5,6 +5,10 @@ import {
   detectPlatform,
   isSupportedUrl,
   extractYouTubeVideoId,
+  canonicalizeYouTubeUrl,
+  youtubeIdIlikePattern,
+  pickRetryTask,
+  classifyExistingTask,
   getUnsupportedUrlMessage,
   getInstagramStoriesMessage,
   isInstagramStoriesUrl,
@@ -1272,6 +1276,9 @@ Reply /help for more commands!`);
   }
   // Use the first matched URL, cleaned of trailing punctuation
   const url = cleanUrlTrailingPunctuation(match[0]);
+  const youtubeVideoId = extractYouTubeVideoId(url);
+  // Canonical watch URL is what Render stores and what RapidAPI/yt-dlp see.
+  const urlForJob = canonicalizeYouTubeUrl(url) || url;
   
   // Check for Instagram Stories first - these can't be supported (disappear after 24h)
   if (isInstagramStoriesUrl(url)) {
@@ -1290,27 +1297,37 @@ Reply /help for more commands!`);
       return sendTwilioResponse('❌ Error creating user account. Try again later.');
     }
 
-    // Dedupe: if this phone already sent this exact URL before, don't charge twice.
-    // Note: This is an exact-string match. TikTok shortlinks can vary; a stronger
-    // dedupe could normalize by video_id once we resolve it.
-    // normalizedFrom was already computed and validated above
+    // Dedupe: same phone + same video is not charged twice.
+    // YouTube matches the 11-char video ID (watch, live, shorts, youtu.be,
+    // embed, m., music.), so a reshared link with a different is/si/pp/t
+    // param is still a free retry of the failed job. Other platforms stay
+    // an exact URL match. TikTok shortlinks can still vary.
     let isFreeRetry = false; // Track if this is a free retry of a failed task
     try {
-      const { data: existingTasks, error: existingError } = await supabase
+      let lookup = supabase
         .from('transcriptions')
-        .select('task_id,status,title,created_at')
+        .select('task_id,status,title,url,video_id,created_at')
         .eq('user_phone', normalizedFrom)
-        .eq('url', url)
-        .order('created_at', { ascending: false })
-        .limit(1);
+        .order('created_at', { ascending: false });
+
+      if (youtubeVideoId) {
+        lookup = lookup.ilike('url', youtubeIdIlikePattern(youtubeVideoId)).limit(15);
+      } else {
+        lookup = lookup.eq('url', url).limit(1);
+      }
+
+      const { data: existingTasks, error: existingError } = await lookup;
+      const existing = existingError || !existingTasks
+        ? null
+        : (youtubeVideoId ? pickRetryTask(url, existingTasks) : (existingTasks[0] || null));
 
       if (existingError) {
         console.warn('Dedupe lookup failed; proceeding with normal flow:', existingError);
-      } else if (existingTasks && existingTasks.length > 0) {
-        const existing = existingTasks[0];
+      } else if (existing) {
         const existingTitle = existing.title || 'that video';
+        const retryKind = classifyExistingTask(existing.status);
 
-        if (existing.status === 'completed') {
+        if (retryKind === 'completed') {
           return sendTwilioResponse(
             `✅ Already transcribed ${existingTitle}.\n\n` +
               `🔗 https://share.scribetok.com/v/${existing.task_id}\n` +
@@ -1319,7 +1336,7 @@ Reply /help for more commands!`);
         }
 
         // If it's already in-flight, don't create a new task or charge again.
-        if (existing.status === 'pending' || existing.status === 'processing') {
+        if (retryKind === 'inflight') {
           return sendTwilioResponse(
             `⏳ That link is already being processed.\n\n` +
               `I'll text you when it's ready.\n` +
@@ -1328,7 +1345,7 @@ Reply /help for more commands!`);
         }
 
         // If the previous attempt failed, allow a free retry
-        if (existing.status === 'failed' || existing.status === 'error') {
+        if (retryKind === 'free_retry') {
           console.log(`Free retry for previously failed task ${existing.task_id} (status: ${existing.status})`);
           isFreeRetry = true;
           // Continue to normal processing flow - don't return, just flag for free retry
@@ -1348,8 +1365,10 @@ Reply /help for more commands!`);
       return sendTwilioResponse(`You've used all your free transcripts! Get 5 more for just $1.99:\n${buyLink}\n\nOr reply /referral for 3 free credits.`);
     }
 
-    // We only deduct credits AFTER the backend successfully queues the job.
-    // This avoids charging if the downstream call fails.
+    // Deduct one credit once Render accepts the job (HTTP 200).
+    // That is not "charge only if transcription succeeds": the job can
+    // still fail. app.py then refunds +1 keyed by task_id, and only when
+    // this charge row exists. A free retry of a failed task is not charged.
     let newCreditsRemaining = creditsRemaining;
     
     // NOTE: All platforms (including YouTube) are now routed through the backend
@@ -1378,7 +1397,7 @@ Reply /help for more commands!`);
           'X-API-Key': apiKey,
         },
         body: JSON.stringify({
-          url,
+          url: urlForJob,
           user_phone: normalizedFrom,
           platform,  // Pass detected platform to backend
         }),
@@ -1392,8 +1411,24 @@ Reply /help for more commands!`);
         return sendTwilioResponse('⚠️ Couldn’t start processing. Try again in a minute.');
       }
 
+      // The refund ledger key. Without it a later failure cannot tell this
+      // charge from any other transcription on the same phone.
+      let queuedTaskId: string | null = null;
+      try {
+        const parsed = JSON.parse(responseText);
+        if (parsed && typeof parsed.task_id === 'string' && parsed.task_id.length > 0) {
+          queuedTaskId = parsed.task_id;
+        }
+      } catch (parseErr) {
+        console.error('Render response was not JSON; this charge will not be keyed by task_id', parseErr);
+      }
+      if (!queuedTaskId) {
+        console.error('Render accepted the job but returned no task_id; a failure refund cannot match this charge');
+      }
+
       // Charge one credit now that the job is successfully queued.
-      // Skip credit deduction for free retries of failed tasks
+      // Skip credit deduction for free retries of failed tasks.
+      // This is the charge the backend refunds if transcription fails.
       if (!isFreeRetry) {
         try {
           const { data: creditResult, error: creditError } = await supabase.rpc('atomic_credit_transaction', {
@@ -1401,7 +1436,11 @@ Reply /help for more commands!`);
             credit_change: -1,
             transaction_type: 'transcription',
             description: 'SMS transcription',
-            metadata: { url, message_sid: MessageSid ? String(MessageSid) : null },
+            metadata: {
+              url: urlForJob,
+              message_sid: MessageSid ? String(MessageSid) : null,
+              task_id: queuedTaskId,
+            },
           });
           if (creditError) {
             console.error('Credit deduction RPC failed:', creditError);

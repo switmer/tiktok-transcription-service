@@ -4,7 +4,11 @@ uvicorn>=0.23.2,<1.0.0
 python-dotenv>=1.0.0
 httpx>=0.25.0
 requests>=2.25.0
-yt-dlp>=2025.6.30
+# Match app/requirements.txt. Render has been installing this root file.
+# default = yt-dlp-ejs; deno = JS runtime for YouTube extractors.
+# yt-dlp can still get HTTP 429 from Render's IP. A proxy or cookies env
+# var may be needed later. Do not add those env vars in this change.
+yt-dlp[default,deno]>=2025.6.30
 openai>=1.0.0
 supabase>=2.0.0
 pillow>=10.0.0
