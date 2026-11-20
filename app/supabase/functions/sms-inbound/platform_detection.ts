@@ -286,19 +286,83 @@ export function isKnownPlatformUrl(url: string): boolean {
  * v= can appear anywhere in query string.
  */
 export function extractYouTubeVideoId(url: string): string | null {
-  // Handle youtu.be short URLs
-  let match = url.match(/youtu\.be\/([\w-]{11})/);
+  if (!url) return null;
+  const cleaned = cleanUrlTrailingPunctuation(url.trim());
+  // 11 characters, and the next character must not be more of an id.
+  // That keeps a long `is=` share token from being read as the video id.
+  let match = cleaned.match(/youtu\.be\/([\w-]{11})(?![A-Za-z0-9_-])/);
   if (match) return match[1];
-  
-  // Handle shorts, live, embed URLs
-  match = url.match(/youtube\.com\/(?:shorts|live|embed)\/([\w-]{11})/);
+
+  match = cleaned.match(/youtube\.com\/(?:shorts|live|embed)\/([\w-]{11})(?![A-Za-z0-9_-])/);
   if (match) return match[1];
-  
-  // Handle v= anywhere in query string
-  match = url.match(/[?&]v=([\w-]{11})/);
+
+  match = cleaned.match(/[?&]v=([\w-]{11})(?![A-Za-z0-9_-])/);
   if (match) return match[1];
-  
+
   return null;
+}
+
+/** Canonical form sent to RapidAPI, yt-dlp, and stored for new YouTube jobs. */
+export function canonicalizeYouTubeUrl(url: string): string | null {
+  const id = extractYouTubeVideoId(url);
+  if (!id) return null;
+  return `https://www.youtube.com/watch?v=${id}`;
+}
+
+/**
+ * ILIKE pattern for a video id. `_` is a single-character wildcard in LIKE,
+ * and YouTube ids contain underscores (for example LzZ_FptHWqs).
+ */
+export function youtubeIdIlikePattern(videoId: string): string {
+  const escaped = videoId.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  return `%${escaped}%`;
+}
+
+/**
+ * Same video for the free-retry check.
+ * YouTube: equal 11-char id, ignoring is/si/pp/t and the URL shape.
+ * Anything else: exact cleaned URL text.
+ */
+export function linksMatchForRetry(
+  incomingUrl: string,
+  storedUrl: string | null | undefined,
+  storedVideoId?: string | null,
+): boolean {
+  const incomingId = extractYouTubeVideoId(incomingUrl || '');
+  if (incomingId) {
+    if (storedVideoId && storedVideoId === incomingId) return true;
+    return extractYouTubeVideoId(storedUrl || '') === incomingId;
+  }
+  const left = cleanUrlTrailingPunctuation(incomingUrl || '');
+  const right = cleanUrlTrailingPunctuation(storedUrl || '');
+  return left.length > 0 && left === right;
+}
+
+export type RetryTaskRow = {
+  url?: string | null;
+  video_id?: string | null;
+};
+
+/** First row in `rows` (caller orders newest first) that is the same video. */
+export function pickRetryTask<T extends RetryTaskRow>(
+  incomingUrl: string,
+  rows: T[] | null | undefined,
+): T | null {
+  if (!rows || rows.length === 0) return null;
+  for (const row of rows) {
+    if (linksMatchForRetry(incomingUrl, row.url, row.video_id)) return row;
+  }
+  return null;
+}
+
+/** How an existing task affects the paywall. `free_retry` must not charge. */
+export function classifyExistingTask(
+  status: string | null | undefined,
+): 'completed' | 'inflight' | 'free_retry' | 'none' {
+  if (status === 'completed') return 'completed';
+  if (status === 'pending' || status === 'processing') return 'inflight';
+  if (status === 'failed' || status === 'error') return 'free_retry';
+  return 'none';
 }
 
 /**

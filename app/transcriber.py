@@ -187,10 +187,14 @@ def clean_url_for_api(url: str) -> str:
     try:
         parsed = urlparse(url)
 
-        # List of tracking parameter prefixes to remove
+        # Prefixes (utm_*, si, ...) plus exact YouTube share keys.
+        # `is` and `pp` are exact so we don't drop unrelated params that
+        # merely start with those letters. `t` is a start-time, not an id;
+        # YouTube calls drop it by canonicalizing to watch?v= instead.
         tracking_prefixes = ('igsh', 'utm_', 'fbclid', 'si', 'feature', 'share_id',
                             'ref', 'source', 's_src', 'tt_from', 'tt_chain_token',
                             '_r', 'checksum', 'sender_device', 'sender_web_id')
+        tracking_exact = {'is', 'pp'}
 
         # Parse existing query params
         if parsed.query:
@@ -198,7 +202,8 @@ def clean_url_for_api(url: str) -> str:
             # Filter out tracking params
             clean_params = {
                 k: v for k, v in params.items()
-                if not any(k.lower().startswith(prefix) for prefix in tracking_prefixes)
+                if k.lower() not in tracking_exact
+                and not any(k.lower().startswith(prefix) for prefix in tracking_prefixes)
             }
             # Rebuild URL with cleaned params
             clean_query = urlencode(clean_params, doseq=True)
@@ -215,6 +220,88 @@ def clean_url_for_api(url: str) -> str:
     except Exception as e:
         logger.warning(f"Error cleaning URL, using original: {e}")
         return url
+
+# YouTube video IDs are exactly 11 characters from this alphabet.
+_YOUTUBE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+_YOUTUBE_PATH_ID_RE = re.compile(
+    r'/(?:shorts|live|embed)/([A-Za-z0-9_-]{11})(?=[/?#]|$)'
+)
+
+
+def _split_youtube_url(url: str):
+    """Return (hostname without www, ParseResult) or (None, None)."""
+    if not url or not isinstance(url, str):
+        return None, None
+    cleaned = clean_url_trailing_punctuation(url.strip())
+    if not cleaned:
+        return None, None
+    if not re.match(r'^[a-z][a-z0-9+.-]*://', cleaned, re.IGNORECASE):
+        cleaned = 'https://' + cleaned.lstrip('/')
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return None, None
+    host = (parsed.hostname or '').lower()
+    if host.startswith('www.'):
+        host = host[4:]
+    return host, parsed
+
+
+def _is_youtube_host(host: str) -> bool:
+    if not host:
+        return False
+    if host in ('youtu.be', 'youtube.com', 'youtube-nocookie.com'):
+        return True
+    return host.endswith('.youtube.com') or host.endswith('.youtube-nocookie.com')
+
+
+def youtube_video_identity(url: str):
+    """Return ``(video_id, canonical_watch_url)`` or None.
+
+    This is the only YouTube URL parser. ``app.is_youtube_url``, RapidAPI,
+    and yt-dlp all go through it so a /live/ or share link cannot be stored
+    as TikTok or sent with video_id ``unknown``.
+
+    Accepted forms: watch (``v=`` anywhere in the query), youtu.be, shorts,
+    live, embed, m.youtube.com, music.youtube.com, and youtube-nocookie
+    embeds. Extra params such as ``is``, ``si``, ``pp``, and ``t`` are
+    dropped. The id must be exactly 11 characters.
+    """
+    host, parsed = _split_youtube_url(url)
+    if not host or parsed is None or not _is_youtube_host(host):
+        return None
+
+    video_id = None
+    if host == 'youtu.be':
+        segment = (parsed.path or '').strip('/').split('/')[0]
+        if _YOUTUBE_ID_RE.fullmatch(segment or ''):
+            video_id = segment
+    else:
+        path_match = _YOUTUBE_PATH_ID_RE.search(parsed.path or '')
+        if path_match:
+            video_id = path_match.group(1)
+        else:
+            for value in parse_qs(parsed.query).get('v') or []:
+                if _YOUTUBE_ID_RE.fullmatch(value):
+                    video_id = value
+                    break
+
+    if not video_id:
+        return None
+    return video_id, f'https://www.youtube.com/watch?v={video_id}'
+
+
+def extract_youtube_video_id(url: str):
+    """11-character YouTube video ID, or None."""
+    identity = youtube_video_identity(url)
+    return identity[0] if identity else None
+
+
+def canonical_youtube_url(url: str):
+    """``https://www.youtube.com/watch?v=ID``, or None when url is not YouTube."""
+    identity = youtube_video_identity(url)
+    return identity[1] if identity else None
+
 
 def _extract_youtube_metadata(data: dict) -> dict:
     if not isinstance(data, dict):
@@ -258,14 +345,14 @@ def download_youtube_rapidapi(url: str) -> dict:
         return None
 
     try:
-        # Clean URL to remove tracking parameters
-        clean_url = clean_url_for_api(url)
+        # Canonical watch URL so /live/, shorts, embed, and share params
+        # (is, si, pp, t) are not forwarded. Never send video_id "unknown".
+        identity = youtube_video_identity(url)
+        if not identity:
+            logger.error(f"Could not extract YouTube video ID from URL: {url}")
+            return None
+        video_id, clean_url = identity
 
-        # Extract video ID from URL
-        import re
-        video_id_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([^&\n?#]+)', clean_url)
-        video_id = video_id_match.group(1) if video_id_match else "unknown"
-        
         # RapidAPI YouTube Transcript service (same as Edge Function)
         rapidapi_url = "https://youtube-transcribe-fastest-youtube-transcriber.p.rapidapi.com/transcript"
         headers = {
@@ -830,6 +917,11 @@ def my_hook(d):
 
 def download_tiktok_ytdlp(url: str, output_dir: str, proxy=None):
     """Download TikTok video using yt-dlp (original method)"""
+    # YouTube live/shorts/share links must be the canonical watch URL.
+    # yt-dlp on Render still often gets HTTP 429; this only fixes the URL.
+    identity = youtube_video_identity(url)
+    if identity:
+        url = identity[1]
     # Set user agents to rotate
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -965,20 +1057,8 @@ def _is_spotify_url(url: str) -> bool:
     return bool(re.search(r'open\.spotify\.com/episode/', url, re.IGNORECASE))
 
 def _is_youtube_url(url: str) -> bool:
-    """Check if URL is a YouTube video URL.
-    Supports: watch?v=, youtu.be/, shorts/, live/, embed/, m.youtube.com, music.youtube.com,
-    and v= anywhere in query string.
-    """
-    # Standard patterns
-    if re.search(r'(?:youtube\.com/(?:watch|shorts|live|embed)|youtu\.be/)', url, re.IGNORECASE):
-        return True
-    # v= anywhere in youtube.com URL query string
-    if re.search(r'youtube\.com.*[?&]v=[\w-]{11}', url, re.IGNORECASE):
-        return True
-    # m.youtube.com or music.youtube.com
-    if re.search(r'(?:m\.youtube\.com|music\.youtube\.com)/watch', url, re.IGNORECASE):
-        return True
-    return False
+    """True when youtube_video_identity can read an 11-character video ID."""
+    return youtube_video_identity(url) is not None
 
 def _is_x_twitter_url(url: str) -> bool:
     """Check if URL is an X/Twitter status URL."""
@@ -1274,6 +1354,11 @@ def download_tiktok(url: str, output_dir: str, proxy=None):
     - X/Twitter, Reddit, Vimeo, Twitch, LinkedIn, Threads, Loom: yt-dlp
     """
 
+    # YouTube share/live/shorts links become the canonical watch URL before
+    # RapidAPI and yt-dlp. Other platforms only lose tracking params.
+    identity = youtube_video_identity(url)
+    if identity:
+        url = identity[1]
     # Clean URL before processing (tracking params and trailing punctuation)
     clean_url = clean_url_trailing_punctuation(clean_url_for_api(url))
 
