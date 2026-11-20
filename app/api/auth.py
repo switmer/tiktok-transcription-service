@@ -266,8 +266,8 @@ async def create_checkout(
     frontend_url = os.getenv("FRONTEND_URL", "https://scribetok.com")
 
     try:
+        # stripe 17 rejects payment_method_types; Dashboard methods apply.
         checkout_session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
             line_items=[{"price": stripe_price_id, "quantity": 1}],
             mode="payment",
             success_url=f"{frontend_url}/sms-payment-success?session_id={{CHECKOUT_SESSION_ID}}",

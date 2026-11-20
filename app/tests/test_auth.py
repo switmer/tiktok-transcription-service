@@ -421,6 +421,12 @@ class TestCreateCheckout:
                 result = await create_checkout(payload=None, session=session)
 
         assert result["checkout_url"] == "https://checkout.stripe.com/session_xyz"
+        kwargs = mock_stripe.checkout.Session.create.call_args.kwargs
+        assert "payment_method_types" not in kwargs
+        assert kwargs["mode"] == "payment"
+        assert kwargs["metadata"]["phone_number"] == "+15551234567"
+        assert kwargs["metadata"]["credits"] == "10"
+        assert kwargs["metadata"]["source"] == "web_checkout"
 
     @pytest.mark.asyncio
     async def test_checkout_rejects_credits_that_do_not_match_price(self):

@@ -37,6 +37,29 @@ def test_checkout_session_carries_sms_phone():
     )
 
 
+def test_checkout_session_omits_payment_method_types_and_keeps_webhook_metadata():
+    """Session.create must not send the removed parameter, and must still
+    attach the phone the Stripe webhook uses to credit the SMS user.
+    """
+    session = SimpleNamespace(url="https://checkout.stripe.com/c/pay/cs_test_example")
+    price_id = os.getenv("STRIPE_5_CREDITS_PRICE_ID") or "price_1RnBh3BaZtBtpc8wC4aXxkCx"
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_example"}):
+        with patch.object(payment_checkout.stripe.checkout.Session, "create", return_value=session) as create:
+            url = payment_checkout.create_sms_checkout_url("+15551234567", 5, "completion_sms")
+
+    assert url == session.url
+    kwargs = create.call_args.kwargs
+    assert "payment_method_types" not in kwargs
+    assert kwargs["mode"] == "payment"
+    assert kwargs["line_items"] == [{"price": price_id, "quantity": 1}]
+    # /api/webhook/stripe fulfillment reads metadata.phone_number, then the price id.
+    assert kwargs["metadata"] == {
+        "phone_number": "+15551234567",
+        "credits": "5",
+        "source": "completion_sms",
+    }
+
+
 def paid_session(metadata=None):
     return {
         "id": "cs_test_123",
