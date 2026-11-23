@@ -19,7 +19,7 @@ psycopg2-binary>=2.9.0
 sqlalchemy>=2.0.0
 
 # Mocking and fixtures
-factory-boy>=3.3.0
+factory-boy>=3.3.3
 freezegun>=1.2.0
 
 # Performance testing
