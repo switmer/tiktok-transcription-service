@@ -23,7 +23,7 @@ factory-boy>=3.3.0
 freezegun>=1.2.0
 
 # Performance testing
-pytest-benchmark>=4.0.0
+pytest-benchmark>=5.3.1
 pytest-xdist>=3.3.0  # For parallel test execution
 
 # Reporting and coverage
